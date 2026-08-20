@@ -41,18 +41,10 @@ pub fn render_profile_card(profile: Option<&SummonerProfile>, error: Option<&str
         r##"<div class="h-full w-full bg-gray-800"></div>"##.to_string()
     };
 
-    let border_html = if let Some(ref border_url) = prof.profile_border_asset_url {
-        let border_tpl = r##"<img src="{{border_url}}" alt="border" class="pointer-events-none absolute inset-0 h-full w-full object-contain scale-110">"##;
-        border_tpl.replace("{{border_url}}", &escape_html(border_url))
-    } else {
-        "".to_string()
-    };
-
     let card_template = r##"<div id="profile-card-container" class="w-full rounded-2xl border border-gray-800 bg-gray-900/80 p-3.5">
     <div class="flex items-center gap-3.5">
         <div class="relative h-12 w-12 shrink-0 overflow-hidden rounded-full border border-gray-700 bg-gray-800">
             {{icon_html}}
-            {{border_html}}
         </div>
         <div class="min-w-0 flex-1">
             <p class="text-[11px] font-semibold uppercase tracking-wider text-blue-400">Summoner</p>
@@ -75,7 +67,6 @@ pub fn render_profile_card(profile: Option<&SummonerProfile>, error: Option<&str
 
     card_template
         .replace("{{icon_html}}", &icon_html)
-        .replace("{{border_html}}", &border_html)
         .replace("{{name}}", &name)
         .replace("{{level_text}}", &escape_html(&level_text))
 }

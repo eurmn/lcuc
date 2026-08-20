@@ -13,9 +13,10 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "lcu-companion",
-        "width": 1280,
-        "height": 720
+        "title": "LCU Companion",
+        "width": 1366,
+        "height": 850,
+        "decorations": false
       }
     ],
     "security": {

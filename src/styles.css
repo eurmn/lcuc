@@ -18,4 +18,9 @@
   button, [role="button"], a {
     cursor: pointer;
   }
+
+  #titlebar {
+    user-select: none;
+    -webkit-user-select: none;
+  }
 }

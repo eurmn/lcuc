@@ -1,5 +1,6 @@
 import htmx from "htmx.org";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./styles.css";
 
 declare global {
@@ -9,6 +10,31 @@ declare global {
 }
 
 window.htmx = htmx;
+htmx.config.selfRequestsOnly = false;
+
+function setupTitlebar(): void {
+  try {
+    const appWindow = getCurrentWindow();
+
+    const minBtn = document.getElementById("titlebar-minimize");
+    const maxBtn = document.getElementById("titlebar-maximize");
+    const closeBtn = document.getElementById("titlebar-close");
+
+    minBtn?.addEventListener("click", () => {
+      appWindow.minimize();
+    });
+
+    maxBtn?.addEventListener("click", () => {
+      appWindow.toggleMaximize();
+    });
+
+    closeBtn?.addEventListener("click", () => {
+      appWindow.close();
+    });
+  } catch (err) {
+    console.error("[Titlebar] Failed to initialize window controls:", err);
+  }
+}
 
 const COMMAND_PREFIX = "command:";
 
@@ -104,6 +130,13 @@ document.addEventListener("htmx:beforeSend", (event: any) => {
   }
 });
 
-document.addEventListener("DOMContentLoaded", () => {
+function init(): void {
+  setupTitlebar();
   htmx.process(document.body);
-});
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", init);
+} else {
+  init();
+}

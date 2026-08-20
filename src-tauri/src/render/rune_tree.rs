@@ -144,11 +144,11 @@ fn render_style_section(
                         "border-gray-700/60 bg-gray-800/40 opacity-40".to_string()
                     };
 
-                    let btn_tpl = r##"<button type="button" title="{{opt_name}}" class="group inline-flex h-20 w-20 items-center justify-center rounded-full border p-2.5 transition-all {{selected_classes}}">
+                    let elem_tpl = r##"<div title="{{opt_name}}" class="group inline-flex h-20 w-20 items-center justify-center rounded-full border p-2.5 transition-all select-none {{selected_classes}}">
     <img src="{{icon_url}}" alt="{{opt_name}}" class="h-full w-full rounded-full object-cover">
-</button>"##;
+</div>"##;
                     options_html.push(
-                        btn_tpl
+                        elem_tpl
                             .replace("{{opt_name}}", &opt_name)
                             .replace("{{selected_classes}}", &selected_classes)
                             .replace("{{icon_url}}", &escape_html(&opt.icon_url)),
@@ -160,14 +160,14 @@ fn render_style_section(
                             theme.ring_active, theme.border_primary, theme.bg_card, theme.shadow_glow
                         )
                     } else {
-                        "border-gray-700 hover:border-gray-500 opacity-60 hover:opacity-100".to_string()
+                        "border-gray-700/60 bg-gray-800/60 opacity-40".to_string()
                     };
 
-                    let btn_tpl = r##"<button type="button" title="{{opt_name}}" class="group inline-flex h-11 w-11 items-center justify-center rounded-full border bg-gray-800 p-1 transition-all {{selected_classes}}">
+                    let elem_tpl = r##"<div title="{{opt_name}}" class="group inline-flex h-11 w-11 items-center justify-center rounded-full border p-1 transition-all select-none {{selected_classes}}">
     <img src="{{icon_url}}" alt="{{opt_name}}" class="h-full w-full rounded-full object-cover">
-</button>"##;
+</div>"##;
                     options_html.push(
-                        btn_tpl
+                        elem_tpl
                             .replace("{{opt_name}}", &opt_name)
                             .replace("{{selected_classes}}", &selected_classes)
                             .replace("{{icon_url}}", &escape_html(&opt.icon_url)),
@@ -301,12 +301,12 @@ fn render_stat_mods_section(
                 let selected_classes = if opt.selected {
                     "ring-1 ring-purple-400/80 border border-purple-400 bg-purple-950/40 shadow-sm"
                 } else {
-                    "border-transparent opacity-60 hover:opacity-100"
+                    "border-transparent bg-gray-800/40 opacity-40"
                 };
 
-                let opt_tpl = r##"<button type="button" title="{{opt_name}}" class="inline-flex h-8 w-8 items-center justify-center rounded-full border bg-gray-800 p-1 transition-all {{selected_classes}}">
+                let opt_tpl = r##"<div title="{{opt_name}}" class="inline-flex h-8 w-8 items-center justify-center rounded-full border p-1 transition-all select-none {{selected_classes}}">
     <img src="{{icon_url}}" alt="{{opt_name}}" class="h-full w-full rounded-full object-cover">
-</button>"##;
+</div>"##;
                 options_html.push(
                     opt_tpl
                         .replace("{{opt_name}}", &opt_name)
@@ -341,7 +341,7 @@ pub fn render_rune_tree(tree: Option<&RuneTreePayload>, error: Option<&str>) -> 
     let t = match tree {
         Some(val) => val,
         None => {
-            return r##"<div id="current-rune-tree-container" class="w-full max-w-4xl mx-auto rounded-2xl border border-gray-800 bg-gray-900 p-5 text-sm text-gray-400">
+            return r##"<div id="current-rune-tree-container" class="w-full max-w-4xl mx-auto rounded-2xl bg-gray-900 p-5 text-sm text-gray-400">
     Could not load rune tree.
 </div>"##.to_string();
         }
@@ -413,7 +413,7 @@ pub fn render_rune_tree(tree: Option<&RuneTreePayload>, error: Option<&str>) -> 
 
     let (container_classes, header_html) = if is_editing {
         (
-            "w-full max-w-4xl mx-auto rounded-2xl border border-gray-800 bg-gray-900 p-5 flex flex-col transition-all",
+            "w-full max-w-4xl mx-auto rounded-2xl bg-gray-900 p-5 flex flex-col transition-all",
             format!(
                 r##"<div class="mb-5 flex items-center justify-between gap-4 border-b border-gray-800 pb-4">
     <div class="flex items-center gap-3 flex-1 min-w-0">
@@ -537,7 +537,7 @@ pub fn render_rune_tree(tree: Option<&RuneTreePayload>, error: Option<&str>) -> 
         };
 
         (
-            "w-full max-w-4xl mx-auto rounded-2xl border border-gray-800 bg-gray-900 p-5 flex flex-col transition-all",
+            "w-full max-w-4xl mx-auto rounded-2xl bg-gray-900 p-5 flex flex-col transition-all",
             format!(
                 r##"<div class="mb-5 flex items-center justify-between gap-4 border-b border-gray-800 pb-4">
     <div class="flex items-center gap-3">

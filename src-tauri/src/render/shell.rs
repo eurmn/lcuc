@@ -4,7 +4,7 @@
 //! integrated in the left sidebar directly above the rune library.
 
 pub fn render_shell(_tab: &str) -> String {
-    r##"<div id="app-shell" class="h-screen w-screen overflow-hidden bg-gray-900 text-gray-100 flex relative selection:bg-purple-600 selection:text-white">
+    r##"<div id="app-shell" class="flex-1 flex overflow-hidden bg-gray-900 text-gray-100 relative selection:bg-purple-600 selection:text-white">
     <!-- Left Sidebar: Profile Card & Rune Pages -->
     <aside class="w-full max-w-sm shrink-0 border-r border-gray-800 bg-gray-900/60 overflow-y-auto h-full">
         <div class="h-full p-4 flex flex-col gap-4">
@@ -66,7 +66,7 @@ pub fn render_shell(_tab: &str) -> String {
         <!-- Center Rune Tree Section -->
         <div
             id="current-rune-tree-container"
-            class="w-full max-w-4xl mx-auto animate-pulse rounded-xl border border-gray-800 bg-gray-900 p-5 my-auto"
+            class="w-full max-w-4xl mx-auto animate-pulse rounded-xl bg-gray-900 p-5 my-auto"
             hx-get="command:ui_rune_tree_current"
             hx-trigger="load"
             hx-swap="outerHTML"
