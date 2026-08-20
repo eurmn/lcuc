@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+
+    <title>Getting started with the LCU websocket</title>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="HandheldFriendly" content="True" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <link rel="preload" as="style" href="/assets/built/screen.css?v=ed1a4e40f7" />
+    <link rel="preload" as="script" href="/assets/built/casper.js?v=ed1a4e40f7" />
+
+    <link rel="stylesheet" type="text/css" href="/assets/built/screen.css?v=ed1a4e40f7" />
+
+    <link rel="icon" href="https://hextechdocs.dev/content/images/size/w256h256/2026/03/72049911-3.png" type="image/png">
+    <link rel="canonical" href="https://hextechdocs.dev/getting-started-with-the-lcu-websocket/">
+    <meta name="referrer" content="no-referrer-when-downgrade">
+    
+    <meta property="og:site_name" content="Hextechdocs">
+    <meta property="og:type" content="article">
+    <meta property="og:title" content="Getting started with the LCU websocket">
+    <meta property="og:description" content="Alongside the LCU REST API, the League Client Architecture uses a websocket connection to communicate changes from the LCU itself to the UX process to be shown to you (for example a friend request or a chat message you receive). This guide will show you how to connect to this">
+    <meta property="og:url" content="https://hextechdocs.dev/getting-started-with-the-lcu-websocket/">
+    <meta property="og:image" content="https://hextechdocs.dev/content/images/size/w1200/2026/03/T_SkyLight3-1.png">
+    <meta property="article:published_time" content="2021-08-15T13:52:45.000Z">
+    <meta property="article:modified_time" content="2023-02-08T19:29:26.000Z">
+    <meta property="article:tag" content="lcu">
+    <meta property="article:tag" content="websocket">
+    <meta property="article:tag" content="Getting Started">
+    <meta property="article:tag" content="lol">
+    
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Getting started with the LCU websocket">
+    <meta name="twitter:description" content="Alongside the LCU REST API, the League Client Architecture uses a websocket connection to communicate changes from the LCU itself to the UX process to be shown to you (for example a friend request or a chat message you receive). This guide will show you how to connect to this">
+    <meta name="twitter:url" content="https://hextechdocs.dev/getting-started-with-the-lcu-websocket/">
+    <meta name="twitter:image" content="https://hextechdocs.dev/content/images/size/w1200/2026/03/T_SkyLight3.png">
+    <meta name="twitter:label1" content="Written by">
+    <meta name="twitter:data1" content="Ray">
+    <meta name="twitter:label2" content="Filed under">
+    <meta name="twitter:data2" content="lcu, websocket, Getting Started, lol">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="600">
+    
+    <script type="application/ld+json">
+{
+    "@context": "https://schema.org",
+    "@type": "Article",
+    "publisher": {
+        "@type": "Organization",
+        "name": "Hextechdocs",
+        "url": "https://hextechdocs.dev/",
+        "logo": {
+            "@type": "ImageObject",
+            "url": "https://hextechdocs.dev/content/images/2026/03/72049911-3-1.png",
+            "width": 60,
+            "height": 60
+        }
+    },
+    "author": {
+        "@type": "Person",
+        "name": "Ray",
+        "image": {
+            "@type": "ImageObject",
+            "url": "https://www.gravatar.com/avatar/bfdd25156208298e4ea105dc9791e526?s=250&r=x&d=mp",
+            "width": 250,
+            "height": 250
+        },
+        "url": "https://hextechdocs.dev/author/ray/",
+        "sameAs": [
+            "https://hiray.me"
+        ]
+    },
+    "headline": "Getting started with the LCU websocket",
+    "url": "https://hextechdocs.dev/getting-started-with-the-lcu-websocket/",
+    "datePublished": "2021-08-15T13:52:45.000Z",
+    "dateModified": "2023-02-08T19:29:26.000Z",
+    "keywords": "lcu, websocket, Getting Started, lol",
+    "description": "Alongside the LCU REST API, the League Client Architecture uses a websocket connection to communicate changes from the LCU itself to the UX process to be shown to you (for example a friend request or a chat message you receive). This guide will show you how to connect to this websocket and request a notification about state changes.\n\nThis guide assumes that you have basic knowledge about the LCU API. Check out our other guide to help you get started.\n\nThe LCU websocket uses the WAMP 1.0 protocol",
+    "mainEntityOfPage": "https://hextechdocs.dev/getting-started-with-the-lcu-websocket/"
+}
+    </script>
+
+    <meta name="generator" content="Ghost 6.53">
+    <link rel="alternate" type="application/rss+xml" title="Hextechdocs" href="https://hextechdocs.dev/rss/">
+    
+    <script defer src="https://cdn.jsdelivr.net/ghost/sodo-search@~1.8/umd/sodo-search.min.js" data-key="7e1322b0ffa08f2c5e66978d03" data-styles="https://cdn.jsdelivr.net/ghost/sodo-search@~1.8/umd/main.css" data-sodo-search="https://hextechdocs.dev/" data-locale="en" crossorigin="anonymous" type="f97dbb936824171ffd59adac-text/javascript"></script>
+    
+    <link href="https://hextechdocs.dev/webmentions/receive/" rel="webmention">
+    <script defer src="/public/cards.min.js?v=ed1a4e40f7" type="f97dbb936824171ffd59adac-text/javascript"></script><style>:root {--ghost-accent-color: #262626;}</style>
+    <link rel="stylesheet" type="text/css" href="/public/cards.min.css?v=ed1a4e40f7">
+    <!-- link tag -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.19.0/themes/prism.min.css" />
+
+</head>
+<body class="post-template tag-lcu tag-websocket tag-getting-started tag-lol tag-hash-import-2026-03-22-20-52 is-head-left-logo has-cover">
+<div class="viewport">
+
+    <header id="gh-head" class="gh-head outer">
+        <div class="gh-head-inner inner">
+            <div class="gh-head-brand">
+                <a class="gh-head-logo" href="https://hextechdocs.dev">
+                        <img src="https://hextechdocs.dev/content/images/2026/03/72049911-3-1.png" alt="Hextechdocs">
+                </a>
+                <button class="gh-search gh-icon-btn" aria-label="Search this site" data-ghost-search><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg></button>
+                <button class="gh-burger" aria-label="Main Menu"></button>
+            </div>
+
+            <nav class="gh-head-menu">
+                <ul class="nav">
+    <li class="nav-lol"><a href="https://hextechdocs.dev/tag/lol/">LOL</a></li>
+    <li class="nav-lcu"><a href="https://hextechdocs.dev/tag/lcu/">LCU</a></li>
+    <li class="nav-tft"><a href="https://hextechdocs.dev/tag/tft/">TFT</a></li>
+    <li class="nav-val"><a href="https://hextechdocs.dev/tag/val/">VAL</a></li>
+    <li class="nav-lor"><a href="https://hextechdocs.dev/tag/lor/">LOR</a></li>
+    <li class="nav-faq"><a href="https://hextechdocs.dev/tag/faq/">FAQ</a></li>
+    <li class="nav-discord"><a href="https://discord.gg/F2wPwukGYs">Discord</a></li>
+    <li class="nav-communitydragon"><a href="https://www.communitydragon.org/">CommunityDragon</a></li>
+</ul>
+
+            </nav>
+
+            <div class="gh-head-actions">
+                        <button class="gh-search gh-icon-btn" aria-label="Search this site" data-ghost-search><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg></button>
+            </div>
+        </div>
+    </header>
+
+    <div class="site-content">
+        
+
+
+
+<main id="site-main" class="site-main">
+<article class="article post tag-lcu tag-websocket tag-getting-started tag-lol tag-hash-import-2026-03-22-20-52 no-image ">
+
+    <header class="article-header gh-canvas">
+
+        <div class="article-tag post-card-tags">
+                <span class="post-card-primary-tag">
+                    <a href="/tag/lcu/">lcu</a>
+                </span>
+        </div>
+
+        <h1 class="article-title">Getting started with the LCU websocket</h1>
+
+
+        <div class="article-byline">
+        <section class="article-byline-content">
+
+            <ul class="author-list instapaper_ignore">
+                <li class="author-list-item">
+                    <a href="/author/ray/" class="author-avatar" aria-label="Read more of Ray">
+                        <img class="author-profile-image" src="https://www.gravatar.com/avatar/bfdd25156208298e4ea105dc9791e526?s&#x3D;250&amp;r&#x3D;x&amp;d&#x3D;mp" alt="Ray" loading="eager" />
+                    </a>
+                </li>
+            </ul>
+
+            <div class="article-byline-meta">
+                <h4 class="author-name"><a href="/author/ray/">Ray</a></h4>
+                <div class="byline-meta-content">
+                    <time class="byline-meta-date" datetime="2021-08-15">15 Aug 2021</time>
+                        <span class="byline-reading-time"><span class="bull">&bull;</span> 3 min read</span>
+                </div>
+            </div>
+
+        </section>
+        <a href="#/share" class="gh-button gh-button-share">Share</a>
+        </div>
+
+
+    </header>
+
+    <section class="gh-content gh-canvas">
+        <p>Alongside the LCU REST API, the League Client Architecture uses a websocket connection to communicate changes from the LCU itself to the UX process to be shown to you (for example a friend request or a chat message you receive). This guide will show you how to connect to this websocket and request a notification about state changes.</p><p>This guide assumes that you have basic knowledge about the LCU API. Check out our other guide to help you get started.</p><hr><p>The LCU websocket uses the WAMP 1.0 protocol on this websocket. An example implementation written by Pupix can be found <a href="https://gist.github.com/Pupix/eb662b1b784bb704a1390643738a8c15?ref=hextechdocs.dev">over here</a>.</p><h2 id="connecting-to-the-socket">Connecting to the socket</h2><p>With the password and the port in your hands, this should be as easy as telling your websocket client/library to connect to <code>wss://127.0.0.1:12345/</code>. Keep in mind that you still have to pass in the authorization header as if you were calling an LCU endpoint.</p><p>If the connection was successful, it should stay open without any response, if anything went wrong, the only information you're given is the HTTP response code, but the only reason you might not be able to connect is if your header is not set properly.</p><h2 id="communicating-with-the-websocket">Communicating with the websocket</h2><p>WAMP 1.0 uses a JSON array for every message. The first item of the array is always an opcode. <code>5</code> subscribes you to an event, <code>6</code> unsubscribes you from an event and <code>8</code> is the opcode the client will use when sending you an event.</p><h3 id="subscribing-to-events">Subscribing to events</h3><p>In order to subscribe to an event, you need to send a JSON array with a first index of 5, the opcode of the subscribe method and with the second index of a string telling the LCU which event you'd like to subscribe to.</p><p>For example sending <code>[5, "OnJsonApiEvent"]</code> would subscribe you to every event the client sends. For a more complete list of events, you can call the <code>/help</code> endpoint provided by the client, <code>OnJsonApiEvent</code> will subscribe you to every available event.</p><h3 id="unsubscribing-from-events">Unsubscribing from events</h3><p>This is just as simple as subscribing, send an array with the first index of 6 and the second index being the name of the event you'd like to unsubscribe from, for example: <code>[6, "OnJsonApiEvent"]</code></p><p>Keep in mind that you can't subscribe to OnJsonApiEvent and then unsubscribe from the smaller events you're not interested in. You have to subscribe to the smaller events in the first place.</p><h3 id="receiving-updates">Receiving updates</h3><p>Receiving updates is a bit different. The first 2 indexes of the array is the same as before, 8 will be the opcode, the second item will be the name of the event and the third item will be a JSON blob with 3 entries, <code>data</code>, <code>eventType</code> and <code>uri</code>.</p><ul><li>uri will tell you the exact path that changed (it can be useful for events like chat where it includes identifiers)</li><li>eventType will let you know the action that happened (<code>Create</code>, <code>Update</code>, <code>Delete</code>) on that path</li><li>data is 100% specific to the event, but they generally follow the same structure their respective LCU endpoints use</li></ul><p>Here's an example:</p><p>[8,"OnJsonApiEvent",{"data":[],"eventType":"Update","uri":"/lol-ranked/v1/notifications"}]</p><p>Keep in mind that you'll receive an event twice if you subscribe to both <code>OnJsonApiEvent</code> and the respective smaller event so be careful with that.</p><p>Bonus!</p><p>Thanks to <a href="https://github.com/Zeunig/?ref=hextechdocs.dev">Zeunig</a> we have a snippet for how to use websockets in rust</p><figure class="kg-card kg-bookmark-card kg-card-hascaption"><a class="kg-bookmark-container" href="https://github.com/Zeunig/websocket-listener-client-rust?ref=hextechdocs.dev"><div class="kg-bookmark-content"><div class="kg-bookmark-title">GitHub - Zeunig/websocket-listener-client-rust: A simple WebSocket listener client made in Rust with disabled certificate verification for dealing with LCU</div><div class="kg-bookmark-description">A simple WebSocket listener client made in Rust with disabled certificate verification for dealing with LCU - GitHub - Zeunig/websocket-listener-client-rust: A simple WebSocket listener client made...</div><div class="kg-bookmark-metadata"><img class="kg-bookmark-icon" src="https://github.com/fluidicon.png" alt=""><span class="kg-bookmark-author">GitHub</span><span class="kg-bookmark-publisher">Zeunig</span></div></div><div class="kg-bookmark-thumbnail"><img src="https://opengraph.githubassets.com/f4e5dadd7d82e6b82491f8310cbe3e477d6bfc90254e6a5ffb682327a2ef6214/Zeunig/websocket-listener-client-rust" alt=""></div></a><figcaption>Example of a websocket in rust</figcaption></figure><h2 id="conclusion">Conclusion</h2><p>That's it! With this knowledge, you should be able to build reactive apps more easily compared to periodically polling the LCU API. If you have any questions, feel free to join Riot's 3rd party developer community on discord and ask your question there. There are a lot of knowledgeable members who are willing to answer them!</p>
+    </section>
+
+
+</article>
+</main>
+
+
+
+
+            <aside class="read-more-wrap outer">
+                <div class="read-more inner">
+                        
+<article class="post-card post no-image keep-ratio">
+
+
+    <div class="post-card-content">
+
+        <a class="post-card-content-link" href="/using-cloudflare-workers-to-make-api-calls/">
+            <header class="post-card-header">
+                <div class="post-card-tags">
+                </div>
+                <h2 class="post-card-title">
+                    Using Cloudflare Workers to make API Calls
+                </h2>
+            </header>
+                <div class="post-card-excerpt">Introduction
+
+It&#39;s been a common topic around the Riot Games API Community that CORS has prevented client side calls to the API.
+
+There is a guide that Tux made for v3 APIs with AWS Lambda functions, but what if we wanted something more up to date and flexible</div>
+        </a>
+
+        <footer class="post-card-meta">
+            <time class="post-card-meta-date" datetime="2022-04-02">02 Apr 2022</time>
+                <span class="post-card-meta-length">4 min read</span>
+        </footer>
+
+    </div>
+
+</article>
+                        
+<article class="post-card post no-image keep-ratio">
+
+
+    <div class="post-card-content">
+
+        <a class="post-card-content-link" href="/how-to-set-runes-using-lcu/">
+            <header class="post-card-header">
+                <div class="post-card-tags">
+                </div>
+                <h2 class="post-card-title">
+                    How to set runes using LCU
+                </h2>
+            </header>
+                <div class="post-card-excerpt">In this Example I&#39;m going to be using my C# Lib PoniLCU.
+
+
+
+First of all let&#39;s set our LeagueClient properly.
+
+
+LeagueClient leagueClient = new LeagueClient(credentials.cmd);
+
+
+
+
+
+Before we dive into it, let&#39;s look at what runes are.
+
+
+The client doesn&#39;t deal with</div>
+        </a>
+
+        <footer class="post-card-meta">
+            <time class="post-card-meta-date" datetime="2022-02-28">28 Feb 2022</time>
+                <span class="post-card-meta-length">3 min read</span>
+        </footer>
+
+    </div>
+
+</article>
+                        
+<article class="post-card post no-image keep-ratio">
+
+
+    <div class="post-card-content">
+
+        <a class="post-card-content-link" href="/resolving-variables-in-spell-textsa/">
+            <header class="post-card-header">
+                <div class="post-card-tags">
+                </div>
+                <h2 class="post-card-title">
+                    Resolving spells and variables in spell texts
+                </h2>
+            </header>
+                <div class="post-card-excerpt">The DataDragon provided by Riot Games contains info on all 158 champions. But when looking at the spell texts of these champions, you often come across variables that are seemingly unresolvable (e.g., dealing &lt;physicalDamage&gt;{{ wdamage }} physical damage&lt;/physicalDamage&gt;.). Now, if we look at the rest</div>
+        </a>
+
+        <footer class="post-card-meta">
+            <time class="post-card-meta-date" datetime="2022-01-25">25 Jan 2022</time>
+                <span class="post-card-meta-length">5 min read</span>
+        </footer>
+
+    </div>
+
+</article>
+                </div>
+            </aside>
+
+
+
+    </div>
+
+    <footer class="site-footer outer">
+        <div class="inner">
+            <section class="copyright"><a href="https://hextechdocs.dev">Hextechdocs</a> &copy; 2026</section>
+            <div class="site-footer-center">
+                <div class="site-footer-social-links">
+                </div>
+                <nav class="site-footer-nav">
+                    
+                </nav>
+            </div>
+            <div class="gh-powered-by"><a href="https://ghost.org/" target="_blank" rel="noopener">Powered by Ghost</a></div>
+        </div>
+    </footer>
+
+</div>
+
+    <div class="pswp" tabindex="-1" role="dialog" aria-hidden="true">
+    <div class="pswp__bg"></div>
+
+    <div class="pswp__scroll-wrap">
+        <div class="pswp__container">
+            <div class="pswp__item"></div>
+            <div class="pswp__item"></div>
+            <div class="pswp__item"></div>
+        </div>
+
+        <div class="pswp__ui pswp__ui--hidden">
+            <div class="pswp__top-bar">
+                <div class="pswp__counter"></div>
+
+                <button class="pswp__button pswp__button--close" title="Close (Esc)"></button>
+                <button class="pswp__button pswp__button--share" title="Share"></button>
+                <button class="pswp__button pswp__button--fs" title="Toggle fullscreen"></button>
+                <button class="pswp__button pswp__button--zoom" title="Zoom in/out"></button>
+
+                <div class="pswp__preloader">
+                    <div class="pswp__preloader__icn">
+                        <div class="pswp__preloader__cut">
+                            <div class="pswp__preloader__donut"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="pswp__share-modal pswp__share-modal--hidden pswp__single-tap">
+                <div class="pswp__share-tooltip"></div>
+            </div>
+
+            <button class="pswp__button pswp__button--arrow--left" title="Previous (arrow left)"></button>
+            <button class="pswp__button pswp__button--arrow--right" title="Next (arrow right)"></button>
+
+            <div class="pswp__caption">
+                <div class="pswp__caption__center"></div>
+            </div>
+        </div>
+    </div>
+</div>
+<script src="/assets/built/casper.js?v=ed1a4e40f7" defer type="f97dbb936824171ffd59adac-text/javascript"></script>
+
+<!-- script tag -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.19.0/prism.min.js" type="f97dbb936824171ffd59adac-text/javascript"></script>
+
+<script src="/cdn-cgi/scripts/7d0fa10a/cloudflare-static/rocket-loader.min.js" data-cf-settings="f97dbb936824171ffd59adac-|49" defer></script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2cc6b29dcafdc24',t:'MTc4NzAwODkyMw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</html>
