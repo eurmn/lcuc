@@ -71,7 +71,7 @@ fn render_style_section(
                                 theme.border_primary, theme.bg_card, theme.ring_focus, theme.shadow_glow
                             ),
                             format!(
-                                r##"<span class="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full {} text-white shadow-sm"><svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg></span>"##,
+                                r##"<span class="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full {} text-white shadow-sm"><span class="icon-[heroicons--check] h-3 w-3"></span></span>"##,
                                 theme.bg_badge
                             ),
                         )
@@ -105,7 +105,7 @@ fn render_style_section(
                                 theme.border_primary, theme.bg_card, theme.ring_active, theme.shadow_glow
                             ),
                             format!(
-                                r##"<span class="absolute -top-0.5 -right-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full {} text-white shadow-sm"><svg class="h-2.5 w-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg></span>"##,
+                                r##"<span class="absolute -top-0.5 -right-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full {} text-white shadow-sm"><span class="icon-[heroicons--check] h-2.5 w-2.5"></span></span>"##,
                                 theme.bg_badge
                             ),
                         )
@@ -441,7 +441,7 @@ pub fn render_rune_tree(tree: Option<&RuneTreePayload>, error: Option<&str>) -> 
             hx-swap="outerHTML"
             class="inline-flex shrink-0 items-center gap-2 rounded-xl border border-gray-700 bg-gray-800 px-4 py-2 text-sm font-semibold text-gray-200 shadow-sm transition-all hover:bg-gray-700 hover:text-white focus:outline-none focus:ring-4 focus:ring-gray-700 active:scale-95 cursor-pointer"
         >
-            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            <span class="icon-[heroicons--x-mark] h-4 w-4"></span>
             <span>Cancel</span>
         </button>
         <button
@@ -454,7 +454,7 @@ pub fn render_rune_tree(tree: Option<&RuneTreePayload>, error: Option<&str>) -> 
             hx-swap="outerHTML"
             class="inline-flex shrink-0 items-center gap-2 rounded-xl bg-purple-600 px-4 py-2 text-sm font-bold text-white shadow-md shadow-purple-950/40 transition-all hover:bg-purple-500 focus:outline-none focus:ring-4 focus:ring-purple-800 active:scale-95 cursor-pointer"
         >
-            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+            <span class="icon-[heroicons--check] h-4 w-4"></span>
             <span>Save</span>
         </button>
     </div>
@@ -482,9 +482,7 @@ pub fn render_rune_tree(tree: Option<&RuneTreePayload>, error: Option<&str>) -> 
         hx-swap="outerHTML"
         class="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-gray-700 bg-gray-800 px-3.5 py-2 text-sm font-semibold text-gray-200 shadow-sm transition-all hover:bg-gray-700 hover:text-white focus:outline-none focus:ring-4 focus:ring-gray-700 active:scale-95 cursor-pointer"
     >
-        <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
-        </svg>
+        <span class="icon-[heroicons--pencil-square] h-4 w-4"></span>
         <span>Edit</span>
     </button>
     <button
@@ -496,9 +494,7 @@ pub fn render_rune_tree(tree: Option<&RuneTreePayload>, error: Option<&str>) -> 
         hx-swap="outerHTML"
         class="inline-flex shrink-0 items-center gap-2 rounded-xl bg-purple-600 px-4 py-2 text-sm font-bold text-white shadow-md shadow-purple-950/40 transition-all hover:bg-purple-500 focus:outline-none focus:ring-4 focus:ring-purple-800 active:scale-95 cursor-pointer"
     >
-        <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
-        </svg>
+        <span class="icon-[heroicons--arrow-up-tray] h-4 w-4"></span>
         <span>Export</span>
     </button>
 </div>"##,
@@ -521,9 +517,7 @@ pub fn render_rune_tree(tree: Option<&RuneTreePayload>, error: Option<&str>) -> 
     hx-swap="outerHTML"
     class="inline-flex shrink-0 items-center gap-2 rounded-xl bg-purple-600 px-4 py-2 text-sm font-semibold text-white shadow-md shadow-purple-950/40 transition-all hover:bg-purple-500 focus:outline-none focus:ring-4 focus:ring-purple-800 active:scale-95 cursor-pointer"
 >
-    <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
-    </svg>
+    <span class="icon-[heroicons--arrow-down-tray] h-4 w-4"></span>
     <span>Import</span>
 </button>"##,
                 page_id_val

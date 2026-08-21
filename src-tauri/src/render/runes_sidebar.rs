@@ -133,7 +133,7 @@ pub async fn render_runes_sidebar(
         hx-confirm="Delete saved rune page ({{name_escaped}})?"
         class="inline-flex shrink-0 items-center justify-center rounded-xl p-2 text-gray-500 opacity-0 transition-all hover:bg-red-500/10 hover:text-red-400 hover:border-red-500/30 border border-transparent focus:outline-none group-hover:opacity-100 cursor-pointer"
     >
-        <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+        <span class="icon-[heroicons--trash] h-4 w-4"></span>
     </button>
 </li>"##;
 
@@ -155,7 +155,7 @@ pub async fn render_runes_sidebar(
     let saved_content = if saved_items.is_empty() {
         r##"<div class="flex flex-col items-center justify-center rounded-2xl border border-dashed border-gray-800 bg-gray-900/30 p-5 text-center">
             <div class="mb-2 flex h-8 w-8 items-center justify-center rounded-full bg-purple-950/40 text-purple-400 border border-purple-900/40">
-                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 4H6a2 2 0 00-2 2v12a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-2m-4-1v8m0 0l3-3m-3 3L9 8m-5 5h2.586a1 1 0 01.707.293l2.414 2.414a1 1 0 00.707.293h3.172a1 1 0 00.707-.293l2.414-2.414a1 1 0 01.707-.293H20"/></svg>
+                <span class="icon-[heroicons--clipboard-document] h-4 w-4"></span>
             </div>
             <p class="text-xs font-medium text-gray-300">No companion pages saved</p>
             <p class="mt-1 text-[11px] text-gray-500">Click <span class="font-medium text-purple-400">Import</span> on any client page to save it</p>
@@ -255,7 +255,7 @@ pub async fn render_runes_sidebar(
         hx-swap="outerHTML"
         class="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-purple-500/30 bg-purple-500/10 px-2.5 py-1.5 text-xs font-semibold text-purple-300 transition-all hover:border-purple-500 hover:bg-purple-600 hover:text-white focus:outline-none focus:ring-2 focus:ring-purple-500/40 shadow-sm cursor-pointer"
     >
-        <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+        <span class="icon-[heroicons--arrow-down-tray] h-3.5 w-3.5"></span>
         <span>Import</span>
     </button>
 </li>"##;
@@ -277,7 +277,7 @@ pub async fn render_runes_sidebar(
     let client_content = if client_items.is_empty() {
         r##"<div class="flex flex-col items-center justify-center rounded-2xl border border-dashed border-gray-800 bg-gray-900/30 p-5 text-center">
             <div class="mb-2 flex h-8 w-8 items-center justify-center rounded-full bg-gray-800/80 text-gray-500">
-                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                <span class="icon-[heroicons--exclamation-circle] h-4 w-4"></span>
             </div>
             <p class="text-xs font-medium text-gray-400">No client pages detected</p>
             <p class="mt-1 text-[11px] text-gray-500">Launch League of Legends to view pages</p>

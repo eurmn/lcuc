@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@plugin "@iconify/tailwind4";
 
 @theme {
   --color-brand-50: var(--color-purple-50);
