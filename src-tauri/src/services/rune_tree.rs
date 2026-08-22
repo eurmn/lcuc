@@ -124,6 +124,88 @@ pub async fn get_style_info(style_id: Option<i64>) -> (String, String) {
     }
 }
 
+/// Resolves the name and icon URL for a given perk ID (e.g. `8010` for Conqueror).
+pub async fn get_perk_info(perk_id: i64) -> (String, String) {
+    let perks = PERKS_CACHE.read().await;
+    if let Some(perk_obj) = perks.get(&perk_id) {
+        let name = perk_obj
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let icon_path = perk_obj
+            .get("iconPath")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let icon_url = if !icon_path.is_empty() {
+            let raw_url = icon_path_to_url(icon_path);
+            get_cached_asset_data_uri(&raw_url).await
+        } else {
+            "".to_string()
+        };
+        (name, icon_url)
+    } else {
+        (format!("Perk {}", perk_id), "".to_string())
+    }
+}
+
+/// Resolves which style ID a given keystone/perk belongs to.
+pub async fn get_perk_style_id(perk_id: i64) -> Option<i64> {
+    let styles = PERKSTYLES_CACHE.read().await;
+    for (style_id, style_val) in styles.iter() {
+        if let Some(slots_arr) = style_val.get("slots").and_then(|s| s.as_array()) {
+            for slot in slots_arr {
+                if let Some(perks_arr) = slot.get("perks").and_then(|p| p.as_array()) {
+                    if perks_arr.iter().any(|p| p.as_i64() == Some(perk_id)) {
+                        return Some(*style_id);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Returns the natural in-game perk order for a style: (keystones, [row1, row2, row3])
+pub async fn get_style_perk_order(style_id: i64) -> (Vec<i64>, Vec<Vec<i64>>) {
+    let styles = PERKSTYLES_CACHE.read().await;
+    let mut keystones = Vec::new();
+    let mut rows = Vec::new();
+
+    if let Some(style) = styles.get(&style_id) {
+        if let Some(slots_val) = style.get("slots").and_then(|v| v.as_array()) {
+            for slot in slots_val {
+                let slot_type = slot.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                if slot_type == "kKeyStone" {
+                    if let Some(perks_arr) = slot.get("perks").and_then(|v| v.as_array()) {
+                        for p in perks_arr {
+                            if let Some(id) = p.as_i64() {
+                                keystones.push(id);
+                            }
+                        }
+                    }
+                } else if slot_type != "kStatMod" && rows.len() < 3 {
+                    let mut row_perks = Vec::new();
+                    if let Some(perks_arr) = slot.get("perks").and_then(|v| v.as_array()) {
+                        for p in perks_arr {
+                            if let Some(id) = p.as_i64() {
+                                row_perks.push(id);
+                            }
+                        }
+                    }
+                    if !row_perks.is_empty() {
+                        rows.push(row_perks);
+                    }
+                }
+            }
+        }
+    }
+
+    (keystones, rows)
+}
+
+
+
 /// Builds a structured style tree with slots and selected options.
 async fn build_style_tree(
     style_id: i64,

@@ -18,8 +18,11 @@ Write-Host "=== 2. Running cargo check ===" -ForegroundColor Cyan
 Write-Host "=== 3. Running cargo test ===" -ForegroundColor Cyan
 & "$cargoBin\cargo.exe" test
 
-Write-Host "=== 4. Running frontend build ===" -ForegroundColor Cyan
+Write-Host "=== 4. Running svelte-check ===" -ForegroundColor Cyan
 Set-Location "$scriptDir"
+pnpm check
+
+Write-Host "=== 5. Running frontend build ===" -ForegroundColor Cyan
 pnpm build
 
 Write-Host "=== All validation checks passed successfully! ===" -ForegroundColor Green

@@ -1,4 +1,5 @@
 import { defineConfig } from "vite";
+import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
 // @ts-expect-error type error without @types/node package
 import process from "node:process";
@@ -7,7 +8,7 @@ const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(() => ({
-  plugins: [tailwindcss()],
+  plugins: [svelte(), tailwindcss()],
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors

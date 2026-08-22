@@ -1,0 +1,26 @@
+# CURL for Windows
+
+```
+curl ^"https://api.coachless.gg/api/Rune/GetShardsForKeystoneAndTree^" ^
+  -H ^"Accept: application/json, text/plain, */*^" ^
+  -H ^"Accept-Language: en-US,en;q=0.9^" ^
+  -H ^"Authorization: Bearer null^" ^
+  -H ^"Connection: keep-alive^" ^
+  -H ^"Content-Type: application/json^" ^
+  -H ^"Origin: https://www.coachless.gg^" ^
+  -H ^"Referer: https://www.coachless.gg/^" ^
+  -H ^"Sec-Fetch-Dest: empty^" ^
+  -H ^"Sec-Fetch-Mode: cors^" ^
+  -H ^"Sec-Fetch-Site: same-site^" ^
+  -H ^"User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36^" ^
+  -H ^"sec-ch-ua: ^\^"Chromium^\^";v=^\^"146^\^", ^\^"Not-A.Brand^\^";v=^\^"24^\^", ^\^"Google Chrome^\^";v=^\^"146^\^"^" ^
+  -H ^"sec-ch-ua-mobile: ?0^" ^
+  -H ^"sec-ch-ua-platform: ^\^"Windows^\^"^" ^
+  --data-raw ^"^{^\^"keystone^\^":null,^\^"commonFilters^\^":^{^\^"patch^\^":^{^\^"major^\^":16,^\^"patch^\^":16,^\^"patchAdditions^\^":0^},^\^"championIds^\^":^[64^],^\^"matchupChampionIds^\^":null,^\^"leagueTiers^\^":^[4,5,6,7^],^\^"regions^\^":null,^\^"role^\^":1^}^}^"
+```
+
+# RESPONSE
+
+```
+{"offense":[{"rune":5005,"runeType":2,"wpaOverall":-0.03940248116850853,"occurrence":245998,"runeEffects":[]},{"rune":5007,"runeType":2,"wpaOverall":-1.175858974456787,"occurrence":644,"runeEffects":[]},{"rune":5008,"runeType":2,"wpaOverall":1.2064741849899292,"occurrence":8662,"runeEffects":[]}],"flex":[{"rune":5001,"runeType":3,"wpaOverall":1.9492708444595337,"occurrence":298,"runeEffects":[]},{"rune":5008,"runeType":3,"wpaOverall":0.0019786476623266935,"occurrence":254352,"runeEffects":[]},{"rune":5010,"runeType":3,"wpaOverall":-1.6572777032852173,"occurrence":654,"runeEffects":[]}],"defense":[{"rune":5001,"runeType":4,"wpaOverall":-0.09982482343912125,"occurrence":228824,"runeEffects":[]},{"rune":5011,"runeType":4,"wpaOverall":0.8807380795478821,"occurrence":21231,"runeEffects":[]},{"rune":5013,"runeType":4,"wpaOverall":0.789397120475769,"occurrence":5249,"runeEffects":[]}]}
+```

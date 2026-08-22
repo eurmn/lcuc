@@ -1,0 +1,165 @@
+//! # Champions Service
+//!
+//! Fetches and caches champion metadata from CommunityDragon, resolves champion icons,
+//! detects champion associations from rune page names, and tracks saved champion rosters.
+
+use crate::models::{CDragonChampionItem, ChampionSummary};
+use crate::services::asset_cache::get_cached_asset_data_uri;
+use crate::services::rune_store::RuneStore;
+use lazy_static::lazy_static;
+use std::collections::{HashMap, HashSet};
+use tokio::sync::RwLock;
+
+const CDRAGON_BASE: &str =
+    "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default";
+const CHAMPION_SUMMARY_URL: &str =
+    "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-summary.json";
+
+lazy_static! {
+    static ref CHAMPIONS_CACHE: RwLock<HashMap<i64, ChampionSummary>> = RwLock::new(HashMap::new());
+    static ref CHAMPIONS_INITIALIZED: RwLock<bool> = RwLock::new(false);
+}
+
+/// Converts an internal game asset path to a public CommunityDragon CDN URL.
+fn champion_icon_path_to_url(icon_path: &str) -> String {
+    let prefix = "/lol-game-data/assets";
+    let normalized = icon_path.trim().to_lowercase();
+    if let Some(stripped) = normalized.strip_prefix(prefix) {
+        format!("{}{}", CDRAGON_BASE, stripped)
+    } else if normalized.starts_with('/') {
+        format!("{}{}", CDRAGON_BASE, normalized)
+    } else {
+        format!("{}/{}", CDRAGON_BASE, normalized)
+    }
+}
+
+/// Ensures that the CommunityDragon champion summaries are loaded and cached into memory.
+pub async fn ensure_champions_cache() -> Result<(), String> {
+    {
+        let initialized = CHAMPIONS_INITIALIZED.read().await;
+        if *initialized {
+            return Ok(());
+        }
+    }
+
+    let client = reqwest::Client::new();
+    let resp: Vec<CDragonChampionItem> = client
+        .get(CHAMPION_SUMMARY_URL)
+        .send()
+        .await
+        .map_err(|e| format!("Failed fetching champion-summary.json: {}", e))?
+        .json()
+        .await
+        .map_err(|e| format!("Failed parsing champion-summary.json: {}", e))?;
+
+    let mut cache = CHAMPIONS_CACHE.write().await;
+    for item in resp {
+        if item.id <= 0 || item.id.to_string().starts_with("600") {
+            continue; // Skip placeholder/none IDs (-1) and classic champions (600xxx)
+        }
+
+
+        let raw_icon_url = if !item.square_portrait_path.is_empty() {
+            champion_icon_path_to_url(&item.square_portrait_path)
+        } else {
+            format!("{}/v1/champion-icons/{}.png", CDRAGON_BASE, item.id)
+        };
+
+        let square_icon_url = get_cached_asset_data_uri(&raw_icon_url).await;
+
+        cache.insert(
+            item.id,
+            ChampionSummary {
+                id: item.id,
+                name: item.name,
+                alias: item.alias,
+                square_icon_url,
+                roles: item.roles,
+                has_saved_runes: false,
+            },
+        );
+    }
+
+    let mut initialized = CHAMPIONS_INITIALIZED.write().await;
+    *initialized = true;
+    Ok(())
+}
+
+/// Returns a set of champion IDs that have at least one saved runeset in SQLite.
+pub fn get_saved_champion_ids() -> HashSet<i64> {
+    if let Ok(store) = RuneStore::new() {
+        if let Ok(saved) = store.list_runesets(200) {
+            return saved
+                .into_iter()
+                .filter(|r| r.champion_id > 0)
+                .map(|r| r.champion_id)
+                .collect();
+        }
+    }
+    HashSet::new()
+}
+
+/// Returns all champions sorted alphabetically, with `has_saved_runes` populated.
+pub async fn get_all_champions() -> Result<Vec<ChampionSummary>, String> {
+    ensure_champions_cache().await?;
+    let saved_ids = get_saved_champion_ids();
+
+    let cache = CHAMPIONS_CACHE.read().await;
+    let mut list: Vec<ChampionSummary> = cache
+        .values()
+        .map(|c| {
+            let mut item = c.clone();
+            item.has_saved_runes = saved_ids.contains(&c.id);
+            item
+        })
+        .collect();
+
+    list.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(list)
+}
+
+/// Returns the champion roster of champions that currently have runes saved (or fallback to popular champions).
+pub async fn get_saved_champion_roster() -> Result<Vec<ChampionSummary>, String> {
+    ensure_champions_cache().await?;
+    let saved_ids = get_saved_champion_ids();
+
+    let cache = CHAMPIONS_CACHE.read().await;
+    let mut roster: Vec<ChampionSummary> = cache
+        .values()
+        .filter(|c| saved_ids.contains(&c.id))
+        .map(|c| {
+            let mut item = c.clone();
+            item.has_saved_runes = true;
+            item
+        })
+        .collect();
+
+    roster.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(roster)
+}
+
+/// Detects if a champion name is present in a given string (e.g. rune page name "Aatrox Conqueror").
+pub async fn detect_champion_from_name(name: &str) -> Option<ChampionSummary> {
+    ensure_champions_cache().await.ok()?;
+    let normalized = name.to_lowercase();
+    let saved_ids = get_saved_champion_ids();
+
+    let cache = CHAMPIONS_CACHE.read().await;
+    let mut candidates: Vec<&ChampionSummary> = cache.values().collect();
+    // Prioritize longer champion names to avoid false positive prefix matches (e.g. "Vi" in "Viktor")
+    candidates.sort_by(|a, b| b.name.len().cmp(&a.name.len()));
+
+    for champ in candidates {
+        let champ_name_lower = champ.name.to_lowercase();
+        let champ_alias_lower = champ.alias.to_lowercase();
+
+        // Check whole-word or substring match
+        if normalized.contains(&champ_name_lower) || normalized.contains(&champ_alias_lower) {
+            let mut matched = champ.clone();
+            matched.has_saved_runes = saved_ids.contains(&champ.id);
+            return Some(matched);
+        }
+    }
+
+    None
+}

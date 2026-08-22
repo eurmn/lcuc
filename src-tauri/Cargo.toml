@@ -27,6 +27,7 @@ lazy_static = "1.5"
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "native-tls"] }
 native-tls = "0.2"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+async-trait = "0.1"
 
 [profile.release]
 codegen-units = 1

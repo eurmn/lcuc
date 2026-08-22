@@ -1,0 +1,23 @@
+# CURL for Windows
+```
+curl ^"https://api.coachless.gg/api/Rune/GetRunesForKeystoneAndTree^" ^
+  -H ^"Accept: application/json, text/plain, */*^" ^
+  -H ^"Accept-Language: en-US,en;q=0.9^" ^
+  -H ^"Authorization: Bearer null^" ^
+  -H ^"Connection: keep-alive^" ^
+  -H ^"Content-Type: application/json^" ^
+  -H ^"Origin: https://www.coachless.gg^" ^
+  -H ^"Referer: https://www.coachless.gg/^" ^
+  -H ^"Sec-Fetch-Dest: empty^" ^
+  -H ^"Sec-Fetch-Mode: cors^" ^
+  -H ^"Sec-Fetch-Site: same-site^" ^
+  -H ^"User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36^" ^
+  -H ^"sec-ch-ua: ^\^"Chromium^\^";v=^\^"146^\^", ^\^"Not-A.Brand^\^";v=^\^"24^\^", ^\^"Google Chrome^\^";v=^\^"146^\^"^" ^
+  -H ^"sec-ch-ua-mobile: ?0^" ^
+  -H ^"sec-ch-ua-platform: ^\^"Windows^\^"^" ^
+  --data-raw ^"^{^\^"keystone^\^":null,^\^"mainTree^\^":8000,^\^"treeToLoad^\^":8000,^\^"commonFilters^\^":^{^\^"patch^\^":^{^\^"major^\^":16,^\^"patch^\^":16,^\^"patchAdditions^\^":0^},^\^"championIds^\^":^[64^],^\^"matchupChampionIds^\^":null,^\^"leagueTiers^\^":^[4,5,6,7^],^\^"regions^\^":null,^\^"role^\^":1^}^}^"
+```
+
+
+# Response
+[{"rune":8369,"runeType":0,"wpaOverall":0.5838609933853149,"occurrence":364,"runeEffects":[{"type":0,"value":"716"},{"type":12,"value":"508"}]},{"rune":8230,"runeType":0,"wpaOverall":-4.826348781585693,"occurrence":135,"runeEffects":[{"type":20,"value":"11"}]},{"rune":8010,"runeType":0,"wpaOverall":0.3396531641483307,"occurrence":324754,"runeEffects":[{"type":3,"value":"296"}]},{"rune":9923,"runeType":0,"wpaOverall":-8.261481285095215,"occurrence":284,"runeEffects":[{"type":15,"value":"29"},{"type":0,"value":"615"}]},{"rune":8021,"runeType":0,"wpaOverall":-0.45272743701934814,"occurrence":166,"runeEffects":[{"type":3,"value":"3566"}]},{"rune":8005,"runeType":0,"wpaOverall":-5.3498663902282715,"occurrence":241,"runeEffects":[{"type":0,"value":"669"}]},{"rune":8008,"runeType":0,"wpaOverall":-4.164382457733154,"occurrence":398,"runeEffects":[{"type":0,"value":"78"}]},{"rune":8437,"runeType":0,"wpaOverall":-9.016519546508789,"occurrence":129,"runeEffects":[{"type":0,"value":"502"},{"type":3,"value":"339"}]},{"rune":8229,"runeType":0,"wpaOverall":-15.406454086303711,"occurrence":138,"runeEffects":[{"type":0,"value":"838"}]},{"rune":8992,"runeType":0,"wpaOverall":-3.7438089847564697,"occurrence":117,"runeEffects":[{"type":0,"value":"1008"}]},{"rune":8128,"runeType":0,"wpaOverall":0.16156086325645447,"occurrence":9160,"runeEffects":[{"type":0,"value":"1826"},{"type":14,"value":"17"}]},{"rune":8112,"runeType":0,"wpaOverall":-5.237262725830078,"occurrence":19392,"runeEffects":[{"type":0,"value":"1290"}]}]

@@ -29,12 +29,20 @@ Start here → **[QUICKSTART.md](QUICKSTART.md)**
 - Configuration options
 - Testing instructions
 
+### Rune Builder & Telemetry Integration
+→ **[RUNE_BUILDER_INTEGRATION.md](RUNE_BUILDER_INTEGRATION.md)**
+- Modular `RuneStatsProvider` trait & Coachless.gg API specs
+- Champion selection roster & name detection
+- Individual card-based rune layout & Flowbite dark styling
+- Dynamic WPA color indicator scale (-1.0% red -> white -> +1.0% green)
+
 ### Executive Summary
 → **[README_IMPLEMENTATION.md](README_IMPLEMENTATION.md)**
 - What was built
 - Key features
 - Files created/modified
 - Verification results
+
 
 ## Document Descriptions
 

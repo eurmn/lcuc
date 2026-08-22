@@ -1,0 +1,24 @@
+# CURL for Windows
+
+```
+curl ^"https://api.coachless.gg/api/Rune/GetShardsForKeystoneAndTree^" ^
+  -H ^"Accept: application/json, text/plain, */*^" ^
+  -H ^"Accept-Language: en-US,en;q=0.9^" ^
+  -H ^"Authorization: Bearer null^" ^
+  -H ^"Connection: keep-alive^" ^
+  -H ^"Content-Type: application/json^" ^
+  -H ^"Origin: https://www.coachless.gg^" ^
+  -H ^"Referer: https://www.coachless.gg/^" ^
+  -H ^"Sec-Fetch-Dest: empty^" ^
+  -H ^"Sec-Fetch-Mode: cors^" ^
+  -H ^"Sec-Fetch-Site: same-site^" ^
+  -H ^"User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36^" ^
+  -H ^"sec-ch-ua: ^\^"Chromium^\^";v=^\^"146^\^", ^\^"Not-A.Brand^\^";v=^\^"24^\^", ^\^"Google Chrome^\^";v=^\^"146^\^"^" ^
+  -H ^"sec-ch-ua-mobile: ?0^" ^
+  -H ^"sec-ch-ua-platform: ^\^"Windows^\^"^" ^
+  --data-raw ^"^{^\^"keystone^\^":null,^\^"commonFilters^\^":^{^\^"patch^\^":^{^\^"major^\^":16,^\^"patch^\^":16,^\^"patchAdditions^\^":0^},^\^"championIds^\^":^[64^],^\^"matchupChampionIds^\^":null,^\^"leagueTiers^\^":^[4,5,6,7^],^\^"regions^\^":null,^\^"role^\^":1^}^}^"
+```
+
+
+# Response
+{"rowOnes":[{"rune":8009,"runeType":1,"wpaOverall":-0.876781702041626,"occurrence":1096,"runeEffects":[{"type":13,"value":"583"}]},{"rune":9101,"runeType":1,"wpaOverall":-1.5190130472183228,"occurrence":110,"runeEffects":[{"type":3,"value":"671"}]},{"rune":9111,"runeType":1,"wpaOverall":0.004769414197653532,"occurrence":236523,"runeEffects":[{"type":11,"value":"1312"},{"type":12,"value":"336"}]}],"rowTwos":[{"rune":9103,"runeType":1,"wpaOverall":-1.9421192407608032,"occurrence":1143,"runeEffects":[{"type":2,"value":"14:23"}]},{"rune":9104,"runeType":1,"wpaOverall":0.02279800735414028,"occurrence":229115,"runeEffects":[{"type":2,"value":"09:21"}]},{"rune":9105,"runeType":1,"wpaOverall":-0.4020172953605652,"occurrence":7471,"runeEffects":[{"type":2,"value":"10:24"}]}],"rowThrees":[{"rune":8014,"runeType":1,"wpaOverall":-0.018973175436258316,"occurrence":219653,"runeEffects":[{"type":0,"value":"994"}]},{"rune":8017,"runeType":1,"wpaOverall":0.1276703029870987,"occurrence":10892,"runeEffects":[{"type":0,"value":"1499"}]},{"rune":8299,"runeType":1,"wpaOverall":0.3865489363670349,"occurrence":7184,"runeEffects":[{"type":0,"value":"1110"}]}]}
