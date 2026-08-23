@@ -36,7 +36,7 @@
     {/if}
   </div>
 
-  <div class="flex flex-wrap items-center justify-center gap-3">
+  <div class="flex flex-nowrap items-center justify-center gap-3">
     {#each slot.options as option (option.id)}
       {#if isEditing}
         <button

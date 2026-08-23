@@ -27,6 +27,7 @@ export interface RuneTreePayload {
   primary_style_id?: number | null;
   sub_style_id?: number | null;
   selected_perk_ids: number[];
+  champion_id?: number | null;
   is_editing: boolean;
 }
 
@@ -79,4 +80,5 @@ export interface SaveRuneTreePayload {
   primary_style_id?: number | null;
   sub_style_id?: number | null;
   selected_perks: number[];
+  champion_id?: number | null;
 }

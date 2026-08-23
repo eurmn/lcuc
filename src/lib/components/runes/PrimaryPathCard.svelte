@@ -62,8 +62,12 @@
           disabled={!isEditing}
           onclick={() => isEditing && onSelectPrimaryStyle(style.id)}
           class={isSelected
-            ? `flex h-9 w-9 items-center justify-center rounded-xl border-2 ${styleTheme.borderPrimary} bg-gray-900 p-1 shadow-sm scale-105 cursor-pointer`
-            : `flex h-9 w-9 items-center justify-center rounded-xl border border-gray-800 bg-gray-900/60 p-1.5 opacity-50 hover:opacity-100 hover:border-gray-700 hover:bg-gray-800 transition-all ${isEditing ? 'cursor-pointer' : 'cursor-default'}`}
+            ? (isEditing
+              ? `flex h-9 w-9 items-center justify-center rounded-xl border-2 ${styleTheme.borderPrimary} bg-gray-900 p-1 shadow-sm scale-105 cursor-pointer`
+              : `flex h-9 w-9 items-center justify-center rounded-xl border-2 ${styleTheme.borderPrimary} bg-gray-900 p-1 shadow-sm cursor-default`)
+            : (isEditing
+              ? "flex h-9 w-9 items-center justify-center rounded-xl border border-gray-800 bg-gray-900/60 p-1.5 opacity-50 hover:opacity-100 hover:border-gray-700 hover:bg-gray-800 transition-all cursor-pointer"
+              : "flex h-9 w-9 items-center justify-center rounded-xl border border-gray-800/60 bg-gray-900/40 p-1.5 opacity-35 cursor-default")}
         >
           <img src={style.icon} alt={style.name} class="h-full w-full object-contain" />
         </button>
@@ -79,13 +83,17 @@
       </span>
     </div>
 
-    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+    <div
+      class="grid gap-2 w-full min-w-0"
+      style="grid-template-columns: repeat({visibleKeystones.length}, minmax(0, 1fr));"
+    >
       {#each visibleKeystones as keystone (keystone.id)}
         <KeystoneCard
           keystone={{
             ...keystone,
             selected: (selectedKeystoneId === keystone.id) || selectedPerkIds[0] === keystone.id,
           }}
+          {isEditing}
           onSelect={(id) => isEditing && onSelectKeystone(id)}
         />
       {/each}
@@ -109,6 +117,7 @@
                   selected: selectedPerkIds.includes(option.id),
                 }}
                 {theme}
+                {isEditing}
                 onSelect={(id) => isEditing && onSelectPerk(id, rowIndex)}
               />
             {/each}

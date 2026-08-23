@@ -90,9 +90,11 @@ impl CoachlessProvider {
             query.league_tiers.clone()
         };
 
+        let champ_id = if query.champion_id <= 0 { 64 } else { query.champion_id };
+
         CoachlessCommonFilters {
             patch,
-            champion_ids: vec![query.champion_id],
+            champion_ids: vec![champ_id],
             matchup_champion_ids: None,
             league_tiers: tiers,
             regions: None,
@@ -500,9 +502,9 @@ impl RuneStatsProvider for CoachlessProvider {
             options
         }
 
-        let offense_order = [5005, 5008, 5007];
+        let offense_order = [5008, 5005, 5007];
         let flex_order = [5008, 5010, 5001];
-        let defense_order = [5001, 5011, 5013];
+        let defense_order = [5011, 5013, 5001];
 
         let mut offense = enrich_shards(&resp.offense, "offense").await;
         let mut flex = enrich_shards(&resp.flex, "flex").await;

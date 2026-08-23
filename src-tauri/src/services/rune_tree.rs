@@ -335,6 +335,12 @@ async fn build_stat_mod_slots(
         .filter(|s| s.get("type").and_then(|v| v.as_str()).unwrap_or("") == "kStatMod")
         .collect();
 
+    let stat_order = [
+        [5008, 5005, 5007],
+        [5008, 5010, 5001],
+        [5011, 5013, 5001],
+    ];
+
     let mut rendered = Vec::new();
     for (row_idx, slot) in stat_slots.iter().enumerate() {
         let label = slot
@@ -377,13 +383,16 @@ async fn build_stat_mod_slots(
             }
         }
 
+        if let Some(order) = stat_order.get(row_idx) {
+            options.sort_by_key(|o| order.iter().position(|&id| id == o.id).unwrap_or(999));
+        }
+
         rendered.push(RuneSlot { label, options });
     }
 
     rendered
 }
 
-/// Builds a complete [`RuneTreePayload`] given page name, primary/sub styles, and selected perk IDs.
 /// Builds a complete [`RuneTreePayload`] given page name, primary/sub styles, and selected perk IDs.
 pub async fn build_rune_tree_payload_from_data(
     page_name: String,
@@ -392,6 +401,7 @@ pub async fn build_rune_tree_payload_from_data(
     selected_perks: Vec<i64>,
     runeset_id: Option<i64>,
     page_id: Option<i64>,
+    champion_id: Option<i64>,
     is_editing: bool,
 ) -> RuneTreePayload {
     let selected_set: HashSet<i64> = selected_perks.iter().cloned().collect();
@@ -429,6 +439,7 @@ pub async fn build_rune_tree_payload_from_data(
         primary_style_id,
         sub_style_id,
         selected_perk_ids: selected_perks,
+        champion_id,
         is_editing,
     }
 }
@@ -611,6 +622,7 @@ pub async fn get_current_rune_tree_payload() -> Result<RuneTreePayload, String> 
         selected_perks,
         None,
         client_page_id,
+        None,
         false,
     )
     .await)
@@ -661,6 +673,7 @@ pub async fn get_client_page_rune_tree_payload(page_id: i64) -> Result<RuneTreeP
         selected_perks,
         None,
         Some(page_id),
+        None,
         false,
     )
     .await)
@@ -674,6 +687,12 @@ pub async fn get_saved_runeset_tree_payload(runeset_id: i64) -> Result<RuneTreeP
         .get_runeset(runeset_id)?
         .ok_or_else(|| format!("Saved rune page #{} not found in database.", runeset_id))?;
 
+    let champ_id = if record.champion_id > 0 {
+        Some(record.champion_id)
+    } else {
+        None
+    };
+
     Ok(build_rune_tree_payload_from_data(
         record.rune_page_name,
         record.primary_style_id,
@@ -681,6 +700,7 @@ pub async fn get_saved_runeset_tree_payload(runeset_id: i64) -> Result<RuneTreeP
         record.selected_perk_ids,
         Some(runeset_id),
         record.rune_page_id,
+        champ_id,
         false,
     )
     .await)

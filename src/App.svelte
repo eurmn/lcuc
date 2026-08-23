@@ -10,9 +10,17 @@
     getCurrentRuneTree,
     getRunesOverview,
     getSavedRuneTree,
+    getSelectedRuneKey,
     importClientPage,
     saveRuneTree,
+    setSelectedRuneKey,
+    updateRunesetChampion,
   } from "./lib/api/runes";
+  import {
+    getChampions,
+    getSelectedChampionId,
+    setSelectedChampionId,
+  } from "./lib/api/champions";
   import type {
     ClientRunePageSummary,
     RuneSetSummary,
@@ -21,17 +29,53 @@
   } from "./lib/types/runes";
   import type { ChampionSummary } from "./lib/types/champions";
 
-
   let clientPages = $state<ClientRunePageSummary[]>([]);
   let savedRunesets = $state<RuneSetSummary[]>([]);
   let activeCompanionName = $state<string | null>(null);
   let selectedKey = $state<string>("");
-  let sidebarChampionFilter = $state<ChampionSummary | null>(null);
+  let selectedChampion = $state<ChampionSummary | null>(null);
+  let allChampions = $state<ChampionSummary[]>([]);
 
   let currentTree = $state<RuneTreePayload | null>(null);
   let sidebarLoading = $state(true);
   let treeLoading = $state(true);
   let runesSidebarRef = $state<RunesSidebar | null>(null);
+  let isSidebarOpen = $state<boolean>(false);
+
+  function toggleSidebar() {
+    isSidebarOpen = !isSidebarOpen;
+  }
+
+  async function loadChampions() {
+    try {
+      allChampions = await getChampions();
+    } catch (err) {
+      console.error("[Champions Load Error]", err);
+    }
+  }
+
+  async function restoreSelectedChampion() {
+    try {
+      const savedId = await getSelectedChampionId();
+      if (savedId && savedId > 0) {
+        const matched = allChampions.find((c) => c.id === savedId);
+        if (matched) {
+          selectedChampion = matched;
+        }
+      }
+    } catch (err) {
+      console.error("[Restore Selected Champion Error]", err);
+    }
+  }
+
+  async function handleSelectChampionFilter(champ: ChampionSummary | null) {
+    selectedChampion = champ;
+    try {
+      await setSelectedChampionId(champ ? champ.id : null);
+    } catch (err) {
+      console.error("[Save Selected Champion Error]", err);
+    }
+  }
 
   async function loadOverview(preserveKey?: string): Promise<string> {
     try {
@@ -41,7 +85,19 @@
       savedRunesets = overview.saved_runesets || [];
       activeCompanionName = overview.active_companion_name || null;
 
-      let keyToSelect = preserveKey || selectedKey;
+      let candidateKey = preserveKey || selectedKey;
+      let keyToSelect = "";
+
+      // Validate candidate key against loaded pages
+      if (candidateKey) {
+        if (candidateKey.startsWith("saved:") && savedRunesets.some((s) => `saved:${s.id}` === candidateKey)) {
+          keyToSelect = candidateKey;
+        } else if (candidateKey.startsWith("client:") && clientPages.some((c) => `client:${c.id}` === candidateKey)) {
+          keyToSelect = candidateKey;
+        }
+      }
+
+      // Fallback selection if no valid candidate key
       if (!keyToSelect) {
         if (savedRunesets.length > 0) {
           keyToSelect = `saved:${savedRunesets[0].id}`;
@@ -81,14 +137,22 @@
   }
 
   async function handleSelectPage(key: string) {
+    try {
+      await setSelectedRuneKey(key);
+    } catch (err) {
+      console.error("[Save Selected Rune Key Error]", err);
+    }
     await loadTreeForKey(key);
   }
 
   async function handleImportPage(pageId: number) {
     try {
-      const newId = await importClientPage(pageId);
-      await loadOverview(`saved:${newId}`);
-      await loadTreeForKey(`saved:${newId}`);
+      const newId = await importClientPage(pageId, selectedChampion?.id);
+      const newKey = `saved:${newId}`;
+      await setSelectedRuneKey(newKey);
+      await loadOverview(newKey);
+      await loadTreeForKey(newKey);
+      runesSidebarRef?.refreshChampions();
     } catch (err) {
       console.error("[Import Error]", err);
     }
@@ -109,12 +173,28 @@
       await deleteRuneset(runesetId);
       const nextKey = await loadOverview();
       if (nextKey) {
+        await setSelectedRuneKey(nextKey);
         await loadTreeForKey(nextKey);
       } else {
+        await setSelectedRuneKey(null);
         currentTree = null;
       }
+      runesSidebarRef?.refreshChampions();
     } catch (err) {
       console.error("[Delete Error]", err);
+    }
+  }
+
+  async function handleUpdateRunesetChampion(runesetId: number, championId: number) {
+    try {
+      await updateRunesetChampion(runesetId, championId);
+      await loadOverview();
+      if (selectedKey === `saved:${runesetId}`) {
+        await loadTreeForKey(`saved:${runesetId}`);
+      }
+      runesSidebarRef?.refreshChampions();
+    } catch (err) {
+      console.error("[Update Runeset Champion Error]", err);
     }
   }
 
@@ -132,17 +212,22 @@
       primary_style_id: data.primaryStyleId,
       sub_style_id: data.subStyleId,
       selected_perks: data.selectedPerks,
+      champion_id: data.championId,
     };
 
     const savedId = await saveRuneTree(payload);
-    await loadOverview(`saved:${savedId}`);
-    await loadTreeForKey(`saved:${savedId}`);
+    const savedKey = `saved:${savedId}`;
+    await setSelectedRuneKey(savedKey);
+    await loadOverview(savedKey);
+    await loadTreeForKey(savedKey);
+    runesSidebarRef?.refreshChampions();
   }
 
-
   onMount(async () => {
-
-    const key = await loadOverview();
+    await loadChampions();
+    await restoreSelectedChampion();
+    const persistedRuneKey = await getSelectedRuneKey();
+    const key = await loadOverview(persistedRuneKey || undefined);
     if (key) {
       await loadTreeForKey(key);
     }
@@ -150,35 +235,38 @@
 </script>
 
 <div class="h-screen w-screen flex flex-col overflow-hidden bg-gray-900 text-gray-100 antialiased selection:bg-purple-600 selection:text-white">
-  <!-- Draggable Custom Title Bar -->
-  <TitleBar />
+  <!-- Draggable Custom Title Bar with Sidebar Toggle -->
+  <TitleBar {isSidebarOpen} onToggleSidebar={toggleSidebar} />
 
   <!-- Main App Shell -->
   <div id="app-shell" class="flex-1 flex overflow-hidden bg-gray-900 text-gray-100 relative">
-    <!-- Left Sidebar: Profile & Rune Lists -->
+    <!-- Collapsible Sidebar Component -->
     <RunesSidebar
       bind:this={runesSidebarRef}
+      bind:isOpen={isSidebarOpen}
       {clientPages}
       {savedRunesets}
       {activeCompanionName}
       {selectedKey}
+      {selectedChampion}
+      activeRuneChampionId={currentTree?.champion_id || 0}
       loading={sidebarLoading}
       onSelectPage={handleSelectPage}
       onImportPage={handleImportPage}
       onDeletePage={handleDeletePage}
-      onSelectChampionFilter={(c) => (sidebarChampionFilter = c)}
+      onSelectChampionFilter={handleSelectChampionFilter}
+      onChangeRunesetChampion={handleUpdateRunesetChampion}
     />
 
     <!-- Center Canvas: Active / Selected Rune Tree -->
     <RuneCanvas
       tree={currentTree}
       loading={treeLoading}
-      championFilter={sidebarChampionFilter}
+      {selectedChampion}
       onSave={handleSaveTree}
       onExport={handleExportPage}
       onImport={handleImportPage}
+      onSelectChampion={handleSelectChampionFilter}
     />
-
-
   </div>
 </div>

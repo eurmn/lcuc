@@ -13,10 +13,12 @@
   let {
     option,
     theme,
+    isEditing = true,
     onSelect,
   }: {
     option: EnrichedRuneOption;
     theme: RuneTheme;
+    isEditing?: boolean;
     onSelect: (perkId: number) => void;
   } = $props();
 
@@ -29,13 +31,18 @@
 
 <button
   type="button"
+  disabled={!isEditing}
   title={hasData
     ? `${option.name} — ${formatPickRate(option.pick_rate_pct)} pick rate (${formatOccurrence(option.occurrence)} games), ${wpaText}`
     : `${option.name} — No statistical information available`}
-  onclick={() => onSelect(option.id)}
+  onclick={() => isEditing && onSelect(option.id)}
   class={option.selected
-    ? `relative flex flex-1 min-w-[110px] items-center gap-2.5 rounded-xl border-2 ${theme.borderPrimary} bg-gray-900 p-2 text-left shadow-sm scale-[1.02] transition-all cursor-pointer`
-    : "relative flex flex-1 min-w-[110px] items-center gap-2.5 rounded-xl border border-gray-800 bg-gray-900/80 p-2 text-left opacity-60 hover:opacity-100 hover:border-gray-700 hover:bg-gray-800 transition-all cursor-pointer"}
+    ? (isEditing
+      ? `relative flex flex-1 min-w-[110px] items-center gap-2.5 rounded-xl border-2 ${theme.borderPrimary} bg-gray-900 p-2 text-left shadow-sm transition-all cursor-pointer`
+      : `relative flex flex-1 min-w-[110px] items-center gap-2.5 rounded-xl border-2 ${theme.borderPrimary} bg-gray-900 p-2 text-left shadow-sm select-none cursor-default`)
+    : (isEditing
+      ? "relative flex flex-1 min-w-[110px] items-center gap-2.5 rounded-xl border-2 border-gray-700 bg-gray-900/80 p-2 text-left opacity-60 hover:opacity-100 hover:bg-gray-800 transition-all cursor-pointer"
+      : "relative flex flex-1 min-w-[110px] items-center gap-2.5 rounded-xl border-2 border-gray-800/60 bg-gray-900/40 p-2 text-left opacity-35 select-none cursor-default")}
 >
   <!-- Borderless Circular Perk Icon (Image fills it all, no background/padding) -->
   <div class="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full overflow-hidden p-0 bg-transparent">

@@ -1,6 +1,14 @@
 <script lang="ts">
   import { getCurrentWindow } from "@tauri-apps/api/window";
 
+  let {
+    isSidebarOpen = true,
+    onToggleSidebar,
+  }: {
+    isSidebarOpen?: boolean;
+    onToggleSidebar?: () => void;
+  } = $props();
+
   const appWindow = getCurrentWindow();
 
   function minimize() {
@@ -21,10 +29,20 @@
   data-tauri-drag-region
   class="h-8 shrink-0 bg-gray-950 border-b border-gray-800 flex items-center justify-between select-none z-50"
 >
-  <!-- Left: App Icon & Title -->
-  <div class="flex items-center gap-2 px-3 h-full pointer-events-none" data-tauri-drag-region>
-    <img src="/src/assets/logo.png" alt="LCU Companion" class="h-4 w-4 object-contain" />
-    <span class="text-xs font-semibold text-gray-200 tracking-wide">LCU Companion</span>
+  <!-- Left: Sidebar Toggle, App Icon & Title -->
+  <div class="flex items-center gap-2 px-2.5 h-full" data-tauri-drag-region>
+    {#if onToggleSidebar}
+      <button
+        type="button"
+        onclick={onToggleSidebar}
+        title={isSidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
+        class="flex h-5 w-5 items-center justify-center rounded text-gray-400 hover:text-white hover:bg-gray-800 transition-colors cursor-pointer"
+      >
+        <span class="icon-[heroicons--bars-3] h-3.5 w-3.5"></span>
+      </button>
+    {/if}
+    <img src="/src/assets/logo.png" alt="LCU Companion" class="h-4 w-4 object-contain pointer-events-none" />
+    <span class="text-xs font-semibold text-gray-200 tracking-wide pointer-events-none">LCU Companion</span>
   </div>
 
   <!-- Right: Window Action Buttons -->

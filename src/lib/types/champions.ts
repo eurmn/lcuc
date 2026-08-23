@@ -12,6 +12,7 @@ export interface ChampionSummary {
   square_icon_url: string;
   roles: string[];
   has_saved_runes: boolean;
+  is_favorite?: boolean;
 }
 
 export const ALL_CHAMPIONS_OPTION: ChampionSummary = {
@@ -21,4 +22,5 @@ export const ALL_CHAMPIONS_OPTION: ChampionSummary = {
   square_icon_url: ALL_CHAMPIONS_ICON_URL,
   roles: ["all"],
   has_saved_runes: false,
+  is_favorite: false,
 };

@@ -39,6 +39,8 @@ pub struct RuneTreePayload {
     #[serde(default)]
     pub selected_perk_ids: Vec<i64>,
     #[serde(default)]
+    pub champion_id: Option<i64>,
+    #[serde(default)]
     pub is_editing: bool,
 }
 
@@ -96,4 +98,6 @@ pub struct SaveRuneTreePayload {
     pub primary_style_id: Option<i64>,
     pub sub_style_id: Option<i64>,
     pub selected_perks: Vec<i64>,
+    #[serde(default)]
+    pub champion_id: Option<i64>,
 }

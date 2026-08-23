@@ -5,6 +5,7 @@
 
 use crate::models::{RuneSetRecord, RuneSetSummary};
 use rusqlite::{params, Connection};
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 
@@ -40,7 +41,7 @@ impl RuneStore {
             .map_err(|e| format!("Failed connecting to SQLite at {:?}: {}", self.db_path, e))
     }
 
-    /// Initializes the `runesets` table schema if it does not already exist.
+    /// Initializes the `runesets` and `favorite_champions` table schema if it does not already exist.
     pub fn initialize_schema(&self) -> Result<(), String> {
         let conn = self.connect()?;
         conn.execute(
@@ -60,6 +61,26 @@ impl RuneStore {
             [],
         )
         .map_err(|e| format!("Failed creating runesets schema: {}", e))?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS favorite_champions (
+                champion_id INTEGER PRIMARY KEY,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )
+        .map_err(|e| format!("Failed creating favorite_champions schema: {}", e))?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )
+        .map_err(|e| format!("Failed creating app_settings schema: {}", e))?;
+
         Ok(())
     }
 
@@ -224,6 +245,7 @@ impl RuneStore {
         primary_style_id: Option<i64>,
         sub_style_id: Option<i64>,
         selected_perk_ids: &[i64],
+        champion_id: Option<i64>,
     ) -> Result<bool, String> {
         let conn = self.connect()?;
         let perks_json = serde_json::to_string(selected_perk_ids)
@@ -235,13 +257,15 @@ impl RuneStore {
                 SET rune_page_name = ?1,
                     primary_style_id = ?2,
                     sub_style_id = ?3,
-                    selected_perk_ids_json = ?4
-                WHERE id = ?5",
+                    selected_perk_ids_json = ?4,
+                    champion_id = COALESCE(?5, champion_id)
+                WHERE id = ?6",
                 params![
                     rune_page_name,
                     primary_style_id,
                     sub_style_id,
                     perks_json,
+                    champion_id,
                     runeset_id,
                 ],
             )
@@ -259,5 +283,114 @@ impl RuneStore {
             .execute("DELETE FROM runesets WHERE id = ?1", params![runeset_id])
             .map_err(|e| format!("Failed deleting runeset {}: {}", runeset_id, e))?;
         Ok(count > 0)
+    }
+
+    /// Returns a set of champion IDs that have been marked as favorites in SQLite.
+    pub fn get_favorite_champion_ids(&self) -> Result<HashSet<i64>, String> {
+        let conn = self.connect()?;
+        let mut stmt = conn
+            .prepare("SELECT champion_id FROM favorite_champions")
+            .map_err(|e| format!("Failed preparing favorite query: {}", e))?;
+
+        let rows = stmt
+            .query_map([], |row| row.get::<_, i64>(0))
+            .map_err(|e| format!("Failed querying favorites: {}", e))?;
+
+        let mut favorites = HashSet::new();
+        for row in rows {
+            if let Ok(id) = row {
+                favorites.insert(id);
+            }
+        }
+        Ok(favorites)
+    }
+
+    /// Toggles the favorite status for a given champion ID.
+    ///
+    /// Returns `Ok(true)` if the champion is now favorited, or `Ok(false)` if it was removed from favorites.
+    pub fn toggle_favorite_champion(&self, champion_id: i64) -> Result<bool, String> {
+        let conn = self.connect()?;
+        let exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM favorite_champions WHERE champion_id = ?1",
+                params![champion_id],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+
+        if exists {
+            conn.execute(
+                "DELETE FROM favorite_champions WHERE champion_id = ?1",
+                params![champion_id],
+            )
+            .map_err(|e| format!("Failed removing favorite champion {}: {}", champion_id, e))?;
+            Ok(false)
+        } else {
+            conn.execute(
+                "INSERT INTO favorite_champions (champion_id) VALUES (?1)",
+                params![champion_id],
+            )
+            .map_err(|e| format!("Failed inserting favorite champion {}: {}", champion_id, e))?;
+            Ok(true)
+        }
+    }
+
+    /// Gets an application setting value by key.
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>, String> {
+        let conn = self.connect()?;
+        let mut stmt = conn
+            .prepare("SELECT value FROM app_settings WHERE key = ?1")
+            .map_err(|e| format!("Failed preparing setting query: {}", e))?;
+        let result = stmt
+            .query_row(params![key], |row| row.get::<_, String>(0))
+            .ok();
+        Ok(result)
+    }
+
+    /// Sets or updates an application setting value by key.
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<(), String> {
+        let conn = self.connect()?;
+        conn.execute(
+            "INSERT INTO app_settings (key, value, updated_at) VALUES (?1, ?2, CURRENT_TIMESTAMP)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
+            params![key, value],
+        )
+        .map_err(|e| format!("Failed saving setting {}: {}", key, e))?;
+        Ok(())
+    }
+
+    /// Retrieves the last selected champion ID persisted in SQLite.
+    pub fn get_selected_champion_id(&self) -> Result<Option<i64>, String> {
+        match self.get_setting("selected_champion_id")? {
+            Some(val) => {
+                if let Ok(id) = val.parse::<i64>() {
+                    if id > 0 {
+                        return Ok(Some(id));
+                    }
+                }
+                Ok(None)
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Persists the last selected champion ID in SQLite.
+    pub fn set_selected_champion_id(&self, champion_id: Option<i64>) -> Result<(), String> {
+        let val = champion_id.unwrap_or(0).to_string();
+        self.set_setting("selected_champion_id", &val)
+    }
+
+    /// Retrieves the last selected rune key persisted in SQLite (e.g. "saved:1" or "client:12345").
+    pub fn get_selected_rune_key(&self) -> Result<Option<String>, String> {
+        match self.get_setting("selected_rune_key")? {
+            Some(val) if !val.trim().is_empty() => Ok(Some(val)),
+            _ => Ok(None),
+        }
+    }
+
+    /// Persists the last selected rune key in SQLite.
+    pub fn set_selected_rune_key(&self, rune_key: Option<&str>) -> Result<(), String> {
+        let val = rune_key.unwrap_or("");
+        self.set_setting("selected_rune_key", val)
     }
 }

@@ -24,7 +24,7 @@
     selectedPerkIds: number[];
     isEditing?: boolean;
     onSelectSubStyle: (styleId: number) => void;
-    onSelectSecondaryPerk: (perkId: number) => void;
+    onSelectSecondaryPerk: (perkId: number, rowIndex: number) => void;
     onSelectShard: (shardId: number, rowIndex: number) => void;
   } = $props();
 
@@ -68,8 +68,12 @@
           disabled={!isEditing}
           onclick={() => isEditing && onSelectSubStyle(style.id)}
           class={isSelected
-            ? `relative flex h-9 min-w-[42px] items-center justify-center gap-1 rounded-xl border-2 ${styleTheme.borderPrimary} bg-gray-900 p-1 shadow-sm scale-105 cursor-pointer`
-            : `relative flex h-9 min-w-[42px] items-center justify-center gap-1 rounded-xl border border-gray-800 bg-gray-900/60 p-1 opacity-50 hover:opacity-100 hover:border-gray-700 hover:bg-gray-800 transition-all ${isEditing ? 'cursor-pointer' : 'cursor-default'}`}
+            ? (isEditing
+              ? `relative flex h-9 min-w-[42px] items-center justify-center gap-1 rounded-xl border-2 ${styleTheme.borderPrimary} bg-gray-900 p-1 shadow-sm scale-105 cursor-pointer`
+              : `relative flex h-9 min-w-[42px] items-center justify-center gap-1 rounded-xl border-2 ${styleTheme.borderPrimary} bg-gray-900 p-1 shadow-sm cursor-default`)
+            : (isEditing
+              ? "relative flex h-9 min-w-[42px] items-center justify-center gap-1 rounded-xl border border-gray-800 bg-gray-900/60 p-1 opacity-50 hover:opacity-100 hover:border-gray-700 hover:bg-gray-800 transition-all cursor-pointer"
+              : "relative flex h-9 min-w-[42px] items-center justify-center gap-1 rounded-xl border border-gray-800/60 bg-gray-900/40 p-1 opacity-35 cursor-default")}
         >
           <img src={style.icon} alt={style.name} class="h-6 w-6 object-contain" />
           {#if pct}
@@ -99,7 +103,8 @@
                   selected: selectedPerkIds.includes(option.id),
                 }}
                 {theme}
-                onSelect={(id) => isEditing && onSelectSecondaryPerk(id)}
+                {isEditing}
+                onSelect={(id) => isEditing && onSelectSecondaryPerk(id, rowIndex)}
               />
             {/each}
           </div>
@@ -112,6 +117,7 @@
   <div class="border-t border-gray-800/80 pt-2">
     <StatShardsCards
       {statShards}
+      {isEditing}
       selectedShardIds={selectedPerkIds.slice(6, 9)}
       onSelectShard={(id, row) => isEditing && onSelectShard(id, row)}
     />

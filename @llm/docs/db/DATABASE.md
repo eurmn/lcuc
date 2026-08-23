@@ -34,9 +34,37 @@ CREATE TABLE IF NOT EXISTS runesets (
     source TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS favorite_champions (
+    champion_id INTEGER PRIMARY KEY,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 ```
 
-### Column Reference
+### `favorite_champions` Table
+Stores user-favorited champions to pin them at the front of champion selectors and searches.
+
+| Column | Type | Nullable | Description |
+| :--- | :--- | :--- | :--- |
+| `champion_id` | `INTEGER` | `NO` | Champion ID marked as favorite (Primary Key). |
+| `created_at` | `TEXT` | `NO` | Timestamp when the champion was favorited. |
+
+### `app_settings` Table
+Key-value configuration store for persisting user preferences (such as `selected_champion_id`).
+
+| Column | Type | Nullable | Description |
+| :--- | :--- | :--- | :--- |
+| `key` | `TEXT` | `NO` | Setting key name (Primary Key). |
+| `value` | `TEXT` | `NO` | Setting value payload. |
+| `updated_at` | `TEXT` | `NO` | Last update timestamp. |
+
+---
 
 | Column | Type | Nullable | Description |
 | :--- | :--- | :--- | :--- |

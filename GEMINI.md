@@ -185,7 +185,18 @@ The visual styling conforms to official League of Legends style paths via [`src/
 ### D. SQLite Rune Library
 Custom runesets are persisted in local SQLite via [`services/rune_store.rs`](lcu-companion/src-tauri/src/services/rune_store.rs):
 - Table `runesets`: `id`, `name`, `primary_style_id`, `sub_style_id`, `selected_perk_ids` (JSON), `created_at`, `updated_at`.
+- Table `favorite_champions`: `champion_id`, `created_at`.
 - Provides instant importing from the live League client into the saved database and exporting back to the client.
+
+### E. Heroicons Icon System
+All icons across frontend Svelte components must use `@iconify-json/heroicons` icon classes (e.g. `<span class="icon-[heroicons--...]"></span>`) rather than raw inline `<svg>` elements. Common icons include:
+- Search: `icon-[heroicons--magnifying-glass]`
+- Star / Favorite: `icon-[heroicons--star]` (outline) / `icon-[heroicons--star-solid]` (solid filled)
+- Close / Remove: `icon-[heroicons--x-mark]`
+- Edit: `icon-[heroicons--pencil-square]` / `icon-[heroicons--pencil]`
+- Trash / Delete: `icon-[heroicons--trash]`
+- Navigation: `icon-[heroicons--chevron-left]`, `icon-[heroicons--chevron-right]`
+- Bookmark / Favorite: `icon-[heroicons--bookmark]` (outline) / `icon-[heroicons--bookmark-20-solid]` (solid filled)
 
 ---
 
@@ -218,6 +229,7 @@ For detailed specifications and domain knowledge, consult the specialized docume
   * [`tauri.llms.txt`](lcu-companion/@llm/docs/ui/tauri.llms.txt) — Tauri 2.0 API reference cheat sheet.
 
 * **Historical Archive**:
+  * [`walkthrough/`](lcu-companion/@llm/docs/historical/walkthrough/) — Permanent archival walkthroughs for completed features and plans.
   * [`TOOLS_FEATURE_ARCHIVE.md`](lcu-companion/@llm/docs/historical/TOOLS_FEATURE_ARCHIVE.md) — Archival notes on the mass friend removal tool and top navigation header.
 
 ---
@@ -241,3 +253,9 @@ The project includes automated verification scripts that execute `svelte-check`,
   ```bash
   bash ./run.llm.sh
   ```
+
+### Planning & Walkthrough Persistence
+- **Walkthrough Archival**: Whenever completing work in Planning Mode, in addition to generating the session walkthrough artifact, **ALWAYS save a permanent copy of the walkthrough document inside `@llm/docs/historical/walkthrough/<feature_name>_walkthrough.md`** so historical implementation context is permanently tracked across sessions.
+
+### Command Execution Guidelines
+- **No Unsolicited Checks or Tests**: **DO NOT** run check, build, or test commands (such as `cargo check`, `cargo test`, `svelte-check`, `vite build`, `run.llm.ps1`, etc.) without the user's direct and explicit request.

@@ -25,3 +25,25 @@ export async function getChampionRoster(): Promise<ChampionSummary[]> {
 export async function detectChampionFromName(name: string): Promise<ChampionSummary | null> {
   return tauriInvoke<ChampionSummary | null>("api_detect_champion_from_name", { name });
 }
+
+/**
+ * Toggles a champion's favorite status in SQLite.
+ */
+export async function toggleFavoriteChampion(championId: number): Promise<boolean> {
+  return tauriInvoke<boolean>("api_toggle_favorite_champion", { championId });
+}
+
+/**
+ * Retrieves the last selected champion ID persisted in SQLite.
+ */
+export async function getSelectedChampionId(): Promise<number | null> {
+  return tauriInvoke<number | null>("api_get_selected_champion_id");
+}
+
+/**
+ * Persists the last selected champion ID in SQLite.
+ */
+export async function setSelectedChampionId(championId: number | null): Promise<void> {
+  return tauriInvoke<void>("api_set_selected_champion_id", { championId });
+}
+

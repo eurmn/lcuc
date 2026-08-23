@@ -4,12 +4,14 @@ pub mod services;
 
 use commands::{
     api_delete_runeset, api_detect_champion_from_name, api_export_saved_rune_page,
-    api_get_champion_roster, api_get_champions, api_import_client_page,
-    api_profile_challenge_tier, api_remove_friends, api_rune_builder_get_keystones,
-    api_rune_builder_get_overview, api_rune_builder_get_secondary_playcounts,
-    api_rune_builder_get_shards, api_rune_builder_get_tree_runes, api_rune_tree_client,
-    api_rune_tree_current, api_rune_tree_saved, api_rune_tree_select_perk, api_runes_overview,
-    api_runesets, api_save_rune_tree, api_summoner_profile,
+    api_get_champion_roster, api_get_champions, api_get_selected_champion_id,
+    api_get_selected_rune_key, api_import_client_page, api_profile_challenge_tier,
+    api_remove_friends, api_rune_builder_get_keystones, api_rune_builder_get_overview,
+    api_rune_builder_get_secondary_playcounts, api_rune_builder_get_shards,
+    api_rune_builder_get_tree_runes, api_rune_tree_client, api_rune_tree_current,
+    api_rune_tree_saved, api_rune_tree_select_perk, api_runes_overview, api_runesets,
+    api_save_rune_tree, api_set_selected_champion_id, api_set_selected_rune_key,
+    api_summoner_profile, api_toggle_favorite_champion, api_update_runeset_champion,
 };
 use services::lcu_websocket::LcuWsWatcher;
 
@@ -30,6 +32,7 @@ pub fn run() {
             api_import_client_page,
             api_export_saved_rune_page,
             api_delete_runeset,
+            api_update_runeset_champion,
             api_rune_tree_current,
             api_rune_tree_client,
             api_rune_tree_saved,
@@ -44,6 +47,11 @@ pub fn run() {
             api_get_champions,
             api_get_champion_roster,
             api_detect_champion_from_name,
+            api_toggle_favorite_champion,
+            api_get_selected_champion_id,
+            api_set_selected_champion_id,
+            api_get_selected_rune_key,
+            api_set_selected_rune_key,
         ])
         .run(tauri::generate_context!())
 

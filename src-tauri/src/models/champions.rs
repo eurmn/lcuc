@@ -15,6 +15,8 @@ pub struct ChampionSummary {
     pub roles: Vec<String>,
     #[serde(default)]
     pub has_saved_runes: bool,
+    #[serde(default)]
+    pub is_favorite: bool,
 }
 
 /// Raw item from CDragon `champion-summary.json`.

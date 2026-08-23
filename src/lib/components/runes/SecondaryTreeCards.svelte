@@ -16,7 +16,7 @@
     selectedSubStyleId: number;
     selectedPerkIds: number[];
     onSelectSubStyle: (styleId: number) => void;
-    onSelectSecondaryPerk: (perkId: number) => void;
+    onSelectSecondaryPerk: (perkId: number, rowIndex: number) => void;
   } = $props();
 
   const theme = $derived(getRuneTheme(tree?.style_id));
@@ -76,8 +76,7 @@
                 selected: selectedPerkIds.includes(option.id),
               }}
               {theme}
-              onSelect={() => onSelectSecondaryPerk(option.id)}
-
+              onSelect={() => onSelectSecondaryPerk(option.id, rowIndex)}
             />
           {/each}
         </div>

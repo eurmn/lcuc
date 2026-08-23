@@ -7,6 +7,7 @@ use crate::models::{
     RuneSetSummary, RuneTreePayload, RunesOverviewPayload, SaveRuneTreePayload, SavedRuneSetSummary,
     SelectPerkPayload,
 };
+use crate::services::champions::detect_champion_from_name;
 use crate::services::lcu_perks::export_runeset_to_client;
 use crate::services::rune_store::RuneStore;
 use crate::services::rune_tree::{
@@ -60,12 +61,29 @@ pub async fn api_runesets() -> Result<Vec<RuneSetSummary>, String> {
 
 /// Imports a client rune page into the local SQLite database and returns the new runeset ID.
 #[tauri::command]
-pub async fn api_import_client_page(page_id: i64) -> Result<i64, String> {
+pub async fn api_import_client_page(
+    page_id: i64,
+    champion_id: Option<i64>,
+) -> Result<i64, String> {
     let client_pages = get_client_rune_pages().await?;
     let target = client_pages
         .iter()
         .find(|p| p.id == page_id)
         .ok_or_else(|| format!("Client rune page {} not found", page_id))?;
+
+    let resolved_champ_id = if let Some(cid) = champion_id {
+        if cid > 0 {
+            cid
+        } else if let Some(detected) = detect_champion_from_name(&target.name).await {
+            detected.id
+        } else {
+            0
+        }
+    } else if let Some(detected) = detect_champion_from_name(&target.name).await {
+        detected.id
+    } else {
+        0
+    };
 
     let store = RuneStore::new()?;
     let new_id = store.save_runeset(
@@ -74,7 +92,7 @@ pub async fn api_import_client_page(page_id: i64) -> Result<i64, String> {
         target.sub_style_id,
         &target.selected_perk_ids,
         None,
-        0,
+        resolved_champ_id,
         None,
         Some(target.id),
         "league_client",
@@ -97,6 +115,27 @@ pub async fn api_export_saved_rune_page(runeset_id: i64) -> Result<i64, String> 
 pub async fn api_delete_runeset(runeset_id: i64) -> Result<bool, String> {
     let store = RuneStore::new()?;
     store.delete_runeset(runeset_id)
+}
+
+/// Updates the associated champion of a saved runeset in SQLite.
+#[tauri::command]
+pub async fn api_update_runeset_champion(
+    runeset_id: i64,
+    champion_id: i64,
+) -> Result<bool, String> {
+    let store = RuneStore::new()?;
+    let record = store
+        .get_runeset(runeset_id)?
+        .ok_or_else(|| format!("Runeset {} not found", runeset_id))?;
+
+    store.update_runeset(
+        runeset_id,
+        &record.rune_page_name,
+        record.primary_style_id,
+        record.sub_style_id,
+        &record.selected_perk_ids,
+        Some(champion_id),
+    )
 }
 
 /// Returns the initial rune tree payload, prioritizing the first saved companion runeset if present.
@@ -154,6 +193,7 @@ pub async fn api_rune_tree_select_perk(
         updated_perks,
         payload.runeset_id,
         payload.page_id,
+        None,
         true,
     )
     .await;
@@ -171,6 +211,7 @@ pub async fn api_save_rune_tree(payload: SaveRuneTreePayload) -> Result<i64, Str
     };
 
     let store = RuneStore::new()?;
+    let champion_id = payload.champion_id.unwrap_or(0);
     let mut saved_id: Option<i64> = None;
 
     if let Some(rid) = payload.runeset_id {
@@ -181,6 +222,7 @@ pub async fn api_save_rune_tree(payload: SaveRuneTreePayload) -> Result<i64, Str
                 payload.primary_style_id,
                 payload.sub_style_id,
                 &payload.selected_perks,
+                Some(champion_id),
             )?;
             saved_id = Some(rid);
         }
@@ -193,7 +235,7 @@ pub async fn api_save_rune_tree(payload: SaveRuneTreePayload) -> Result<i64, Str
             payload.sub_style_id,
             &payload.selected_perks,
             None,
-            0,
+            champion_id,
             None,
             payload.page_id,
             "companion_custom",
@@ -202,5 +244,19 @@ pub async fn api_save_rune_tree(payload: SaveRuneTreePayload) -> Result<i64, Str
     }
 
     saved_id.ok_or_else(|| "Failed to save rune page".to_string())
+}
+
+/// Retrieves the last selected rune key persisted in SQLite.
+#[tauri::command]
+pub async fn api_get_selected_rune_key() -> Result<Option<String>, String> {
+    let store = RuneStore::new()?;
+    store.get_selected_rune_key()
+}
+
+/// Persists the last selected rune key in SQLite.
+#[tauri::command]
+pub async fn api_set_selected_rune_key(rune_key: Option<String>) -> Result<(), String> {
+    let store = RuneStore::new()?;
+    store.set_selected_rune_key(rune_key.as_deref())
 }
 

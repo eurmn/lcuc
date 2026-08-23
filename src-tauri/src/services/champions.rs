@@ -76,6 +76,7 @@ pub async fn ensure_champions_cache() -> Result<(), String> {
                 square_icon_url,
                 roles: item.roles,
                 has_saved_runes: false,
+                is_favorite: false,
             },
         );
     }
@@ -99,10 +100,21 @@ pub fn get_saved_champion_ids() -> HashSet<i64> {
     HashSet::new()
 }
 
-/// Returns all champions sorted alphabetically, with `has_saved_runes` populated.
+/// Returns a set of champion IDs that are marked as favorites in SQLite.
+pub fn get_favorite_champion_ids() -> HashSet<i64> {
+    if let Ok(store) = RuneStore::new() {
+        if let Ok(favs) = store.get_favorite_champion_ids() {
+            return favs;
+        }
+    }
+    HashSet::new()
+}
+
+/// Returns all champions sorted alphabetically, with `has_saved_runes` and `is_favorite` populated.
 pub async fn get_all_champions() -> Result<Vec<ChampionSummary>, String> {
     ensure_champions_cache().await?;
     let saved_ids = get_saved_champion_ids();
+    let favorite_ids = get_favorite_champion_ids();
 
     let cache = CHAMPIONS_CACHE.read().await;
     let mut list: Vec<ChampionSummary> = cache
@@ -110,6 +122,7 @@ pub async fn get_all_champions() -> Result<Vec<ChampionSummary>, String> {
         .map(|c| {
             let mut item = c.clone();
             item.has_saved_runes = saved_ids.contains(&c.id);
+            item.is_favorite = favorite_ids.contains(&c.id);
             item
         })
         .collect();
@@ -122,6 +135,7 @@ pub async fn get_all_champions() -> Result<Vec<ChampionSummary>, String> {
 pub async fn get_saved_champion_roster() -> Result<Vec<ChampionSummary>, String> {
     ensure_champions_cache().await?;
     let saved_ids = get_saved_champion_ids();
+    let favorite_ids = get_favorite_champion_ids();
 
     let cache = CHAMPIONS_CACHE.read().await;
     let mut roster: Vec<ChampionSummary> = cache
@@ -130,6 +144,7 @@ pub async fn get_saved_champion_roster() -> Result<Vec<ChampionSummary>, String>
         .map(|c| {
             let mut item = c.clone();
             item.has_saved_runes = true;
+            item.is_favorite = favorite_ids.contains(&c.id);
             item
         })
         .collect();
@@ -143,6 +158,7 @@ pub async fn detect_champion_from_name(name: &str) -> Option<ChampionSummary> {
     ensure_champions_cache().await.ok()?;
     let normalized = name.to_lowercase();
     let saved_ids = get_saved_champion_ids();
+    let favorite_ids = get_favorite_champion_ids();
 
     let cache = CHAMPIONS_CACHE.read().await;
     let mut candidates: Vec<&ChampionSummary> = cache.values().collect();
@@ -157,6 +173,7 @@ pub async fn detect_champion_from_name(name: &str) -> Option<ChampionSummary> {
         if normalized.contains(&champ_name_lower) || normalized.contains(&champ_alias_lower) {
             let mut matched = champ.clone();
             matched.has_saved_runes = saved_ids.contains(&champ.id);
+            matched.is_favorite = favorite_ids.contains(&champ.id);
             return Some(matched);
         }
     }
