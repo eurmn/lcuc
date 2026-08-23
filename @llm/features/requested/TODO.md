@@ -1,0 +1,1 @@
+ - [ ] Fix alignment on currently selected champion with collapsed sidebar;

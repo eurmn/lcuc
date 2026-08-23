@@ -66,14 +66,16 @@ graph TB
 
 | Technology | Role & Purpose | Documentation & References |
 | :--- | :--- | :--- |
-| **Tauri 2.0** | Native cross-platform desktop framework powering window management, native IPC, and system integration. | [Tauri Documentation](https://v2.tauri.app/) · [`@llm/docs/ui/tauri.llms.txt`](lcu-companion/@llm/docs/ui/tauri.llms.txt) |
-| **Svelte 5** | Reactive UI framework using modern runes (`$state`, `$derived`, `$props`, `$effect`) for performant and expressive component state. | [Svelte Documentation](https://svelte.dev/) · [`@llm/docs/context/HTMX_TO_SVELTE.md`](lcu-companion/@llm/docs/context/HTMX_TO_SVELTE.md) |
+| **Tauri 2.0** | Native cross-platform desktop framework powering window management, native IPC, and system integration. | [Tauri Documentation](https://v2.tauri.app/) · [`@llm/docs/ui/tauri.llms.txt`](/@llm/docs/ui/tauri.llms.txt) |
+| **Svelte 5** | Reactive UI framework using modern runes (`$state`, `$derived`, `$props`, `$effect`) for performant and expressive component state. | [Svelte Documentation](https://svelte.dev/) · [`@llm/docs/context/HTMX_TO_SVELTE.md`](/@llm/docs/context/HTMX_TO_SVELTE.md) |
 | **TypeScript** | Strict type safety for all frontend components, domain models, and API client invoke functions. | [TypeScript Docs](https://www.typescriptlang.org/) |
 | **Rust (2021)** | Backend language providing memory safety, high throughput, low latency, and minimal footprint. | [Rust Standard Library](https://doc.rust-lang.org/std/) · [Tokio Async Runtime](https://tokio.rs/) |
-| **Tailwind CSS 4.0** | Utility-first CSS framework providing dark-themed styling, smooth transitions, and thematic rune path colors. | [Tailwind CSS Docs](https://tailwindcss.com/docs) · [`@llm/docs/ui/THEME.md`](lcu-companion/@llm/docs/ui/THEME.md) |
-| **SQLite (rusqlite)** | Embedded zero-configuration SQL database for persisting saved rune pages and user preferences. | [`@llm/docs/db/DATABASE.md`](lcu-companion/@llm/docs/db/DATABASE.md) · [rusqlite Docs](https://docs.rs/rusqlite/) |
-| **League Client Update (LCU)** | Riot Games local client REST API and WebSocket (`127.0.0.1:<port>`) authenticated via lockfile. | [`@llm/docs/lcu/LCU.md`](lcu-companion/@llm/docs/lcu/LCU.md) · [`@llm/docs/lcu/swagger.json`](lcu-companion/@llm/docs/lcu/swagger.json) |
-| **CommunityDragon (CDragon)** | CDN source for perk icons, challenge rank tokens, summoner borders, and static metadata. | [CommunityDragon Docs](https://communitydragon.org/) · [`@llm/docs/lcu/cdragon_perk_styles_index.html`](lcu-companion/@llm/docs/lcu/cdragon_perk_styles_index.html) |
+| **Tailwind CSS 4.0** | Utility-first CSS framework providing dark-themed styling, smooth transitions, and thematic rune path colors. | [Tailwind CSS Docs](https://tailwindcss.com/docs) · [`@llm/docs/ui/THEME.md`](/@llm/docs/ui/THEME.md) |
+| **Flowbite** | Component library system providing UI design patterns, button variants, badges, and modals. | [`@llm/docs/ui/flowbite/`](/@llm/docs/ui/flowbite/) · [Flowbite Docs](https://flowbite.com/) |
+| **Svelte Motion** | Framer Motion-compatible declarative animation library (`@humanspeak/svelte-motion`) for layout and UI transitions. | [`@llm/docs/ui/motion_svelte.llm.txt`](/@llm/docs/ui/motion_svelte.llm.txt) · [Svelte Motion Docs](https://motion.svelte.page/) |
+| **SQLite (rusqlite)** | Embedded zero-configuration SQL database for persisting saved rune pages and user preferences. | [`@llm/docs/db/DATABASE.md`](/@llm/docs/db/DATABASE.md) · [rusqlite Docs](https://docs.rs/rusqlite/) |
+| **League Client Update (LCU)** | Riot Games local client REST API and WebSocket (`127.0.0.1:<port>`) authenticated via lockfile. | [`@llm/docs/lcu/LCU.md`](/@llm/docs/lcu/LCU.md) · [`@llm/docs/lcu/swagger.json`](/@llm/docs/lcu/swagger.json) |
+| **CommunityDragon (CDragon)** | CDN source for perk icons, challenge rank tokens, summoner borders, and static metadata. | [CommunityDragon Docs](https://communitydragon.org/) · [`@llm/docs/lcu/cdragon_perk_styles_index.html`](/@llm/docs/lcu/cdragon_perk_styles_index.html) |
 
 ---
 
@@ -160,13 +162,13 @@ lcu-companion/
 ## 4. Subsystem Deep-Dives
 
 ### A. LCU Auto-Discovery & Real-Time Synchronization
-1. **Lockfile Discovery**: [`services/lcu_client.rs`](lcu-companion/src-tauri/src/services/lcu_client.rs) inspects the Windows process list (`sysinfo`) for `LeagueClientUx.exe`, extracts `--app-port` and `--remoting-auth-token`, and reads the active `lockfile`.
-2. **WebSocket Watcher**: [`services/lcu_websocket.rs`](lcu-companion/src-tauri/src/services/lcu_websocket.rs) establishes a background WSS connection to `127.0.0.1:<port>`, subscribes to `OnJsonApiEvent`, and actively triggers updates when the player switches rune pages or enters Champion Select.
+1. **Lockfile Discovery**: [`services/lcu_client.rs`](/src-tauri/src/services/lcu_client.rs) inspects the Windows process list (`sysinfo`) for `LeagueClientUx.exe`, extracts `--app-port` and `--remoting-auth-token`, and reads the active `lockfile`.
+2. **WebSocket Watcher**: [`services/lcu_websocket.rs`](/src-tauri/src/services/lcu_websocket.rs) establishes a background WSS connection to `127.0.0.1:<port>`, subscribes to `OnJsonApiEvent`, and actively triggers updates when the player switches rune pages or enters Champion Select.
 3. **Companion Slot (`LCUC`)**: Exported runes are marked with the prefix `[LCUC]` and automatically synced to the active client slot.
 
 ### B. Persistent In-Disk Asset Caching
 To ensure instant loading and offline capability:
-- [`services/asset_cache.rs`](lcu-companion/src-tauri/src/services/asset_cache.rs) caches remote CDragon assets to disk under `%APPDATA%/com.eurmn.lcu-companion/cache/`.
+- [`services/asset_cache.rs`](/src-tauri/src/services/asset_cache.rs) caches remote CDragon assets to disk under `%APPDATA%/com.eurmn.lcu-companion/cache/`.
 - Assets include:
   - Rune Perk Icons (`/latest/plugins/rcp-be-lol-game-data/global/default/v1/perk-images/...`)
   - Summoner Profile Icons (`/latest/plugins/rcp-be-lol-game-data/global/default/v1/profile-icons/...`)
@@ -175,7 +177,7 @@ To ensure instant loading and offline capability:
 - The backend serves local cached assets directly as local file URIs or base64 streams to the Svelte components.
 
 ### C. Thematic Rune UI System
-The visual styling conforms to official League of Legends style paths via [`src/lib/utils/theme.ts`](lcu-companion/src/lib/utils/theme.ts):
+The visual styling conforms to official League of Legends style paths via [`src/lib/utils/theme.ts`](/src/lib/utils/theme.ts):
 - **Precision (ID: 8000)**: Amber / Gold (`border-yellow-500`, `text-yellow-400`, amber glow)
 - **Domination (ID: 8100)**: Crimson / Red (`border-red-500`, `text-red-400`, crimson glow)
 - **Sorcery (ID: 8200)**: Brand Purple (`border-purple-500`, `text-purple-400`, purple glow)
@@ -183,17 +185,25 @@ The visual styling conforms to official League of Legends style paths via [`src/
 - **Resolve (ID: 8400)**: Emerald / Green (`border-emerald-500`, `text-emerald-400`, emerald glow)
 
 ### D. SQLite Rune Library
-Custom runesets are persisted in local SQLite via [`services/rune_store.rs`](lcu-companion/src-tauri/src/services/rune_store.rs):
+Custom runesets are persisted in local SQLite via [`services/rune_store.rs`](/src-tauri/src/services/rune_store.rs):
 - Table `runesets`: `id`, `name`, `primary_style_id`, `sub_style_id`, `selected_perk_ids` (JSON), `created_at`, `updated_at`.
 - Table `favorite_champions`: `champion_id`, `created_at`.
 - Provides instant importing from the live League client into the saved database and exporting back to the client.
 
-### E. Heroicons Icon System
-All icons across frontend Svelte components must use `@iconify-json/heroicons` icon classes (e.g. `<span class="icon-[heroicons--...]"></span>`) rather than raw inline `<svg>` elements. Common icons include:
+### E. Flowbite Component System
+The application's design language and UI primitives (buttons, modals, input groups, badges, tabs, alerts) are based on the **Flowbite** component system. Full component reference documentation is available under [`@llm/docs/ui/flowbite/`](/@llm/docs/ui/flowbite/):
+- **Buttons & Actions**: Standardizes primary brand buttons, solid dark buttons, ghost buttons, gradient monochrome/duotones, and sizing.
+- **Modals & Overlays**: Champion selection and dialog overlays built using Flowbite modal layout and backdrop standards.
+- **Form Controls & Search**: Input boxes, search fields with leading icons, dropdowns, and pill filters.
+
+### F. Heroicons Icon System
+All icons across frontend Svelte components must use `@iconify-json/heroicons` (or `@iconify-json/flowbite` where specified) icon classes (e.g. `<span class="icon-[heroicons--...]"></span>` or `<span class="icon-[flowbite--...]"></span>`) rather than raw inline `<svg>` elements. Common icons include:
 - Search: `icon-[heroicons--magnifying-glass]`
 - Star / Favorite: `icon-[heroicons--star]` (outline) / `icon-[heroicons--star-solid]` (solid filled)
 - Close / Remove: `icon-[heroicons--x-mark]`
-- Edit: `icon-[heroicons--pencil-square]` / `icon-[heroicons--pencil]`
+- Edit: `icon-[heroicons--pencil-square]` / `icon-[heroicons--pencil-square-16-solid]`
+- Save: `icon-[flowbite--floppy-disk-solid]` / `icon-[heroicons--check]`
+- Lightning / Actions: `icon-[heroicons--bolt-16-solid]`
 - Trash / Delete: `icon-[heroicons--trash]`
 - Navigation: `icon-[heroicons--chevron-left]`, `icon-[heroicons--chevron-right]`
 - Bookmark / Favorite: `icon-[heroicons--bookmark]` (outline) / `icon-[heroicons--bookmark-20-solid]` (solid filled)
@@ -202,35 +212,36 @@ All icons across frontend Svelte components must use `@iconify-json/heroicons` i
 
 ## 5. Comprehensive Documentation Index (`@llm/docs/`)
 
-For detailed specifications and domain knowledge, consult the specialized documents in [`@llm/docs/`](lcu-companion/@llm/docs/):
+For detailed specifications and domain knowledge, consult the specialized documents in [`@llm/docs/`](/@llm/docs/):
 
 * **Context & Live State**:
-  * [`CONTEXT.md`](lcu-companion/@llm/docs/context/CONTEXT.md) — System overview, data flows, and module responsibilities.
-  * [`CURRENT_STATE.md`](lcu-companion/@llm/docs/context/CURRENT_STATE.md) — Live snapshot of registered commands, services, and test status.
-  * [`HTMX_TO_SVELTE.md`](lcu-companion/@llm/docs/context/HTMX_TO_SVELTE.md) — Svelte 5 + TypeScript migration plan and architecture reference.
-  * [`MIGRATION.md`](lcu-companion/@llm/docs/context/MIGRATION.md) — Architecture migration history.
-  * [`DOCS_LINKS.md`](lcu-companion/@llm/docs/context/DOCS_LINKS.md) — Manifest of all documentation files.
+  * [`CONTEXT.md`](/@llm/docs/context/CONTEXT.md) — System overview, data flows, and module responsibilities.
+  * [`CURRENT_STATE.md`](/@llm/docs/context/CURRENT_STATE.md) — Live snapshot of registered commands, services, and test status.
+  * [`HTMX_TO_SVELTE.md`](/@llm/docs/context/HTMX_TO_SVELTE.md) — Svelte 5 + TypeScript migration plan and architecture reference.
+  * [`MIGRATION.md`](/@llm/docs/context/MIGRATION.md) — Architecture migration history.
+  * [`DOCS_LINKS.md`](/@llm/docs/context/DOCS_LINKS.md) — Manifest of all documentation files.
 
 * **League Client Integration**:
-  * [`LCU.md`](lcu-companion/@llm/docs/lcu/LCU.md) — LCU protocol, auth headers, and WebSocket event handling.
-  * [`swagger.json`](lcu-companion/@llm/docs/lcu/swagger.json) — Full OpenAPI specification for LCU endpoints.
-  * [`getting-started-with-the-lcu-api`](lcu-companion/@llm/docs/lcu/getting-started-with-the-lcu-api) — LCU REST integration fundamentals.
-  * [`getting-started-with-the-lcu-websocket`](lcu-companion/@llm/docs/lcu/getting-started-with-the-lcu-websocket) — LCU WebSocket event subscription guide.
+  * [`LCU.md`](/@llm/docs/lcu/LCU.md) — LCU protocol, auth headers, and WebSocket event handling.
+  * [`swagger.json`](/@llm/docs/lcu/swagger.json) — Full OpenAPI specification for LCU endpoints.
+  * [`getting-started-with-the-lcu-api`](/@llm/docs/lcu/getting-started-with-the-lcu-api) — LCU REST integration fundamentals.
+  * [`getting-started-with-the-lcu-websocket`](/@llm/docs/lcu/getting-started-with-the-lcu-websocket) — LCU WebSocket event subscription guide.
 
 * **Database & Domain Models**:
-  * [`DATABASE.md`](lcu-companion/@llm/docs/db/DATABASE.md) — SQLite schema, indexes, and queries.
-  * [`RUNES.md`](lcu-companion/@llm/docs/db/RUNES.md) — Rune perk IDs, style trees, and serialization formats.
+  * [`DATABASE.md`](/@llm/docs/db/DATABASE.md) — SQLite schema, indexes, and queries.
+  * [`RUNES.md`](/@llm/docs/db/RUNES.md) — Rune perk IDs, style trees, and serialization formats.
 
-* **UI & Theming**:
-  * [`UI.md`](lcu-companion/@llm/docs/ui/UI.md) — Design system specifications and Flowbite component tokens.
-  * [`THEME.md`](lcu-companion/@llm/docs/ui/THEME.md) — Thematic color palette rules for rune paths.
-  * [`FLOWBITE_BUTTONS.md`](lcu-companion/@llm/docs/ui/FLOWBITE_BUTTONS.md) — Flowbite button classes and interaction states.
-  * [`RUNE_TREE_PLAN.md`](lcu-companion/@llm/docs/ui/RUNE_TREE_PLAN.md) — Center canvas layout plan and sizing.
-  * [`tauri.llms.txt`](lcu-companion/@llm/docs/ui/tauri.llms.txt) — Tauri 2.0 API reference cheat sheet.
+* **UI, Animation & Theming**:
+  * [`UI.md`](/@llm/docs/ui/UI.md) — UI architecture, Svelte 5 component hierarchy, Flowbite patterns, and Svelte Motion design.
+  * [`flowbite/`](/@llm/docs/ui/flowbite/) — Flowbite component guides (buttons, forms, modals, alerts, badges, tables, etc.).
+  * [`motion_svelte.llm.txt`](/@llm/docs/ui/motion_svelte.llm.txt) — Svelte Motion (`@humanspeak/svelte-motion`) declarative animation guide and cheat sheet.
+  * [`THEME.md`](/@llm/docs/ui/THEME.md) — Thematic color palette rules for rune paths and Flowbite button styling tokens.
+  * [`RUNE_TREE_PLAN.md`](/@llm/docs/ui/RUNE_TREE_PLAN.md) — Center canvas layout plan and sizing.
+  * [`tauri.llms.txt`](/@llm/docs/ui/tauri.llms.txt) — Tauri 2.0 API reference cheat sheet.
 
 * **Historical Archive**:
-  * [`walkthrough/`](lcu-companion/@llm/docs/historical/walkthrough/) — Permanent archival walkthroughs for completed features and plans.
-  * [`TOOLS_FEATURE_ARCHIVE.md`](lcu-companion/@llm/docs/historical/TOOLS_FEATURE_ARCHIVE.md) — Archival notes on the mass friend removal tool and top navigation header.
+  * [`walkthrough/`](/@llm/docs/historical/walkthrough/) — Permanent archival walkthroughs for completed features and plans.
+  * [`TOOLS_FEATURE_ARCHIVE.md`](/@llm/docs/historical/TOOLS_FEATURE_ARCHIVE.md) — Archival notes on the mass friend removal tool and top navigation header.
 
 ---
 

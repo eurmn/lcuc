@@ -36,7 +36,7 @@ We have overhauled the champion selection state, interactive champion switching,
 
 ### D. Icon System Migration to Heroicons
 - Replaced raw inline `<svg>` elements across all components with `@iconify-json/heroicons` icon classes (`icon-[heroicons--...]`).
-- Documented in [GEMINI.md](lcu-companion/GEMINI.md#L190-L200) and [DATABASE.md](lcu-companion/@llm/docs/db/DATABASE.md#L38-L50).
+- Documented in [GEMINI.md](/GEMINI.md#L190-L200) and [DATABASE.md](/@llm/docs/db/DATABASE.md#L38-L50).
 
 ### E. Decoupled Rune Champion & Active Tree Flowbite Indicator
 - **State Decoupling**: Changing the sidebar champion filter (`selectedChampion`) filters the saved rune page list without modifying the currently loaded rune tree or its assigned champion.
