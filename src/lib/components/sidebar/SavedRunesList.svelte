@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { MotionLi, MotionSpan } from "@humanspeak/svelte-motion";
+  import { MotionLi, MotionSpan, type MotionTransition } from "@humanspeak/svelte-motion";
   import type { RuneSetSummary } from "../../types/runes";
   import type { ChampionSummary } from "../../types/champions";
   import { ALL_CHAMPIONS_ICON_URL } from "../../types/champions";
@@ -31,7 +31,7 @@
     return found ? found.name : "Custom";
   }
 
-  let layoutTransition = $derived({
+  let layoutTransition: MotionTransition = $derived({
     x: { duration: 0.35, ease: [0.16, 1, 0.3, 1] },
     width: { duration: 0.35, ease: [0.16, 1, 0.3, 1] },
     y: { duration: 0.35, ease: "linear" },

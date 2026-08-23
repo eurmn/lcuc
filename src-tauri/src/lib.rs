@@ -19,9 +19,9 @@ use services::lcu_websocket::LcuWsWatcher;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .setup(|_app| {
+        .setup(|app| {
             // Start background LCU WebSocket listener and companion slot watcher
-            LcuWsWatcher::start();
+            LcuWsWatcher::start(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

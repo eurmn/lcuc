@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { MotionLi, MotionSpan } from "@humanspeak/svelte-motion";
+  import { MotionLi, MotionSpan, type MotionTransition } from "@humanspeak/svelte-motion";
   import type { ClientRunePageSummary } from "../../types/runes";
   import { ALL_CHAMPIONS_ICON_URL } from "../../types/champions";
   import { getRuneTheme } from "../../utils/theme";
@@ -18,7 +18,7 @@
     onImport: (pageId: number) => void;
   } = $props();
 
-  let layoutTransition = $derived({
+  let layoutTransition: MotionTransition = $derived({
     x: { duration: 0.35, ease: [0.16, 1, 0.3, 1] },
     width: { duration: 0.35, ease: [0.16, 1, 0.3, 1] },
     y: { duration: 0.35, ease: "linear" },

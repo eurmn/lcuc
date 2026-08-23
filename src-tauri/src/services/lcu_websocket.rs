@@ -10,6 +10,7 @@ use futures_util::{SinkExt, StreamExt};
 use native_tls::TlsConnector;
 use serde_json::Value;
 use std::time::Duration;
+use tauri::{AppHandle, Emitter};
 use tokio::time::sleep;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
@@ -20,24 +21,36 @@ pub struct LcuWsWatcher;
 
 impl LcuWsWatcher {
     /// Spawns the resilient background LCU WebSocket watcher using Tauri's async runtime.
-    pub fn start() {
+    pub fn start(app: AppHandle) {
         tauri::async_runtime::spawn(async move {
-            Self::run_loop().await;
+            Self::run_loop(app).await;
         });
     }
 
-    async fn run_loop() {
+    async fn run_loop(app: AppHandle) {
+        let mut was_connected = false;
         loop {
             if let Some(creds) = LcuClient::find_credentials() {
-                if let Err(e) = Self::connect_and_listen(&creds).await {
+                if let Err(e) = Self::connect_and_listen(&app, &creds, &mut was_connected).await {
                     eprintln!("[LCU WS] Connection closed or error: {}", e);
                 }
+                if was_connected {
+                    was_connected = false;
+                    let _ = app.emit("lcu:disconnected", ());
+                }
+            } else if was_connected {
+                was_connected = false;
+                let _ = app.emit("lcu:disconnected", ());
             }
-            sleep(Duration::from_secs(3)).await;
+            sleep(Duration::from_secs(1)).await;
         }
     }
 
-    async fn connect_and_listen(creds: &LcuCredentials) -> Result<(), String> {
+    async fn connect_and_listen(
+        app: &AppHandle,
+        creds: &LcuCredentials,
+        was_connected: &mut bool,
+    ) -> Result<(), String> {
         let ws_url = format!("wss://127.0.0.1:{}/", creds.port);
         let mut request = ws_url
             .clone()
@@ -68,6 +81,8 @@ impl LcuWsWatcher {
             creds.port
         );
 
+        *was_connected = true;
+
         let (mut write, mut read) = ws_stream.split();
 
         // Subscribe to all LCU events via WAMP opcode 5
@@ -77,7 +92,11 @@ impl LcuWsWatcher {
             .await
             .map_err(|e| format!("Failed to send subscription message: {}", e))?;
 
-        // On initial connection, ensure companion slot exists
+        // On initial connection, notify frontend and ensure companion slot exists
+        let _ = app.emit("lcu:connected", ());
+        let _ = app.emit("lcu:summoner-changed", ());
+        let _ = app.emit("lcu:runes-changed", ());
+
         if let Ok(client) = LcuClient::new(creds.clone()) {
             let _ = ensure_companion_slot(&client).await;
         }
@@ -86,7 +105,7 @@ impl LcuWsWatcher {
             let msg = msg_result.map_err(|e| format!("WS read error: {}", e))?;
             match msg {
                 Message::Text(text) => {
-                    Self::handle_event(&text, creds).await;
+                    Self::handle_event(app, &text, creds).await;
                 }
                 Message::Close(_) => {
                     println!("[LCU WS] Received Close frame from server.");
@@ -99,7 +118,7 @@ impl LcuWsWatcher {
         Ok(())
     }
 
-    async fn handle_event(text: &str, creds: &LcuCredentials) {
+    async fn handle_event(app: &AppHandle, text: &str, creds: &LcuCredentials) {
         let parsed: Value = match serde_json::from_str(text) {
             Ok(v) => v,
             Err(_) => return,
@@ -118,6 +137,22 @@ impl LcuWsWatcher {
                     if let Ok(client) = LcuClient::new(creds.clone()) {
                         let _ = ensure_companion_slot(&client).await;
                     }
+                }
+
+                // Check for summoner / login / regalia / challenge events
+                if uri == "/lol-login/v1/session"
+                    || uri == "/lol-summoner/v1/current-summoner"
+                    || uri == "/lol-regalia/v2/current-summoner/regalia"
+                    || uri == "/lol-challenges/v1/summary-player-data/local-player"
+                {
+                    let _ = app.emit("lcu:summoner-changed", ());
+                }
+
+                // Check for rune perks / pages events
+                if uri == "/lol-perks/v1/pages"
+                    || uri == "/lol-perks/v1/currentpage"
+                {
+                    let _ = app.emit("lcu:runes-changed", ());
                 }
             }
         }

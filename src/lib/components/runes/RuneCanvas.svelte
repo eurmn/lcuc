@@ -29,7 +29,6 @@
     selectedChampion = null,
     onSave,
     onExport,
-    onImport,
     onSelectChampion,
   }: {
     tree: RuneTreePayload | null;
@@ -59,7 +58,6 @@
   let pageName = $state<string>("Custom Rune Page");
   let saving = $state<boolean>(false);
   let exporting = $state<boolean>(false);
-  let importing = $state<boolean>(false);
   let telemetryLoading = $state<boolean>(false);
 
   // Telemetry data
@@ -339,18 +337,6 @@
       await handleSave();
     }
   }
-
-  // Handler: Import
-  async function handleImport() {
-    if (tree?.page_id && onImport) {
-      try {
-        importing = true;
-        await onImport(tree.page_id);
-      } finally {
-        importing = false;
-      }
-    }
-  }
 </script>
 
 <main class="flex-1 flex flex-col bg-gray-900 p-5 overflow-y-auto h-full relative select-none">
@@ -422,69 +408,46 @@
         <!-- Action Buttons -->
         <div class="flex items-center gap-2 shrink-0">
           {#if isEditing}
-            <!-- Apply Recommended Button -->
-            <button
-              type="button"
-              title="Auto-select highest winrate combination"
-              onclick={handleApplyRecommended}
-              class="inline-flex items-center gap-1.5 rounded-xl border border-blue-500/40 bg-blue-500/10 px-3 py-1.5 text-xs font-bold text-blue-300 transition-all hover:border-blue-500 hover:bg-blue-600 hover:text-white cursor-pointer"
-            >
-              <span class="icon-[heroicons--bolt] h-3.5 w-3.5"></span>
-              <span>Recommended</span>
-            </button>
-
-            <!-- Cancel Button -->
+            <!-- Cancel Button (Dark / Solid Grey, Fixed 5rem / w-20) -->
             <button
               type="button"
               onclick={handleCancelEdit}
-              class="inline-flex items-center gap-1.5 rounded-xl border border-gray-700 bg-gray-800 px-3 py-1.5 text-xs font-bold text-gray-300 transition-all hover:bg-gray-700 hover:text-white cursor-pointer"
+              class="h-8 inline-flex w-20 items-center justify-center gap-2 rounded-xl text-white bg-gray-800 hover:bg-gray-700 focus:ring-4 focus:ring-gray-700 box-border border border-transparent shadow-xs px-3.5 py-1.5 text-xs font-semibold focus:outline-none active:scale-95 cursor-pointer transition-all"
             >
               <span>Cancel</span>
             </button>
 
-            <!-- Save Button -->
+            <!-- Save Changes Button (Purple Action, Fixed 8rem / w-32) -->
             <button
               type="button"
               disabled={saving}
               onclick={handleSave}
-              class="inline-flex items-center gap-1.5 rounded-xl bg-purple-600 px-4 py-1.5 text-xs font-bold text-white shadow-md shadow-purple-950/50 transition-all hover:bg-purple-500 active:scale-95 cursor-pointer"
+              class="h-8 inline-flex w-32 items-center justify-center gap-2 rounded-xl bg-purple-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-md shadow-purple-950/50 transition-all hover:bg-purple-500 focus:outline-none focus:ring-4 focus:ring-purple-800 active:scale-95 cursor-pointer"
             >
-              <span class="icon-[heroicons--check] h-3.5 w-3.5"></span>
-              <span>{saving ? "Saving..." : "Save Page"}</span>
+              <span class="icon-[flowbite--floppy-disk-solid] h-4.5 w-4.5"></span>
+              <span>{saving ? "Saving..." : "Save changes"}</span>
             </button>
           {:else}
-            <!-- View Mode: Edit Button -->
+            <!-- View Mode: Edit Button (Dark / Solid Grey, Fixed 5rem / w-20) -->
             <button
+              title="Edit rune page"
               type="button"
               onclick={() => (isEditing = true)}
-              class="inline-flex items-center gap-1.5 rounded-xl border border-purple-500/40 bg-purple-500/10 px-3.5 py-1.5 text-xs font-bold text-purple-300 transition-all hover:border-purple-500 hover:bg-purple-600 hover:text-white cursor-pointer"
+              class="h-8 inline-flex w-20 items-center justify-center gap-2 rounded-xl text-white bg-gray-800 hover:bg-gray-700 focus:ring-4 focus:ring-gray-700 box-border border border-transparent shadow-xs px-3.5 py-1.5 text-xs font-semibold focus:outline-none active:scale-95 cursor-pointer transition-all"
             >
-              <span class="icon-[heroicons--pencil-square] h-3.5 w-3.5"></span>
-              <span>Edit Page</span>
+              <span class="icon-[heroicons--pencil-square-16-solid] h-4.5 w-4.5"></span>
+              <span>Edit</span>
             </button>
 
-            <!-- View Mode: Import Button (for Client Pages) -->
-            {#if tree?.page_id && onImport}
-              <button
-                type="button"
-                disabled={importing}
-                onclick={handleImport}
-                class="inline-flex items-center gap-1.5 rounded-xl border border-blue-500/40 bg-blue-500/10 px-3.5 py-1.5 text-xs font-bold text-blue-300 transition-all hover:border-blue-500 hover:bg-blue-600 hover:text-white cursor-pointer"
-              >
-                <span class="icon-[heroicons--arrow-down-tray] h-3.5 w-3.5"></span>
-                <span>{importing ? "Importing..." : "Import"}</span>
-              </button>
-            {/if}
-
-            <!-- View Mode: Export Button -->
+            <!-- View Mode: Send to Client Button (Gradient Duotone Purple to Blue, Fixed 8rem / w-32) -->
             <button
               type="button"
               disabled={exporting}
               onclick={handleExport}
-              class="inline-flex items-center gap-1.5 rounded-xl bg-purple-600 px-4 py-1.5 text-xs font-bold text-white shadow-md shadow-purple-950/50 transition-all hover:bg-purple-500 active:scale-95 cursor-pointer"
+              class="h-8 inline-flex w-34 items-center justify-center gap-2 rounded-xl text-white bg-gradient-to-br from-purple-600 to-blue-500 hover:bg-gradient-to-bl focus:ring-4 focus:ring-blue-300 dark:focus:ring-blue-800 shadow-md shadow-purple-950/40 px-3.5 py-1.5 text-xs font-semibold focus:outline-none active:scale-95 cursor-pointer transition-all"
             >
-              <span class="icon-[heroicons--arrow-up-tray] h-3.5 w-3.5"></span>
-              <span>{exporting ? "Exporting..." : "Export to Game"}</span>
+              <span class="icon-[heroicons--bolt-16-solid] h-4.5 w-4.5"></span>
+              <span>{exporting ? "Sending..." : "Send to Client"}</span>
             </button>
           {/if}
         </div>

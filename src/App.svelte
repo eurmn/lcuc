@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import TitleBar from "./lib/components/TitleBar.svelte";
   import RunesSidebar from "./lib/components/sidebar/RunesSidebar.svelte";
   import RuneCanvas from "./lib/components/runes/RuneCanvas.svelte";
@@ -223,6 +224,10 @@
     runesSidebarRef?.refreshChampions();
   }
 
+  let unlistenRunes: UnlistenFn | null = null;
+  let unlistenConnected: UnlistenFn | null = null;
+  let unlistenDisconnected: UnlistenFn | null = null;
+
   onMount(async () => {
     await loadChampions();
     await restoreSelectedChampion();
@@ -231,6 +236,29 @@
     if (key) {
       await loadTreeForKey(key);
     }
+
+    try {
+      unlistenRunes = await listen("lcu:runes-changed", async () => {
+        await loadOverview(selectedKey);
+      });
+      unlistenConnected = await listen("lcu:connected", async () => {
+        await loadOverview(selectedKey);
+        runesSidebarRef?.refreshChampions();
+      });
+      unlistenDisconnected = await listen("lcu:disconnected", async () => {
+        clientPages = [];
+        activeCompanionName = null;
+        await loadOverview(selectedKey);
+      });
+    } catch (err) {
+      console.error("[App] Failed to attach Tauri event listeners:", err);
+    }
+  });
+
+  onDestroy(() => {
+    if (unlistenRunes) unlistenRunes();
+    if (unlistenConnected) unlistenConnected();
+    if (unlistenDisconnected) unlistenDisconnected();
   });
 </script>
 

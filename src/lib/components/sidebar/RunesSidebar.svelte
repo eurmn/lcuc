@@ -1,12 +1,20 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { LayoutGroup, MotionAside, MotionDiv } from "@humanspeak/svelte-motion";
+  import {
+    LayoutGroup,
+    MotionAside,
+    MotionDiv,
+    type MotionTransition,
+  } from "@humanspeak/svelte-motion";
   import ProfileCard from "../ProfileCard.svelte";
   import SelectedChampionSlot from "./SelectedChampionSlot.svelte";
   import SavedRunesList from "./SavedRunesList.svelte";
   import ClientRunesList from "./ClientRunesList.svelte";
   import ChampionSelectModal from "../ChampionSelectModal.svelte";
-  import type { ClientRunePageSummary, RuneSetSummary } from "../../types/runes";
+  import type {
+    ClientRunePageSummary,
+    RuneSetSummary,
+  } from "../../types/runes";
   import type { ChampionSummary } from "../../types/champions";
   import { ALL_CHAMPIONS_ICON_URL } from "../../types/champions";
   import { getChampions, toggleFavoriteChampion } from "../../api/champions";
@@ -86,7 +94,7 @@
           c.is_favorite &&
           c.id > 0 &&
           !c.id.toString().startsWith("600") &&
-          (!selectedChampion || c.id !== selectedChampion.id)
+          (!selectedChampion || c.id !== selectedChampion.id),
       )
       .sort((a, b) => a.name.localeCompare(b.name));
   });
@@ -99,7 +107,7 @@
           !c.is_favorite &&
           c.id > 0 &&
           !c.id.toString().startsWith("600") &&
-          (!selectedChampion || c.id !== selectedChampion.id)
+          (!selectedChampion || c.id !== selectedChampion.id),
       )
       .sort((a, b) => a.name.localeCompare(b.name));
   });
@@ -114,7 +122,8 @@
           !c.id.toString().startsWith("600") &&
           c.id > 0 &&
           (!selectedChampion || c.id !== selectedChampion.id) &&
-          (c.name.toLowerCase().includes(q) || c.alias.toLowerCase().includes(q))
+          (c.name.toLowerCase().includes(q) ||
+            c.alias.toLowerCase().includes(q)),
       )
       .sort((a, b) => {
         const aFav = a.is_favorite ? 1 : 0;
@@ -125,7 +134,10 @@
   });
 
   const isRuneMismatch = $derived.by(() => {
-    return (activeRuneChampionId || 0) !== (selectedChampion ? selectedChampion.id : 0);
+    return (
+      (activeRuneChampionId || 0) !==
+      (selectedChampion ? selectedChampion.id : 0)
+    );
   });
 
   $effect(() => {
@@ -141,12 +153,13 @@
     let list: RuneSetSummary[];
     if (selectedChampion && selectedChampion.id > 0) {
       list = savedRunesets.filter(
-        (r) => r.champion_id === selectedChampion.id || !r.champion_id || r.champion_id === 0
+        (r) =>
+          r.champion_id === selectedChampion.id ||
+          !r.champion_id ||
+          r.champion_id === 0,
       );
     } else {
-      list = savedRunesets.filter(
-        (r) => !r.champion_id || r.champion_id === 0
-      );
+      list = savedRunesets.filter((r) => !r.champion_id || r.champion_id === 0);
     }
 
     // If the active/selected page is a saved runeset from a different champion, prepend it before the current champion's saved runes
@@ -171,15 +184,17 @@
     try {
       const updated = await toggleFavoriteChampion(championId);
       allChampions = allChampions.map((c) =>
-        c.id === championId ? { ...c, is_favorite: updated } : c
+        c.id === championId ? { ...c, is_favorite: updated } : c,
       );
     } catch (err) {
       console.error("[Toggle Favorite Error]", err);
     }
   }
 
-
-  function handleOpenChangeChampionModal(runesetId: number, currentChampId: number) {
+  function handleOpenChangeChampionModal(
+    runesetId: number,
+    currentChampId: number,
+  ) {
     editingRunesetId = runesetId;
     editingRunesetCurrentChampId = currentChampId;
     isRunesetChampionModalOpen = true;
@@ -200,23 +215,25 @@
     scrollContainer?.scrollBy({ left: 160, behavior: "smooth" });
   }
 
-  let layoutTransition = $derived({
-    x: { duration: 0.35, ease: [0.16, 1, 0.3, 1] },
-    width: { duration: 0.35, ease: [0.16, 1, 0.3, 1] },
-    y: { duration: 0.35, ease: "linear" },
-    height: { duration: 0.35, ease: "linear" },
-    opacity: { duration: 0.35, ease: "linear" },
+  let layoutTransition: MotionTransition = $derived({
+    x: { duration: 0.5, ease: [0.16, 1, 0.3, 1] },
+    width: { duration: 0.5, ease: [0.16, 1, 0.3, 1] },
+    y: { duration: 0.5, ease: "linear" },
+    height: { duration: 0.5, ease: "linear" },
+    opacity: { duration: 0.5, ease: "linear" },
   });
 </script>
 
 <LayoutGroup id="sidebar-rail">
   <MotionAside
     key="runes-sidebar"
-    animate={{ width: isOpen ? 384 : 130 }}
+    animate={{ width: isOpen ? 330 : 130 }}
     transition={layoutTransition}
     class="h-full shrink-0 border-r border-gray-800 bg-gray-900/60 overflow-hidden select-none z-20"
   >
-    <div class="h-full w-full p-2.5 flex flex-col gap-3 select-none overflow-y-auto overflow-x-hidden min-w-0">
+    <div
+      class="h-full w-full p-2.5 flex flex-col gap-3 select-none overflow-y-auto overflow-x-hidden min-w-0"
+    >
       <!-- Profile Card Container with right-sticked collapse button -->
       <ProfileCard
         bind:this={profileCardRef}
@@ -225,14 +242,20 @@
       />
 
       <!-- Champion Selector & Search Container -->
-      <MotionDiv layout="position" transition={layoutTransition} class="flex flex-col gap-2 rounded-2xl border border-gray-800 bg-gray-950/80 p-2 shadow-md overflow-hidden w-full min-w-0">
+      <MotionDiv
+        layout="position"
+        transition={layoutTransition}
+        class="flex flex-col gap-2 rounded-2xl border border-gray-800 bg-gray-950/80 p-2 shadow-md overflow-hidden w-full min-w-0"
+      >
         <!-- Search Input (Smoothly collapses to height 0 and opacity 0 without scale distortion) -->
         <MotionDiv
           animate={{ opacity: isOpen ? 1 : 0, height: isOpen ? "auto" : 0 }}
           transition={layoutTransition}
           class="relative w-full overflow-hidden"
         >
-          <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-gray-400">
+          <div
+            class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-gray-400"
+          >
             <span class="icon-[heroicons--magnifying-glass] h-4 w-4"></span>
           </div>
           <input
@@ -255,7 +278,11 @@
         </MotionDiv>
 
         <!-- Champion Selector Row: Dedicated Selected Champion Slot (Pinned First) + Scrollable Results -->
-        <div class="flex items-center {isOpen ? 'justify-start' : 'justify-center'} gap-2 w-full min-w-0 overflow-hidden">
+        <div
+          class="flex items-center {isOpen
+            ? 'justify-start'
+            : 'justify-center'} gap-2 w-full min-w-0 overflow-hidden"
+        >
           <!-- 1. Dedicated Selected Champion Component (Pinned First) -->
           <div class="shrink-0 flex items-center justify-center">
             <SelectedChampionSlot
@@ -275,7 +302,9 @@
             <div class="h-8 w-px bg-gray-800 shrink-0"></div>
 
             <!-- Horizontally Scrollable Results Carousel with Left/Right Navigation Arrows -->
-            <div class="relative flex-1 flex items-center min-w-0 overflow-hidden">
+            <div
+              class="relative flex-1 flex items-center min-w-0 overflow-hidden"
+            >
               <!-- Left Arrow Button -->
               {#if canScrollLeft}
                 <button
@@ -284,7 +313,8 @@
                   onclick={scrollLeft}
                   class="absolute left-0 z-10 flex h-7 w-7 -translate-x-1.5 items-center justify-center rounded-full border border-gray-700 bg-gray-800/90 text-gray-300 shadow-md hover:border-purple-500 hover:bg-purple-600 hover:text-white transition-all cursor-pointer"
                 >
-                  <span class="icon-[heroicons--chevron-left] h-3.5 w-3.5"></span>
+                  <span class="icon-[heroicons--chevron-left] h-3.5 w-3.5"
+                  ></span>
                 </button>
               {/if}
 
@@ -297,10 +327,12 @@
                 {#if championSearchQuery.trim()}
                   <!-- Search Results -->
                   {#each searchedChampions as champ (champ.id)}
-                    <div class="relative flex shrink-0 items-center justify-center">
+                    <div
+                      class="relative flex shrink-0 items-center justify-center"
+                    >
                       <button
                         type="button"
-                        title={`${champ.name}${champ.is_favorite ? ' (Favorite)' : ''}`}
+                        title={`${champ.name}${champ.is_favorite ? " (Favorite)" : ""}`}
                         onclick={() => selectChampion(champ)}
                         class={champ.is_favorite
                           ? "relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border-2 border-yellow-400 bg-gray-950 p-0 shadow-sm shadow-yellow-950/40 opacity-90 hover:opacity-100 hover:scale-105 cursor-pointer transition-all"
@@ -313,7 +345,9 @@
                             class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-[calc(100%+4px)] w-[calc(100%+4px)] object-cover rounded-full"
                           />
                         {:else}
-                          <div class="h-full w-full rounded-full bg-gray-800"></div>
+                          <div
+                            class="h-full w-full rounded-full bg-gray-800"
+                          ></div>
                         {/if}
                       </button>
 
@@ -328,7 +362,9 @@
                 {:else}
                   <!-- Favorites List -->
                   {#each favoriteChampions as champ (champ.id)}
-                    <div class="relative flex shrink-0 items-center justify-center">
+                    <div
+                      class="relative flex shrink-0 items-center justify-center"
+                    >
                       <button
                         type="button"
                         title={`${champ.name} (Favorite)`}
@@ -342,7 +378,9 @@
                             class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-[calc(100%+4px)] w-[calc(100%+4px)] object-cover rounded-full"
                           />
                         {:else}
-                          <div class="h-full w-full rounded-full bg-gray-800"></div>
+                          <div
+                            class="h-full w-full rounded-full bg-gray-800"
+                          ></div>
                         {/if}
                       </button>
 
@@ -357,7 +395,9 @@
 
                   <!-- All Champions button -->
                   {#if selectedChampion !== null}
-                    <div class="relative flex shrink-0 items-center justify-center">
+                    <div
+                      class="relative flex shrink-0 items-center justify-center"
+                    >
                       <button
                         type="button"
                         title="All Champions (Viewing universal runes)"
@@ -382,7 +422,9 @@
 
                   <!-- Non-Favorite Champions List -->
                   {#each nonFavoriteChampions as champ (champ.id)}
-                    <div class="relative flex shrink-0 items-center justify-center">
+                    <div
+                      class="relative flex shrink-0 items-center justify-center"
+                    >
                       <button
                         type="button"
                         title={champ.name}
@@ -396,7 +438,9 @@
                             class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-[calc(100%+4px)] w-[calc(100%+4px)] object-cover rounded-full"
                           />
                         {:else}
-                          <div class="h-full w-full rounded-full bg-gray-800"></div>
+                          <div
+                            class="h-full w-full rounded-full bg-gray-800"
+                          ></div>
                         {/if}
                       </button>
 
@@ -419,7 +463,8 @@
                   onclick={scrollRight}
                   class="absolute right-0 z-10 flex h-7 w-7 translate-x-1.5 items-center justify-center rounded-full border border-gray-700 bg-gray-800/90 text-gray-300 shadow-md hover:border-purple-500 hover:bg-purple-600 hover:text-white transition-all cursor-pointer"
                 >
-                  <span class="icon-[heroicons--chevron-right] h-3.5 w-3.5"></span>
+                  <span class="icon-[heroicons--chevron-right] h-3.5 w-3.5"
+                  ></span>
                 </button>
               {/if}
             </div>

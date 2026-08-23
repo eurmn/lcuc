@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { onMount } from "svelte";
-  import { MotionDiv } from "@humanspeak/svelte-motion";
+  import { onDestroy, onMount } from "svelte";
+  import { MotionDiv, type MotionTransition } from "@humanspeak/svelte-motion";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { getChallengeTierProfile, getSummonerProfile } from "../api/profile";
   import type { ChallengeTierProfile, SummonerProfile } from "../types/profile";
 
@@ -14,10 +15,14 @@
 
   let profile = $state<SummonerProfile | null>(null);
   let challengeTier = $state<ChallengeTierProfile | null>(null);
-  let loading = $state(true);
+  let loading = $state(false);
   let errorMessage = $state<string | null>(null);
 
-  let layoutTransition = $derived({
+  let unlistenSummoner: UnlistenFn | null = null;
+  let unlistenConnected: UnlistenFn | null = null;
+  let unlistenDisconnected: UnlistenFn | null = null;
+
+  let layoutTransition: MotionTransition = $derived({
     x: { duration: 0.35, ease: [0.16, 1, 0.3, 1] },
     width: { duration: 0.35, ease: [0.16, 1, 0.3, 1] },
     y: { duration: 0.35, ease: "linear" },
@@ -25,9 +30,11 @@
     opacity: { duration: 0.35, ease: "linear" },
   });
 
-  export async function refreshProfile() {
+  export async function refreshProfile(showLoading = false) {
     try {
-      loading = true;
+      if (showLoading) {
+        loading = true;
+      }
       errorMessage = null;
       const [p, c] = await Promise.allSettled([
         getSummonerProfile(),
@@ -41,16 +48,41 @@
         profile = null;
       }
 
-      if (c.status === "fulfilled") {
+      if (c.status === "fulfilled" && p.status === "fulfilled") {
         challengeTier = c.value;
+      } else {
+        challengeTier = null;
       }
     } finally {
       loading = false;
     }
   }
 
-  onMount(() => {
-    refreshProfile();
+  onMount(async () => {
+    await refreshProfile(false);
+
+    try {
+      unlistenSummoner = await listen("lcu:summoner-changed", () => {
+        refreshProfile(false);
+      });
+      unlistenConnected = await listen("lcu:connected", () => {
+        refreshProfile(false);
+      });
+      unlistenDisconnected = await listen("lcu:disconnected", () => {
+        profile = null;
+        challengeTier = null;
+        errorMessage = "Client Offline";
+        loading = false;
+      });
+    } catch (err) {
+      console.error("[ProfileCard] Failed to attach Tauri event listeners:", err);
+    }
+  });
+
+  onDestroy(() => {
+    if (unlistenSummoner) unlistenSummoner();
+    if (unlistenConnected) unlistenConnected();
+    if (unlistenDisconnected) unlistenDisconnected();
   });
 </script>
 

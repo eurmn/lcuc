@@ -11,6 +11,9 @@ importers:
       '@humanspeak/svelte-motion':
         specifier: ^0.9.3
         version: 0.9.3(svelte@5.56.9)
+      '@iconify-json/flowbite':
+        specifier: ^1.2.7
+        version: 1.2.7
       '@tauri-apps/api':
         specifier: ^2.0.0
         version: 2.11.1
@@ -217,6 +220,9 @@ packages:
     resolution: {integrity: sha512-ZJUMW6ovPEEvpkO6Ao6oZwK90eBdt18VuQB5rdVWKiUDh0KtpRQ4IPLC6Zd/Cg0QvC/+uz8CbVapQLnpuHPzWA==}
     peerDependencies:
       svelte: ^5.0.0
+
+  '@iconify-json/flowbite@1.2.7':
+    resolution: {integrity: sha512-YmjHMSe6zBWI6XMZ35OGxgkX9k0lMiKmJIYOOymhc8rEiVbtZnnujJnGrfTider1JOoArQcCJzhHH6hUoXgiYA==}
 
   '@iconify-json/heroicons@1.2.3':
     resolution: {integrity: sha512-n+vmCEgTesRsOpp5AB5ILB6srsgsYK+bieoQBNlafvoEhjVXLq8nIGN4B0v/s4DUfa0dOrjwE/cKJgIKdJXOEg==}
@@ -1100,6 +1106,10 @@ snapshots:
     transitivePeerDependencies:
       - react
       - react-dom
+
+  '@iconify-json/flowbite@1.2.7':
+    dependencies:
+      '@iconify/types': 2.0.0
 
   '@iconify-json/heroicons@1.2.3':
     dependencies:
