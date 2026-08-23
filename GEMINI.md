@@ -94,19 +94,37 @@ lcu-companion/
 │   ├── lib/
 │   │   ├── api/                        # Typed Tauri IPC client wrappers
 │   │   │   ├── client.ts               # Generic invoke wrapper with logging
-│   │   │   ├── profile.ts              # Summoner & challenge tier API calls
-│   │   │   └── runes.ts                # Rune trees, overview, import/export API calls
-│   │   ├── components/                 # Reactive UI components
+│   │   │   ├── profile.ts              # Summoner & ch│   │   ├── components/                 # Reactive UI Components
+│   │   │   ├── ChampionSelectModal.svelte # Flowbite modal for picking rune page champion
+│   │   │   ├── Divider.svelte          # Animated divider component
+│   │   │   ├── ProfileCard.svelte      # Summoner profile card & challenge badge
+│   │   │   ├── TitleBar.svelte         # Window title bar with drag region & controls
 │   │   │   ├── runes/                  # Center canvas rune tree components
-│   │   │   │   ├── KeystoneSlot.svelte # Primary keystone option row
-│   │   │   │   ├── RuneCanvas.svelte   # Center canvas with view/edit mode & actions
-│   │   │   │   ├── StatModsSection.svelte # Offense, flex, & defense stat shards
-│   │   │   │   ├── StyleSection.svelte # Primary & secondary tree container
-│   │   │   │   └── TierSlot.svelte     # Standard perk option row
-│   │   │   ├── sidebar/                # Dual list sidebar components
-│   │   │   │   ├── ClientRunesList.svelte # Live client rune pages with import action
-│   │   │   │   ├── RunesSidebar.svelte # Main sidebar container
-│   │   │   │   └── SavedRunesList.svelte  # Companion saved library with delete action
+│   │   │   │   ├── KeystoneCard.svelte # Large keystone card with telemetry
+│   │   │   │   ├── KeystonesRow.svelte # Dynamic column keystone options row
+│   │   │   │   ├── PerkTierList.svelte # 3 primary tier rows with authentic names
+│   │   │   │   ├── PrimaryPathCard.svelte # Primary tree card container
+│   │   │   │   ├── PrimaryStyleSelector.svelte # 5 primary style buttons row
+│   │   │   │   ├── RuneCanvas.svelte   # Center canvas top-level data orchestrator
+│   │   │   │   ├── RuneCanvasHeader.svelte # Title, avatar, action buttons & filter tray
+│   │   │   │   ├── RuneCard.svelte     # Perk card with selection badge & telemetry
+│   │   │   │   ├── RuneFilterTray.svelte # Role & rank filter tray with animation
+│   │   │   │   ├── RuneLoadingSkeleton.svelte # Animated telemetry loading skeleton
+│   │   │   │   ├── SecondaryPathCard.svelte # Secondary tree & shards container
+│   │   │   │   ├── SecondaryStyleSelector.svelte # 4 secondary style buttons with pick rate
+│   │   │   │   ├── SecondaryTierList.svelte # 3 secondary tier rows
+│   │   │   │   ├── StatShardsCards.svelte # Offense, flex, & defense stat shards
+│   │   │   │   └── TelemetryStats.svelte # Reusable pick rate + bidirectional WPA bar
+│   │   │   └── sidebar/                # Dual list sidebar components
+│   │   │       ├── ChampionCarousel.svelte # Scrollable horizontal champions carousel
+│   │   │       ├── ChampionFilterSection.svelte # Champion search input + carousel
+│   │   │       ├── ClientRuneItem.svelte # Individual live client page card
+│   │   │       ├── ClientRunesList.svelte # Live client rune pages list
+│   │   │       ├── RunesSidebar.svelte # Main sidebar layout orchestrator
+│   │   │       ├── SavedRuneItem.svelte # Individual saved runeset card
+│   │   │       ├── SavedRunesList.svelte # Companion saved library list
+│   │   │       ├── SelectedChampionSlot.svelte # Dedicated pinned active champion slot
+│   │   │       └── SidebarSkeleton.svelte # Sidebar loading pulse placeholder��   │   │   │   └── SavedRunesList.svelte  # Companion saved library with delete action
 │   │   │   ├── ProfileCard.svelte      # Summoner profile card & challenge badge
 │   │   │   └── TitleBar.svelte         # Window title bar with drag region & controls
 │   │   ├── types/                      # Frontend TypeScript interface definitions

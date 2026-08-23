@@ -31,19 +31,33 @@ src/
 │   │   ├── TitleBar.svelte             # Custom desktop title bar with drag region & window controls
 │   │   ├── ProfileCard.svelte          # Summoner avatar, Riot ID, level, and ranked challenge badge
 │   │   ├── ChampionSelectModal.svelte  # Flowbite-styled modal overlay for picking rune page champion
+│   │   ├── Divider.svelte              # Motion-animated divider line for expandable trays
 │   │   ├── sidebar/                    # Dual-list collapsible sidebar
-│   │   │   ├── RunesSidebar.svelte     # Main sidebar container with motion transition wrapper
-│   │   │   ├── SelectedChampionSlot.svelte # Active champion filter chip with favorites scroll carousel
-│   │   │   ├── SavedRunesList.svelte   # Local SQLite custom runesets with delete/assign actions
-│   │   │   └── ClientRunesList.svelte  # Live League client rune pages with import action
+│   │   │   ├── RunesSidebar.svelte     # Main sidebar layout orchestrator with motion transitions
+│   │   │   ├── ChampionFilterSection.svelte # Collapsible search input + carousel container
+│   │   │   ├── SelectedChampionSlot.svelte # Dedicated pinned active champion slot with bookmark
+│   │   │   ├── ChampionCarousel.svelte # Scrollable horizontal champions carousel with navigation arrows
+│   │   │   ├── SidebarSkeleton.svelte  # Animated pulse placeholder when sidebar is loading
+│   │   │   ├── SavedRunesList.svelte   # Local SQLite custom runesets container
+│   │   │   ├── SavedRuneItem.svelte    # Individual motion-animated saved runeset card
+│   │   │   ├── ClientRunesList.svelte  # Live League client rune pages container
+│   │   │   └── ClientRuneItem.svelte   # Individual motion-animated client page card
 │   │   └── runes/                      # Main rune tree canvas & interactive builder
-│   │       ├── RuneCanvas.svelte       # Top action bar, role/tier filters, and layout grid
-│   │       ├── PrimaryPathCard.svelte  # Primary path selector & keystone / tier perk matrix
-│   │       ├── SecondaryPathCard.svelte# Secondary path selector & 2-perk cross-tier selection
-│   │       ├── StatModsSection.svelte  # Offense, flex, and defense stat shards
-│   │       ├── KeystoneCard.svelte     # Large keystone card with winrate / pickrate telemetry
-│   │       ├── RuneCard.svelte         # Perk slot card with telemetry badge & selection ring
-│   │       └── StatShardsCards.svelte  # Stat shard pill options
+│   │       ├── RuneCanvas.svelte       # Center canvas top-level data orchestrator
+│   │       ├── RuneCanvasHeader.svelte # Mode switcher, title input, action buttons & filter tray
+│   │       ├── RuneFilterTray.svelte   # Collapsible role switcher & rank tier badges with Divider
+│   │       ├── RuneLoadingSkeleton.svelte # Animated pulse telemetry skeleton card
+│   │       ├── PrimaryPathCard.svelte  # Primary tree card container
+│   │       ├── PrimaryStyleSelector.svelte # 5 primary style icon buttons row
+│   │       ├── KeystonesRow.svelte     # Dynamic column keystone options row
+│   │       ├── PerkTierList.svelte     # 3 primary tier rows with authentic row names
+│   │       ├── SecondaryPathCard.svelte# Secondary tree & stat shards card container
+│   │       ├── SecondaryStyleSelector.svelte # 4 secondary style buttons with playcount % badge
+│   │       ├── SecondaryTierList.svelte# 3 secondary tier rows with authentic row names
+│   │       ├── StatShardsCards.svelte  # Offense, flex, and defense stat shards
+│   │       ├── KeystoneCard.svelte     # Large keystone card with telemetry metrics
+│   │       ├── RuneCard.svelte         # Perk slot card with selection badge & telemetry
+│   │       └── TelemetryStats.svelte   # Reusable pick rate + bidirectional WPA delta bar
 │   ├── types/                          # TypeScript DTO models mirroring Rust backend
 │   │   ├── profile.ts
 │   │   ├── runes.ts

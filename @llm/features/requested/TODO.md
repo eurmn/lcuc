@@ -1,1 +1,4 @@
  - [ ] Fix alignment on currently selected champion with collapsed sidebar;
+ - [ ] Implement rune perk tooltip with information from https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/perks.json;
+ - [ ] Implement patch caching for coachless API:
+   - Before fetching from coachless api, 
