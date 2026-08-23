@@ -90,6 +90,10 @@ Motion design in the UI is applied purposefully to enhance spatial awareness, av
 1. **Layout Transitions (FLIP)**: Components smoothly animate position and dimensions (`layout="position"` or `layout={true}`) when neighboring elements resize or collapse.
 2. **Spring Physics & Custom Easings**: Transitions use cubic-bezier curves (e.g. `[0.16, 1, 0.3, 1]`) to maintain a snappy, native desktop feel.
 3. **Shared Layout Groups**: `<LayoutGroup>` coordinates synchronized animations across multiple sibling or nested components without layout thrashing.
+4. **Mandatory `key` Prop on `AnimatePresence` Direct Children**:
+   > [!IMPORTANT]
+   > **Motion elements that are direct children of `<AnimatePresence>` MUST have a `key` prop** (e.g. `<MotionDiv key="unique-id">`).
+   > In `@humanspeak/svelte-motion`'s core design architecture, `AnimatePresence` requires explicit, unique keys on immediate child motion components to track component lifecycles, differentiate entering vs exiting DOM clones, and coordinate teardown exit animations. Omitting `key` causes runtime errors (`_MotionContainer.svelte: motion elements that are direct children of AnimatePresence must have a key prop`).
 
 ### Sidebar Motion Implementation Example
 The collapsible dual-list sidebar ([`RunesSidebar.svelte`](/src/lib/components/sidebar/RunesSidebar.svelte), [`ClientRunesList.svelte`](/src/lib/components/sidebar/ClientRunesList.svelte), [`SavedRunesList.svelte`](/src/lib/components/sidebar/SavedRunesList.svelte)) serves as the primary implementation example:
@@ -111,6 +115,46 @@ The collapsible dual-list sidebar ([`RunesSidebar.svelte`](/src/lib/components/s
     <!-- Content smoothly reflows -->
   </MotionAside>
 </LayoutGroup>
+```
+
+### Rune Canvas Header Motion Implementation
+The rune canvas title card ([`RuneCanvas.svelte`](/src/lib/components/runes/RuneCanvas.svelte)) animates the transition between View Mode and Edit Mode:
+- **Instant Top Row Controls**:
+  - The champion avatar, title / input box, and action buttons render with instant reactivity without height layout morphing or distortion.
+- **Separate Animated Divider (`<Divider>`)**:
+  - Instead of static `border-t` and padding, a dedicated [`Divider.svelte`](/src/lib/components/Divider.svelte) component smoothly animates its vertical margins (`marginTop` & `marginBottom`: `0 -> 0.75rem` / `0.75rem -> 0`) alongside opacity.
+- **Owned Real-Node Filter Tray Exit (`<AnimatePresence present={isEditing}>` + `{#snippet child()}`)**:
+  - `<AnimatePresence present={isEditing}>` owns the conditional lifecycle via a Svelte 5 snippet, retaining the real DOM node during teardown.
+  - On enter, the filter tray smoothly expands `height: 0 -> auto` and `opacity: 0 -> 1` (`ease: [0.16, 1, 0.3, 1]` over 350ms).
+  - On exit (canceling/saving edit mode), the live DOM node smoothly folds back `height: auto -> 0` and fades `opacity: 1 -> 0` before being unmounted.
+
+```svelte
+<!-- Example from RuneCanvas title card with owned real-node exit and animated Divider -->
+<div class="flex flex-col rounded-2xl border border-gray-800 bg-gray-950/90 p-4 shadow-md">
+  <!-- Top row: avatar, title / input, action buttons (instant reactivity) -->
+
+  <!-- Only new components (divider + role & rank filters) animate their presence -->
+  <AnimatePresence present={isEditing}>
+    {#snippet child()}
+      <MotionDiv
+        key="rune-filters-tray"
+        initial={{ opacity: 0, height: 0 }}
+        animate={{ opacity: 1, height: "auto" }}
+        exit={{ opacity: 0, height: 0 }}
+        transition={{ height: { duration: 0.35, ease: [0.16, 1, 0.3, 1] }, opacity: { duration: 0.25, ease: "easeInOut" } }}
+        class="overflow-hidden"
+      >
+        <!-- Separate Animated Divider Component -->
+        <Divider transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }} />
+
+        <!-- Role and rank selector bar -->
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          ...
+        </div>
+      </MotionDiv>
+    {/snippet}
+  </AnimatePresence>
+</div>
 ```
 
 ---

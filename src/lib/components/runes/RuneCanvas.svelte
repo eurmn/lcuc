@@ -1,8 +1,14 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import {
+    AnimatePresence,
+    MotionDiv,
+    type MotionTransition,
+  } from "@humanspeak/svelte-motion";
   import PrimaryPathCard from "./PrimaryPathCard.svelte";
   import SecondaryPathCard from "./SecondaryPathCard.svelte";
   import ChampionSelectModal from "../ChampionSelectModal.svelte";
+  import Divider from "../Divider.svelte";
   import {
     getBuilderOverview,
     getBuilderTreeRunes,
@@ -286,16 +292,6 @@
     await loadBuilderData();
   }
 
-  // Handler: Apply recommended
-  function handleApplyRecommended() {
-    if (overview?.recommended_perk_ids && overview.recommended_perk_ids.length >= 9) {
-      selectedPerkIds = [...overview.recommended_perk_ids];
-      if (overview.selected_keystone_id) {
-        selectedKeystoneId = overview.selected_keystone_id;
-      }
-    }
-  }
-
   // Handler: Cancel Edit
   function handleCancelEdit() {
     selectedPerkIds = [...backupPerkIds];
@@ -337,12 +333,17 @@
       await handleSave();
     }
   }
+  // Filter tray slide and fade transition for role/rank selectors
+  const filterTransition: MotionTransition = {
+    height: { duration: 0.5, ease: [0.16, 1, 0.3, 1] },
+    opacity: { duration: 0.3, ease: "easeInOut" },
+  };
 </script>
 
 <main class="flex-1 flex flex-col bg-gray-900 p-5 overflow-y-auto h-full relative select-none">
   <div class="w-full max-w-6xl mx-auto flex flex-col gap-4">
     <!-- Header: Mode Switcher, Page Title & Top Actions -->
-    <div class="flex flex-col gap-3 rounded-2xl border border-gray-800 bg-gray-950/90 p-4 shadow-md">
+    <div class="flex flex-col rounded-2xl border border-gray-800 bg-gray-950/90 p-4 shadow-md">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <!-- Page Title & Champion Avatar / Asterisk -->
         <div class="flex items-center gap-2.5 flex-1 min-w-[240px]">
@@ -385,8 +386,6 @@
               </div>
             {/if}
           </button>
-
-
 
           <!-- Page Name Display (View Mode) or Input (Edit Mode) -->
           {#if isEditing}
@@ -453,50 +452,65 @@
         </div>
       </div>
 
-      <!-- Filters (Role & Rank Tiers) -->
-      {#if isEditing}
-        <div class="flex flex-wrap items-center justify-between gap-3 border-t border-gray-800/80 pt-3">
-          <!-- Role Tabs -->
-          <div class="flex items-center gap-1">
-            <span class="text-[10px] font-bold uppercase tracking-wider text-gray-400 mr-1">Role:</span>
-            <div class="inline-flex rounded-xl bg-gray-900 p-0.5 border border-gray-800 shadow-sm">
-              {#each roleEntries as role (role.id)}
-                <button
-                  type="button"
-                  onclick={() => handleSelectRole(role.id)}
-                  class={selectedRole === role.id
-                    ? "rounded-lg bg-purple-600 px-2.5 py-1 text-xs font-bold text-white shadow-sm cursor-pointer"
-                    : "rounded-lg px-2.5 py-1 text-xs font-semibold text-gray-400 hover:text-white cursor-pointer transition-colors"}
-                >
-                  {role.label}
-                </button>
-              {/each}
-            </div>
-          </div>
+      <!-- Filters (Role & Rank Tiers) Animated Expansion and Collapse with Owned Real-Node Exit -->
+      <AnimatePresence present={isEditing}>
+        {#snippet child()}
+          <MotionDiv
+            key="rune-filters-tray"
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 55 }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={filterTransition}
+            class="overflow-hidden"
+          >
+            <!-- Separate Animated Divider Component -->
+            <Divider transition={filterTransition} />
 
-          <!-- Rank Tier Filter Badges -->
-          <div class="flex items-center gap-1">
-            <span class="text-[10px] font-bold uppercase tracking-wider text-gray-400 mr-1">Ranks:</span>
-            <div class="flex flex-wrap items-center gap-1">
-              {#each tierEntries as tier (tier.id)}
-                {@const isChecked = selectedTiers.includes(tier.id)}
-                <button
-                  type="button"
-                  onclick={() => handleToggleTier(tier.id)}
-                  class={isChecked
-                    ? "inline-flex items-center gap-1 rounded-full border border-purple-500/50 bg-purple-500/20 px-2 py-0.5 text-[10px] font-bold text-purple-300 shadow-sm cursor-pointer"
-                    : "inline-flex items-center gap-1 rounded-full border border-gray-800 bg-gray-900/60 px-2 py-0.5 text-[10px] font-medium text-gray-400 hover:border-gray-700 hover:text-gray-300 cursor-pointer"}
-                >
-                  {#if isChecked}
-                    <span class="icon-[heroicons--check] h-2.5 w-2.5 text-purple-400"></span>
-                  {/if}
-                  <span>{tier.label}</span>
-                </button>
-              {/each}
+            <!-- Filter Controls Row -->
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <!-- Role Tabs -->
+              <div class="flex items-center gap-1">
+                <span class="text-[10px] font-bold uppercase tracking-wider text-gray-400 mr-1">Role:</span>
+                <div class="inline-flex rounded-xl bg-gray-900 p-0.5 border border-gray-800 shadow-sm">
+                  {#each roleEntries as role (role.id)}
+                    <button
+                      type="button"
+                      onclick={() => handleSelectRole(role.id)}
+                      class={selectedRole === role.id
+                        ? "rounded-lg bg-purple-600 px-2.5 py-1 text-xs font-bold text-white shadow-sm cursor-pointer"
+                        : "rounded-lg px-2.5 py-1 text-xs font-semibold text-gray-400 hover:text-white cursor-pointer transition-colors"}
+                    >
+                      {role.label}
+                    </button>
+                  {/each}
+                </div>
+              </div>
+
+              <!-- Rank Tier Filter Badges -->
+              <div class="flex items-center gap-1">
+                <span class="text-[10px] font-bold uppercase tracking-wider text-gray-400 mr-1">Ranks:</span>
+                <div class="flex flex-wrap items-center gap-1">
+                  {#each tierEntries as tier (tier.id)}
+                    {@const isChecked = selectedTiers.includes(tier.id)}
+                    <button
+                      type="button"
+                      onclick={() => handleToggleTier(tier.id)}
+                      class={isChecked
+                        ? "inline-flex items-center gap-1 rounded-full border border-purple-500/50 bg-purple-500/20 px-2 py-0.5 text-[10px] font-bold text-purple-300 shadow-sm cursor-pointer"
+                        : "inline-flex items-center gap-1 rounded-full border border-gray-800 bg-gray-900/60 px-2 py-0.5 text-[10px] font-medium text-gray-400 hover:border-gray-700 hover:text-gray-300 cursor-pointer"}
+                    >
+                      {#if isChecked}
+                        <span class="icon-[heroicons--check] h-2.5 w-2.5 text-purple-400"></span>
+                      {/if}
+                      <span>{tier.label}</span>
+                    </button>
+                  {/each}
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
-      {/if}
+          </MotionDiv>
+        {/snippet}
+      </AnimatePresence>
     </div>
 
     <!-- Telemetry Skeleton / Loading -->
