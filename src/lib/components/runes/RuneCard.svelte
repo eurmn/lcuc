@@ -51,16 +51,6 @@
       {:else}
         <div class="h-full w-full rounded-full bg-gray-800"></div>
       {/if}
-
-      {#if option.selected}
-        <span
-          class="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full {theme.bgBadge} text-white shadow-sm"
-        >
-          <svg class="h-2 w-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/>
-          </svg>
-        </span>
-      {/if}
     </div>
 
     <!-- Telemetry Column: Telemetry Pick Rate & WPA -->

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import clsx from "clsx";
   import {
     formatGameCount,
     getPickRateOpacity,
@@ -31,16 +32,23 @@
     <div class="flex flex-col gap-1 min-w-0">
       <div class="flex items-center justify-between">
         <span
-          class="{compact ? 'text-[10px] sm:text-[11px]' : 'text-[11px]'} font-normal text-white leading-none truncate"
+          class="{compact
+            ? 'text-[10px] sm:text-[11px]'
+            : 'text-[11px]'} font-normal text-white leading-none truncate"
           style="opacity: {opacityVal}"
         >
           {gameCountText}
         </span>
       </div>
-      <div class="h-1 w-full rounded-full bg-gray-950 overflow-hidden shadow-inner">
+      <div
+        class="h-1 w-full rounded-full bg-gray-950 overflow-hidden shadow-inner"
+      >
         <div
-          class="h-full rounded-full bg-white transition-all"
-          style="width: {Math.min(100, Math.max(4, pickRatePct))}%; opacity: {opacityVal}"
+          class="h-full rounded-full bg-white transition-all duration-250 ease-in-out"
+          style="width: {Math.min(
+            100,
+            Math.max(4, pickRatePct),
+          )}%; opacity: {opacityVal}"
         ></div>
       </div>
     </div>
@@ -52,25 +60,29 @@
     <div class="flex flex-col gap-1 min-w-0">
       <div class="flex items-center justify-between">
         <span
-          class="{compact ? 'text-[9px] sm:text-[10px]' : 'text-[10px]'} font-normal {wpaMetrics.textColorClass} leading-none truncate"
+          class="{compact
+            ? 'text-[9px] sm:text-[10px]'
+            : 'text-[10px]'} font-normal {wpaMetrics.textColorClass} leading-none truncate"
         >
           {wpaText}
         </span>
       </div>
-      <div class="relative h-1 w-full rounded-full bg-gray-950 overflow-hidden shadow-inner">
+      <div
+        class="relative h-1 w-full rounded-full bg-gray-950 overflow-hidden shadow-inner"
+      >
         <!-- Center divider (50% baseline) -->
-        <div class="absolute left-1/2 top-0 bottom-0 w-[1px] -translate-x-1/2 bg-gray-700 z-10"></div>
-        {#if wpa > 0}
-          <div
-            class="absolute left-1/2 top-0 bottom-0 bg-emerald-400 rounded-r-full"
-            style="width: {wpaMetrics.barWidthPct}%"
-          ></div>
-        {:else if wpa < 0}
-          <div
-            class="absolute right-1/2 top-0 bottom-0 bg-red-500 rounded-l-full"
-            style="width: {wpaMetrics.barWidthPct}%"
-          ></div>
-        {/if}
+        <div
+          class="absolute left-1/2 top-0 bottom-0 w-[1px] -translate-x-1/2 bg-gray-700 z-10"
+        ></div>
+        <div
+          class={clsx(
+            "absolute top-0 bottom-0 transition-all duration-250 ease-in-out",
+            wpa > 0
+              ? "bg-green-500 rounded-r-full left-1/2"
+              : "bg-red-500 rounded-l-full right-1/2",
+          )}
+          style="width: {wpaMetrics.barWidthPct}%"
+        ></div>
       </div>
     </div>
   {:else}
