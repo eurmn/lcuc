@@ -41,11 +41,11 @@
   });
 
   function scrollLeft() {
-    scrollContainer?.scrollBy({ left: -160, behavior: "smooth" });
+    scrollContainer?.scrollBy({ left: -200, behavior: "smooth" });
   }
 
   function scrollRight() {
-    scrollContainer?.scrollBy({ left: 160, behavior: "smooth" });
+    scrollContainer?.scrollBy({ left: 200, behavior: "smooth" });
   }
 </script>
 
@@ -56,9 +56,9 @@
       type="button"
       title="Scroll left"
       onclick={scrollLeft}
-      class="absolute left-0 z-10 flex h-7 w-7 -translate-x-1.5 items-center justify-center rounded-full border border-gray-700 bg-gray-800/90 text-gray-300 shadow-md hover:border-purple-500 hover:bg-purple-600 hover:text-white transition-all cursor-pointer"
+      class="absolute left-0 z-10 flex h-6 w-6 items-center justify-center rounded-full border border-gray-700 bg-gray-800/95 text-gray-300 shadow-md hover:border-purple-500 hover:bg-purple-600 hover:text-white transition-all cursor-pointer"
     >
-      <span class="icon-[heroicons--chevron-left] h-3.5 w-3.5"></span>
+      <span class="icon-[heroicons--chevron-left] h-3 w-3"></span>
     </button>
   {/if}
 
@@ -66,7 +66,7 @@
   <div
     bind:this={scrollContainer}
     onscroll={updateScrollArrows}
-    class="flex items-center gap-2 overflow-x-auto py-1 px-1 scrollbar-none scroll-smooth w-full select-none"
+    class="flex items-center gap-1.5 overflow-x-auto py-0.5 px-0.5 scrollbar-none scroll-smooth w-full select-none"
   >
     {#if searchQuery.trim()}
       <!-- Search Results -->
@@ -77,8 +77,8 @@
             title={`${champ.name}${champ.is_favorite ? " (Favorite)" : ""}`}
             onclick={() => onSelectChampion(champ)}
             class={champ.is_favorite
-              ? "relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border-2 border-yellow-400 bg-gray-950 p-0 shadow-sm shadow-yellow-950/40 opacity-90 hover:opacity-100 hover:scale-105 cursor-pointer transition-all"
-              : "relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border border-gray-700/80 bg-gray-950 p-0 opacity-70 hover:opacity-100 hover:border-gray-500 hover:scale-105 cursor-pointer transition-all"}
+              ? "relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border-2 border-yellow-400 bg-gray-900 p-0 shadow-sm shadow-yellow-950/40 opacity-90 hover:opacity-100 hover:scale-105 cursor-pointer transition-all"
+              : "relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border border-gray-700/80 bg-gray-900 p-0 opacity-70 hover:opacity-100 hover:border-gray-500 hover:scale-105 cursor-pointer transition-all"}
           >
             {#if champ.square_icon_url}
               <img
@@ -93,7 +93,7 @@
 
           {#if isRuneMismatch && activeRuneChampionId && activeRuneChampionId === champ.id}
             <span
-              class="pointer-events-none absolute top-[2px] right-[2px] z-20 flex h-3 w-3 rounded-full bg-blue-500 shadow-[0_1px_3px_rgba(29,78,216,0.85)]"
+              class="pointer-events-none absolute top-0 right-0 z-20 flex h-2.5 w-2.5 rounded-full bg-blue-500 shadow-[0_1px_3px_rgba(29,78,216,0.85)]"
               title="Active rune page champion"
             ></span>
           {/if}
@@ -107,7 +107,7 @@
             type="button"
             title={`${champ.name} (Favorite)`}
             onclick={() => onSelectChampion(champ)}
-            class="relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border-2 border-yellow-400 bg-gray-950 p-0 shadow-sm shadow-yellow-950/40 opacity-90 hover:opacity-100 hover:scale-105 cursor-pointer transition-all"
+            class="relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border-2 border-yellow-400 bg-gray-900 p-0 shadow-sm shadow-yellow-950/40 opacity-90 hover:opacity-100 hover:scale-105 cursor-pointer transition-all"
           >
             {#if champ.square_icon_url}
               <img
@@ -122,7 +122,7 @@
 
           {#if isRuneMismatch && activeRuneChampionId && activeRuneChampionId === champ.id}
             <span
-              class="pointer-events-none absolute top-[2px] right-[2px] z-20 flex h-3 w-3 rounded-full bg-blue-500 shadow-[0_1px_3px_rgba(29,78,216,0.85)]"
+              class="pointer-events-none absolute top-0 right-0 z-20 flex h-2.5 w-2.5 rounded-full bg-blue-500 shadow-[0_1px_3px_rgba(29,78,216,0.85)]"
               title="Active rune page champion"
             ></span>
           {/if}
@@ -136,7 +136,7 @@
             type="button"
             title="All Champions (Viewing universal runes)"
             onclick={() => onSelectChampion(null)}
-            class="group relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-gray-700/80 bg-gray-950 p-0 opacity-70 hover:opacity-100 hover:border-gray-500 hover:scale-105 cursor-pointer transition-all overflow-hidden"
+            class="group relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-gray-700/80 bg-gray-900 p-0 opacity-70 hover:opacity-100 hover:border-gray-500 hover:scale-105 cursor-pointer transition-all overflow-hidden"
           >
             <img
               src={ALL_CHAMPIONS_ICON_URL}
@@ -147,7 +147,7 @@
 
           {#if isRuneMismatch && (!activeRuneChampionId || activeRuneChampionId === 0)}
             <span
-              class="pointer-events-none absolute top-[2px] right-[2px] z-20 flex h-3 w-3 rounded-full bg-blue-500 shadow-[0_1px_3px_rgba(29,78,216,0.85)]"
+              class="pointer-events-none absolute top-0 right-0 z-20 flex h-2.5 w-2.5 rounded-full bg-blue-500 shadow-[0_1px_3px_rgba(29,78,216,0.85)]"
               title="Active rune page champion (All Champions)"
             ></span>
           {/if}
@@ -161,7 +161,7 @@
             type="button"
             title={champ.name}
             onclick={() => onSelectChampion(champ)}
-            class="relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border border-gray-700/80 bg-gray-950 p-0 opacity-70 hover:opacity-100 hover:border-gray-500 hover:scale-105 cursor-pointer transition-all"
+            class="relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border border-gray-700/80 bg-gray-900 p-0 opacity-70 hover:opacity-100 hover:border-gray-500 hover:scale-105 cursor-pointer transition-all"
           >
             {#if champ.square_icon_url}
               <img
@@ -176,7 +176,7 @@
 
           {#if isRuneMismatch && activeRuneChampionId && activeRuneChampionId === champ.id}
             <span
-              class="pointer-events-none absolute top-[2px] right-[2px] z-20 flex h-3 w-3 rounded-full bg-blue-500 shadow-[0_1px_3px_rgba(29,78,216,0.85)]"
+              class="pointer-events-none absolute top-0 right-0 z-20 flex h-2.5 w-2.5 rounded-full bg-blue-500 shadow-[0_1px_3px_rgba(29,78,216,0.85)]"
               title="Active rune page champion"
             ></span>
           {/if}
@@ -191,9 +191,9 @@
       type="button"
       title="Scroll right"
       onclick={scrollRight}
-      class="absolute right-0 z-10 flex h-7 w-7 translate-x-1.5 items-center justify-center rounded-full border border-gray-700 bg-gray-800/90 text-gray-300 shadow-md hover:border-purple-500 hover:bg-purple-600 hover:text-white transition-all cursor-pointer"
+      class="absolute right-0 z-10 flex h-6 w-6 items-center justify-center rounded-full border border-gray-700 bg-gray-800/95 text-gray-300 shadow-md hover:border-purple-500 hover:bg-purple-600 hover:text-white transition-all cursor-pointer"
     >
-      <span class="icon-[heroicons--chevron-right] h-3.5 w-3.5"></span>
+      <span class="icon-[heroicons--chevron-right] h-3 w-3"></span>
     </button>
   {/if}
 </div>

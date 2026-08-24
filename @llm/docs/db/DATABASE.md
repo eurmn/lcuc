@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS runesets (
     sub_style_id INTEGER,
     selected_perk_ids_json TEXT NOT NULL,
     source TEXT NOT NULL,
+    role INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 

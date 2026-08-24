@@ -35,7 +35,7 @@
   );
 </script>
 
-<div class="flex flex-col gap-4 rounded-2xl border border-gray-800 bg-gray-950/80 p-4 shadow-md">
+<div class="flex flex-col gap-4 rounded-2xl border border-gray-800 bg-gray-900 p-4 shadow-md">
   <!-- 1. Primary Style Selector Row (5 Style Icons) -->
   <PrimaryStyleSelector
     {primaryStyleId}

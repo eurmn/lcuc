@@ -56,11 +56,34 @@ impl RuneStore {
                 sub_style_id INTEGER,
                 selected_perk_ids_json TEXT NOT NULL,
                 source TEXT NOT NULL,
+                role INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )",
             [],
         )
         .map_err(|e| format!("Failed creating runesets schema: {}", e))?;
+
+        // Migration check for existing SQLite databases created prior to role column addition
+        let has_role_col: bool = conn
+            .prepare("PRAGMA table_info(runesets)")
+            .and_then(|mut stmt| {
+                let mut rows = stmt.query([])?;
+                while let Some(row) = rows.next()? {
+                    let col_name: String = row.get(1)?;
+                    if col_name == "role" {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            })
+            .unwrap_or(false);
+
+        if !has_role_col {
+            let _ = conn.execute(
+                "ALTER TABLE runesets ADD COLUMN role INTEGER NOT NULL DEFAULT 1",
+                [],
+            );
+        }
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS favorite_champions (
@@ -93,6 +116,7 @@ impl RuneStore {
     /// * `selected_perk_ids` - Array of perk and stat mod IDs.
     /// * `summoner_puuid` - Optional owner summoner PUUID.
     /// * `champion_id` - Optional champion association (defaults to 0).
+    /// * `role` - Lane / role identifier (e.g. 0=Top, 1=Jungle, 2=Mid, 3=ADC, 4=Support).
     /// * `game_id` - Optional associated match ID.
     /// * `rune_page_id` - Original client page ID if imported.
     /// * `source` - Origin descriptor (e.g. `league_client`, `custom`).
@@ -104,6 +128,7 @@ impl RuneStore {
         selected_perk_ids: &[i64],
         summoner_puuid: Option<&str>,
         champion_id: i64,
+        role: u32,
         game_id: Option<i64>,
         rune_page_id: Option<i64>,
         source: &str,
@@ -122,8 +147,9 @@ impl RuneStore {
                 primary_style_id,
                 sub_style_id,
                 selected_perk_ids_json,
-                source
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                source,
+                role
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 summoner_puuid,
                 champion_id,
@@ -134,6 +160,7 @@ impl RuneStore {
                 sub_style_id,
                 perks_json,
                 source,
+                role,
             ],
         )
         .map_err(|e| format!("Failed inserting runeset into SQLite: {}", e))?;
@@ -157,6 +184,7 @@ impl RuneStore {
                     sub_style_id,
                     selected_perk_ids_json,
                     source,
+                    COALESCE(role, 1) AS role,
                     created_at
                 FROM runesets
                 WHERE id = ?1",
@@ -183,7 +211,8 @@ impl RuneStore {
                 sub_style_id: row.get(7).ok(),
                 selected_perk_ids: selected_perks,
                 source: row.get(9).unwrap_or_default(),
-                created_at: row.get(10).unwrap_or_default(),
+                role: row.get(10).unwrap_or(1),
+                created_at: row.get(11).unwrap_or_default(),
             }))
         } else {
             Ok(None)
@@ -206,6 +235,7 @@ impl RuneStore {
                     primary_style_id,
                     sub_style_id,
                     COALESCE(champion_id, 0) AS champion_id,
+                    COALESCE(role, 1) AS role,
                     source,
                     created_at
                 FROM runesets
@@ -222,8 +252,9 @@ impl RuneStore {
                     primary_style_id: row.get(2)?,
                     sub_style_id: row.get(3)?,
                     champion_id: row.get(4)?,
-                    source: row.get(5)?,
-                    created_at: row.get(6)?,
+                    role: row.get(5)?,
+                    source: row.get(6)?,
+                    created_at: row.get(7)?,
                 })
             })
             .map_err(|e| format!("List query execution failed: {}", e))?;
@@ -246,6 +277,7 @@ impl RuneStore {
         sub_style_id: Option<i64>,
         selected_perk_ids: &[i64],
         champion_id: Option<i64>,
+        role: Option<u32>,
     ) -> Result<bool, String> {
         let conn = self.connect()?;
         let perks_json = serde_json::to_string(selected_perk_ids)
@@ -258,14 +290,16 @@ impl RuneStore {
                     primary_style_id = ?2,
                     sub_style_id = ?3,
                     selected_perk_ids_json = ?4,
-                    champion_id = COALESCE(?5, champion_id)
-                WHERE id = ?6",
+                    champion_id = COALESCE(?5, champion_id),
+                    role = COALESCE(?6, role)
+                WHERE id = ?7",
                 params![
                     rune_page_name,
                     primary_style_id,
                     sub_style_id,
                     perks_json,
                     champion_id,
+                    role,
                     runeset_id,
                 ],
             )
@@ -392,5 +426,68 @@ impl RuneStore {
     pub fn set_selected_rune_key(&self, rune_key: Option<&str>) -> Result<(), String> {
         let val = rune_key.unwrap_or("");
         self.set_setting("selected_rune_key", val)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rune_store_role_persistence() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("lcuc_test_{}", nanos));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let db_path = temp_dir.join("test.db");
+
+        let store = RuneStore { db_path: db_path.clone() };
+        store.initialize_schema().expect("Schema init failed");
+
+        let perks = vec![8010, 9111, 9104, 8299, 8126, 8135, 5008, 5008, 5002];
+        let id = store
+            .save_runeset(
+                "Test Mid Rune",
+                Some(8000),
+                Some(8100),
+                &perks,
+                None,
+                64,
+                2, // Mid
+                None,
+                None,
+                "companion_custom",
+            )
+            .expect("Failed saving runeset");
+
+        let loaded = store.get_runeset(id).expect("Query failed").expect("Not found");
+        assert_eq!(loaded.role, 2);
+        assert_eq!(loaded.champion_id, 64);
+        assert_eq!(loaded.rune_page_name, "Test Mid Rune");
+
+        // Test update role
+        store
+            .update_runeset(
+                id,
+                "Test Top Rune",
+                Some(8000),
+                Some(8100),
+                &perks,
+                Some(64),
+                Some(0), // Top
+            )
+            .expect("Update failed");
+
+        let updated = store.get_runeset(id).expect("Query failed").expect("Not found");
+        assert_eq!(updated.role, 0);
+        assert_eq!(updated.rune_page_name, "Test Top Rune");
+
+        let list = store.list_runesets(10).expect("List failed");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].role, 0);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

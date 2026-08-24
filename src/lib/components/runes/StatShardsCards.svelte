@@ -42,7 +42,7 @@
   ]);
 </script>
 
-<div class="flex flex-col gap-3 rounded-2xl border border-gray-800 bg-gray-950/80 p-4 shadow-sm">
+<div class="flex flex-col gap-3 rounded-2xl border border-gray-800 bg-gray-900 p-4 shadow-sm">
   <div class="flex items-center justify-between pb-1">
     <h4 class="text-xs font-bold uppercase tracking-wider text-gray-300">Stat Shards</h4>
   </div>
@@ -58,10 +58,7 @@
           {#each row.options as option (option.id)}
             {@const isSelected = selectedShardIds[rowIndex] === option.id}
             {@const hasData = option.occurrence > 0 || option.pick_rate_pct > 0}
-            {@const opacityVal = getPickRateOpacity(option.pick_rate_pct)}
-            {@const wpaMetrics = getWpaBarMetrics(option.wpa, hasData)}
             {@const wpaText = getWpaText(option.wpa, hasData)}
-            {@const gameCountText = formatGameCount(option.occurrence, hasData)}
 
             <button
               type="button"

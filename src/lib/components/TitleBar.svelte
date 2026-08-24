@@ -1,12 +1,13 @@
 <script lang="ts">
   import { getCurrentWindow } from "@tauri-apps/api/window";
+  import NavTabs from "./navigation/NavTabs.svelte";
 
   let {
-    isSidebarOpen = true,
-    onToggleSidebar,
+    activeTab = "runes",
+    onTabChange,
   }: {
-    isSidebarOpen?: boolean;
-    onToggleSidebar?: () => void;
+    activeTab?: "runes" | "builds";
+    onTabChange?: (tab: "runes" | "builds") => void;
   } = $props();
 
   const appWindow = getCurrentWindow();
@@ -27,49 +28,53 @@
 <header
   id="titlebar"
   data-tauri-drag-region
-  class="h-8 shrink-0 bg-gray-950 border-b border-gray-800 flex items-center justify-between select-none z-50"
+  class="h-10 shrink-0 bg-gray-900 flex items-center justify-between select-none z-50 px-2"
 >
-  <!-- Left: Sidebar Toggle, App Icon & Title -->
-  <div class="flex items-center gap-2 px-2.5 h-full" data-tauri-drag-region>
-    {#if onToggleSidebar}
-      <button
-        type="button"
-        onclick={onToggleSidebar}
-        title={isSidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
-        class="flex h-5 w-5 items-center justify-center rounded text-gray-400 hover:text-white hover:bg-gray-800 transition-colors cursor-pointer"
-      >
-        <span class="icon-[heroicons--bars-3] h-3.5 w-3.5"></span>
-      </button>
-    {/if}
-    <img src="/src/assets/logo.png" alt="LCU Companion" class="h-4 w-4 object-contain pointer-events-none" />
-    <span class="text-xs font-semibold text-gray-200 tracking-wide pointer-events-none">LCU Companion</span>
+  <!-- Left: App Icon & Title + Runes/Builds Tabs -->
+  <div class="flex items-center gap-3.5 h-full" data-tauri-drag-region>
+    <div class="flex items-center gap-2 px-1 h-full pointer-events-none" data-tauri-drag-region>
+      <img
+        src="/src/assets/logo.png"
+        alt="LCU Companion"
+        class="h-5 w-5 object-contain pointer-events-none drop-shadow-sm"
+      />
+      <span class="text-xs sm:text-sm font-bold text-gray-200 tracking-wide pointer-events-none">
+        LCU Companion
+      </span>
+    </div>
+
+    <!-- Vertical separator -->
+    <div class="h-4 w-px bg-gray-800 pointer-events-none"></div>
+
+    <!-- Runes and Builds navigation tabs -->
+    <NavTabs {activeTab} {onTabChange} />
   </div>
 
-  <!-- Right: Window Action Buttons -->
+  <!-- Right: Window Action Buttons with Iconify Icons -->
   <div class="flex items-center h-full">
     <button
       type="button"
       onclick={minimize}
-      class="h-full px-3 text-xs text-gray-400 hover:text-gray-100 hover:bg-gray-800 focus:outline-none transition-colors inline-flex items-center justify-center cursor-pointer"
+      class="h-full px-3.5 text-gray-400 hover:text-white hover:bg-gray-800/80 focus:outline-none transition-colors inline-flex items-center justify-center cursor-pointer"
       title="Minimize"
     >
-      Minimize
+      <span class="icon-[heroicons--minus] h-4 w-4"></span>
     </button>
     <button
       type="button"
       onclick={toggleMaximize}
-      class="h-full px-3 text-xs text-gray-400 hover:text-gray-100 hover:bg-gray-800 focus:outline-none transition-colors inline-flex items-center justify-center cursor-pointer"
+      class="h-full px-3.5 text-gray-400 hover:text-white hover:bg-gray-800/80 focus:outline-none transition-colors inline-flex items-center justify-center cursor-pointer"
       title="Maximize"
     >
-      Maximize
+      <span class="icon-[heroicons--stop] h-3.5 w-3.5"></span>
     </button>
     <button
       type="button"
       onclick={close}
-      class="h-full px-3 text-xs text-gray-400 hover:text-white hover:bg-red-600 focus:outline-none transition-colors inline-flex items-center justify-center cursor-pointer"
+      class="h-full px-3.5 text-gray-400 hover:text-white hover:bg-red-600 focus:outline-none transition-colors inline-flex items-center justify-center cursor-pointer"
       title="Close"
     >
-      Close
+      <span class="icon-[heroicons--x-mark] h-4.5 w-4.5"></span>
     </button>
   </div>
 </header>

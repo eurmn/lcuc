@@ -41,6 +41,8 @@ pub struct RuneTreePayload {
     #[serde(default)]
     pub champion_id: Option<i64>,
     #[serde(default)]
+    pub role: Option<u32>,
+    #[serde(default)]
     pub is_editing: bool,
 }
 
@@ -66,6 +68,7 @@ pub struct SavedRuneSetSummary {
     pub primary_style_name: String,
     pub primary_style_icon_url: String,
     pub champion_id: i64,
+    pub role: u32,
     pub source: String,
     pub created_at: String,
 }
@@ -100,4 +103,6 @@ pub struct SaveRuneTreePayload {
     pub selected_perks: Vec<i64>,
     #[serde(default)]
     pub champion_id: Option<i64>,
+    #[serde(default)]
+    pub role: Option<u32>,
 }

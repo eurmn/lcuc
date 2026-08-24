@@ -402,6 +402,7 @@ pub async fn build_rune_tree_payload_from_data(
     runeset_id: Option<i64>,
     page_id: Option<i64>,
     champion_id: Option<i64>,
+    role: Option<u32>,
     is_editing: bool,
 ) -> RuneTreePayload {
     let selected_set: HashSet<i64> = selected_perks.iter().cloned().collect();
@@ -440,6 +441,7 @@ pub async fn build_rune_tree_payload_from_data(
         sub_style_id,
         selected_perk_ids: selected_perks,
         champion_id,
+        role,
         is_editing,
     }
 }
@@ -623,6 +625,7 @@ pub async fn get_current_rune_tree_payload() -> Result<RuneTreePayload, String> 
         None,
         client_page_id,
         None,
+        Some(1),
         false,
     )
     .await)
@@ -674,6 +677,7 @@ pub async fn get_client_page_rune_tree_payload(page_id: i64) -> Result<RuneTreeP
         None,
         Some(page_id),
         None,
+        Some(1),
         false,
     )
     .await)
@@ -701,6 +705,7 @@ pub async fn get_saved_runeset_tree_payload(runeset_id: i64) -> Result<RuneTreeP
         Some(runeset_id),
         record.rune_page_id,
         champ_id,
+        Some(record.role),
         false,
     )
     .await)

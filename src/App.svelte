@@ -2,6 +2,7 @@
   import { onDestroy, onMount } from "svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import TitleBar from "./lib/components/TitleBar.svelte";
+  import TopNavBar from "./lib/components/navigation/TopNavBar.svelte";
   import RunesSidebar from "./lib/components/sidebar/RunesSidebar.svelte";
   import RuneCanvas from "./lib/components/runes/RuneCanvas.svelte";
   import {
@@ -21,6 +22,7 @@
     getChampions,
     getSelectedChampionId,
     setSelectedChampionId,
+    toggleFavoriteChampion,
   } from "./lib/api/champions";
   import type {
     ClientRunePageSummary,
@@ -36,12 +38,13 @@
   let selectedKey = $state<string>("");
   let selectedChampion = $state<ChampionSummary | null>(null);
   let allChampions = $state<ChampionSummary[]>([]);
+  let activeTab = $state<"runes" | "builds">("runes");
 
   let currentTree = $state<RuneTreePayload | null>(null);
   let sidebarLoading = $state(true);
   let treeLoading = $state(true);
-  let runesSidebarRef = $state<RunesSidebar | null>(null);
-  let isSidebarOpen = $state<boolean>(false);
+  let topNavBarRef = $state<TopNavBar | null>(null);
+  let isSidebarOpen = $state<boolean>(true);
 
   function toggleSidebar() {
     isSidebarOpen = !isSidebarOpen;
@@ -50,6 +53,7 @@
   async function loadChampions() {
     try {
       allChampions = await getChampions();
+      topNavBarRef?.refreshChampions();
     } catch (err) {
       console.error("[Champions Load Error]", err);
     }
@@ -78,6 +82,18 @@
     }
   }
 
+  async function handleToggleFavorite(championId: number) {
+    try {
+      const updated = await toggleFavoriteChampion(championId);
+      allChampions = allChampions.map((c) =>
+        c.id === championId ? { ...c, is_favorite: updated } : c,
+      );
+      topNavBarRef?.refreshChampions();
+    } catch (err) {
+      console.error("[Toggle Favorite Error]", err);
+    }
+  }
+
   async function loadOverview(preserveKey?: string): Promise<string> {
     try {
       sidebarLoading = true;
@@ -91,9 +107,15 @@
 
       // Validate candidate key against loaded pages
       if (candidateKey) {
-        if (candidateKey.startsWith("saved:") && savedRunesets.some((s) => `saved:${s.id}` === candidateKey)) {
+        if (
+          candidateKey.startsWith("saved:") &&
+          savedRunesets.some((s) => `saved:${s.id}` === candidateKey)
+        ) {
           keyToSelect = candidateKey;
-        } else if (candidateKey.startsWith("client:") && clientPages.some((c) => `client:${c.id}` === candidateKey)) {
+        } else if (
+          candidateKey.startsWith("client:") &&
+          clientPages.some((c) => `client:${c.id}` === candidateKey)
+        ) {
           keyToSelect = candidateKey;
         }
       }
@@ -153,7 +175,7 @@
       await setSelectedRuneKey(newKey);
       await loadOverview(newKey);
       await loadTreeForKey(newKey);
-      runesSidebarRef?.refreshChampions();
+      topNavBarRef?.refreshChampions();
     } catch (err) {
       console.error("[Import Error]", err);
     }
@@ -163,7 +185,7 @@
     try {
       await exportSavedRunePage(runesetId);
       await loadOverview();
-      runesSidebarRef?.refreshProfile();
+      topNavBarRef?.refreshProfile();
     } catch (err) {
       console.error("[Export Error]", err);
     }
@@ -180,20 +202,23 @@
         await setSelectedRuneKey(null);
         currentTree = null;
       }
-      runesSidebarRef?.refreshChampions();
+      topNavBarRef?.refreshChampions();
     } catch (err) {
       console.error("[Delete Error]", err);
     }
   }
 
-  async function handleUpdateRunesetChampion(runesetId: number, championId: number) {
+  async function handleUpdateRunesetChampion(
+    runesetId: number,
+    championId: number,
+  ) {
     try {
       await updateRunesetChampion(runesetId, championId);
       await loadOverview();
       if (selectedKey === `saved:${runesetId}`) {
         await loadTreeForKey(`saved:${runesetId}`);
       }
-      runesSidebarRef?.refreshChampions();
+      topNavBarRef?.refreshChampions();
     } catch (err) {
       console.error("[Update Runeset Champion Error]", err);
     }
@@ -205,6 +230,7 @@
     subStyleId: number;
     selectedPerks: number[];
     championId: number;
+    role?: number;
   }) {
     const payload: SaveRuneTreePayload = {
       runeset_id: currentTree?.runeset_id,
@@ -214,6 +240,7 @@
       sub_style_id: data.subStyleId,
       selected_perks: data.selectedPerks,
       champion_id: data.championId,
+      role: data.role,
     };
 
     const savedId = await saveRuneTree(payload);
@@ -221,7 +248,7 @@
     await setSelectedRuneKey(savedKey);
     await loadOverview(savedKey);
     await loadTreeForKey(savedKey);
-    runesSidebarRef?.refreshChampions();
+    topNavBarRef?.refreshChampions();
   }
 
   let unlistenRunes: UnlistenFn | null = null;
@@ -243,7 +270,9 @@
       });
       unlistenConnected = await listen("lcu:connected", async () => {
         await loadOverview(selectedKey);
-        runesSidebarRef?.refreshChampions();
+        await loadChampions();
+        topNavBarRef?.refreshChampions();
+        topNavBarRef?.refreshProfile();
       });
       unlistenDisconnected = await listen("lcu:disconnected", async () => {
         clientPages = [];
@@ -262,39 +291,64 @@
   });
 </script>
 
-<div class="h-screen w-screen flex flex-col overflow-hidden bg-gray-900 text-gray-100 antialiased selection:bg-purple-600 selection:text-white">
-  <!-- Draggable Custom Title Bar with Sidebar Toggle -->
-  <TitleBar {isSidebarOpen} onToggleSidebar={toggleSidebar} />
+<div
+  class="h-screen w-screen flex flex-col overflow-hidden bg-gray-900 text-gray-100 antialiased selection:bg-purple-600 selection:text-white"
+>
+  <!-- Draggable Custom Title Bar with App Branding & Window Controls -->
+  <TitleBar {activeTab} onTabChange={(tab) => (activeTab = tab)} />
+
+  <!-- Topside Header Navigation Bar (Sidebar Toggle + Profile + Champion Search) -->
+  <TopNavBar
+    bind:this={topNavBarRef}
+    {isSidebarOpen}
+    onToggleSidebar={toggleSidebar}
+    {selectedChampion}
+    {allChampions}
+    activeRuneChampionId={currentTree?.champion_id || 0}
+    onSelectChampionFilter={handleSelectChampionFilter}
+    onToggleFavoriteChampion={handleToggleFavorite}
+  />
 
   <!-- Main App Shell -->
-  <div id="app-shell" class="flex-1 flex overflow-hidden bg-gray-900 text-gray-100 relative">
-    <!-- Collapsible Sidebar Component -->
-    <RunesSidebar
-      bind:this={runesSidebarRef}
-      bind:isOpen={isSidebarOpen}
-      {clientPages}
-      {savedRunesets}
-      {activeCompanionName}
-      {selectedKey}
-      {selectedChampion}
-      activeRuneChampionId={currentTree?.champion_id || 0}
-      loading={sidebarLoading}
-      onSelectPage={handleSelectPage}
-      onImportPage={handleImportPage}
-      onDeletePage={handleDeletePage}
-      onSelectChampionFilter={handleSelectChampionFilter}
-      onChangeRunesetChampion={handleUpdateRunesetChampion}
-    />
+  <div
+    id="app-shell"
+    class="flex-1 flex overflow-hidden bg-gray-900 text-gray-100 relative scrollbar-thumb-gray-800 scrollbar-track-gray-900 scrollbar-thin"
+  >
+    {#if activeTab === "runes"}
+      <!-- Collapsible Sidebar Component -->
+      <RunesSidebar
+        bind:isOpen={isSidebarOpen}
+        {clientPages}
+        {savedRunesets}
+        {activeCompanionName}
+        {selectedKey}
+        {selectedChampion}
+        {allChampions}
+        loading={sidebarLoading}
+        onSelectPage={handleSelectPage}
+        onImportPage={handleImportPage}
+        onDeletePage={handleDeletePage}
+        onChangeRunesetChampion={handleUpdateRunesetChampion}
+      />
 
-    <!-- Center Canvas: Active / Selected Rune Tree -->
-    <RuneCanvas
-      tree={currentTree}
-      loading={treeLoading}
-      {selectedChampion}
-      onSave={handleSaveTree}
-      onExport={handleExportPage}
-      onImport={handleImportPage}
-      onSelectChampion={handleSelectChampionFilter}
-    />
+      <!-- Center Canvas: Active / Selected Rune Tree -->
+      <RuneCanvas
+        tree={currentTree}
+        loading={treeLoading}
+        {selectedChampion}
+        onSave={handleSaveTree}
+        onExport={handleExportPage}
+        onImport={handleImportPage}
+        onSelectChampion={handleSelectChampionFilter}
+      />
+    {:else}
+      <div
+        class="flex-1 flex items-center justify-center flex-col gap-3 text-gray-400 select-none p-6"
+      >
+        <span class="icon-[heroicons--wrench-screwdriver] h-12 w-12 text-gray-600"></span>
+        <p class="text-base font-medium text-gray-300">Champion Builds Coming Soon</p>
+        <p class="text-xs text-gray-500">Item builds, skill orders, and matchup guides are under development.</p>
+      </div>
+    {/if}
   </div>
 </div>

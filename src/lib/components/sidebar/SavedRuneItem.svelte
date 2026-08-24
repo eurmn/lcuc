@@ -4,6 +4,7 @@
   import type { ChampionSummary } from "../../types/champions";
   import { ALL_CHAMPIONS_ICON_URL } from "../../types/champions";
   import { getRuneTheme } from "../../utils/theme";
+  import { LEAGUE_ROLES_MAP, type LeagueRole } from "../../types/rune_builder";
 
   let {
     item,
@@ -34,6 +35,7 @@
   const theme = $derived(getRuneTheme(item.primary_style_id));
   const styleOrSource = $derived(item.primary_style_name || item.source);
   const champName = $derived(getChampName(item.champion_id));
+  const roleLabel = $derived(LEAGUE_ROLES_MAP[item.role as LeagueRole]?.label || "Jungle");
 </script>
 
 <MotionLi
@@ -117,6 +119,7 @@
         {styleOrSource}
       </span>
       <span class="text-[11px] text-gray-500 shrink-0">{champName}</span>
+      <span class="text-[10px] text-gray-500 shrink-0 font-medium">• {roleLabel}</span>
     </div>
   </div>
 

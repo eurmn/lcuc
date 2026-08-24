@@ -143,7 +143,7 @@
             ? "flex items-center gap-3 p-2 rounded-xl border-2 border-purple-500 bg-purple-950/30 shadow-md cursor-pointer transition-all"
             : "flex items-center gap-3 p-2 rounded-xl border border-gray-800 bg-gray-900/80 hover:border-gray-600 hover:bg-gray-800 cursor-pointer transition-all"}
         >
-          <div class="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-gray-700 bg-gray-950 overflow-hidden">
+          <div class="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-gray-700 bg-gray-900 overflow-hidden">
             <img
               src={ALL_CHAMPIONS_ICON_URL}
               alt="All Champions"
@@ -179,7 +179,7 @@
                 ? "flex flex-col items-center gap-1.5 p-2 rounded-xl border-2 border-yellow-400 bg-gray-950/60 hover:border-yellow-300 hover:bg-gray-800/80 hover:scale-105 hover:shadow-md cursor-pointer transition-all group"
                 : "flex flex-col items-center gap-1.5 p-2 rounded-xl border border-gray-800/90 bg-gray-950/60 hover:border-purple-500 hover:bg-gray-800/80 hover:scale-105 hover:shadow-md cursor-pointer transition-all group"}
             >
-              <div class="relative flex h-10 w-10 shrink-0 overflow-hidden rounded-full border border-gray-700/80 bg-gray-950 p-0 shadow-inner">
+              <div class="relative flex h-10 w-10 shrink-0 overflow-hidden rounded-full border border-gray-700/80 bg-gray-900 p-0 shadow-inner">
                 {#if champ.square_icon_url}
                   <img
                     src={champ.square_icon_url}

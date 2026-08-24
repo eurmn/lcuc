@@ -1,3 +1,6 @@
+<script lang="ts">
+</script>
+
 <div class="rounded-2xl border border-gray-800 bg-gray-950/60 p-12 text-center animate-pulse">
   <div class="mx-auto flex h-10 w-10 items-center justify-center rounded-xl bg-gray-800 text-purple-400 mb-3">
     <svg class="h-6 w-6 animate-spin" fill="none" viewBox="0 0 24 24">

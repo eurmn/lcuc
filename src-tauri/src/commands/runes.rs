@@ -38,6 +38,7 @@ pub async fn api_runes_overview() -> Result<RunesOverviewPayload, String> {
             primary_style_name,
             primary_style_icon_url,
             champion_id: item.champion_id,
+            role: item.role,
             source: item.source,
             created_at: item.created_at,
         });
@@ -93,6 +94,7 @@ pub async fn api_import_client_page(
         &target.selected_perk_ids,
         None,
         resolved_champ_id,
+        1,
         None,
         Some(target.id),
         "league_client",
@@ -135,6 +137,7 @@ pub async fn api_update_runeset_champion(
         record.sub_style_id,
         &record.selected_perk_ids,
         Some(champion_id),
+        Some(record.role),
     )
 }
 
@@ -194,6 +197,7 @@ pub async fn api_rune_tree_select_perk(
         payload.runeset_id,
         payload.page_id,
         None,
+        None,
         true,
     )
     .await;
@@ -212,6 +216,7 @@ pub async fn api_save_rune_tree(payload: SaveRuneTreePayload) -> Result<i64, Str
 
     let store = RuneStore::new()?;
     let champion_id = payload.champion_id.unwrap_or(0);
+    let role = payload.role.unwrap_or(1);
     let mut saved_id: Option<i64> = None;
 
     if let Some(rid) = payload.runeset_id {
@@ -223,6 +228,7 @@ pub async fn api_save_rune_tree(payload: SaveRuneTreePayload) -> Result<i64, Str
                 payload.sub_style_id,
                 &payload.selected_perks,
                 Some(champion_id),
+                Some(role),
             )?;
             saved_id = Some(rid);
         }
@@ -236,6 +242,7 @@ pub async fn api_save_rune_tree(payload: SaveRuneTreePayload) -> Result<i64, Str
             &payload.selected_perks,
             None,
             champion_id,
+            role,
             None,
             payload.page_id,
             "companion_custom",

@@ -1,12 +1,9 @@
 <script lang="ts">
-  import { onMount } from "svelte";
   import {
     LayoutGroup,
     MotionAside,
     type MotionTransition,
   } from "@humanspeak/svelte-motion";
-  import ProfileCard from "../ProfileCard.svelte";
-  import ChampionFilterSection from "./ChampionFilterSection.svelte";
   import SidebarSkeleton from "./SidebarSkeleton.svelte";
   import SavedRunesList from "./SavedRunesList.svelte";
   import ClientRunesList from "./ClientRunesList.svelte";
@@ -16,21 +13,19 @@
     RuneSetSummary,
   } from "../../types/runes";
   import type { ChampionSummary } from "../../types/champions";
-  import { getChampions, toggleFavoriteChampion } from "../../api/champions";
 
   let {
-    isOpen = $bindable(false),
+    isOpen = $bindable(true),
     clientPages = [],
     savedRunesets = [],
     activeCompanionName = null,
     selectedKey = "",
     selectedChampion = null,
-    activeRuneChampionId = null,
+    allChampions = [],
     loading = false,
     onSelectPage,
     onImportPage,
     onDeletePage,
-    onSelectChampionFilter,
     onChangeRunesetChampion,
   }: {
     isOpen?: boolean;
@@ -39,41 +34,18 @@
     activeCompanionName: string | null;
     selectedKey: string;
     selectedChampion?: ChampionSummary | null;
-    activeRuneChampionId?: number | null;
+    allChampions?: ChampionSummary[];
     loading: boolean;
     onSelectPage: (key: string) => void;
     onImportPage: (pageId: number) => void;
     onDeletePage: (runesetId: number) => void;
-    onSelectChampionFilter?: (champion: ChampionSummary | null) => void;
     onChangeRunesetChampion?: (runesetId: number, championId: number) => void;
   } = $props();
-
-  let profileCardRef = $state<ProfileCard | null>(null);
-  let championFilterRef = $state<ChampionFilterSection | null>(null);
-  let allChampions = $state<ChampionSummary[]>([]);
-  let championSearchQuery = $state("");
 
   // Modal state for editing saved runeset champion
   let editingRunesetId = $state<number | null>(null);
   let editingRunesetCurrentChampId = $state<number | null>(null);
   let isRunesetChampionModalOpen = $state<boolean>(false);
-
-  export function refreshProfile() {
-    profileCardRef?.refreshProfile();
-  }
-
-  export async function refreshChampions() {
-    try {
-      allChampions = await getChampions();
-      setTimeout(() => championFilterRef?.updateScrollArrows(), 50);
-    } catch (err) {
-      console.error("[Sidebar Champions Refresh Error]", err);
-    }
-  }
-
-  onMount(async () => {
-    await refreshChampions();
-  });
 
   // Filter saved runes:
   // - Shows saved runes for selectedChampion (or universal runes if selectedChampion is null)
@@ -100,25 +72,8 @@
       }
     }
 
-    const q = championSearchQuery.trim().toLowerCase();
-    if (!q) return list;
-    return list.filter((r) => r.rune_page_name.toLowerCase().includes(q));
+    return list;
   });
-
-  function selectChampion(champ: ChampionSummary | null) {
-    onSelectChampionFilter?.(champ);
-  }
-
-  async function handleToggleFavorite(championId: number) {
-    try {
-      const updated = await toggleFavoriteChampion(championId);
-      allChampions = allChampions.map((c) =>
-        c.id === championId ? { ...c, is_favorite: updated } : c,
-      );
-    } catch (err) {
-      console.error("[Toggle Favorite Error]", err);
-    }
-  }
 
   function handleOpenChangeChampionModal(
     runesetId: number,
@@ -155,29 +110,6 @@
     <div
       class="h-full w-full p-2.5 flex flex-col gap-3 select-none overflow-y-auto overflow-x-hidden min-w-0"
     >
-      <!-- Profile Card Container with right-sticked collapse button -->
-      <ProfileCard
-        bind:this={profileCardRef}
-        {isOpen}
-        onToggleCollapse={() => (isOpen = !isOpen)}
-      />
-
-      <!-- Champion Selector & Search Container -->
-      <ChampionFilterSection
-        bind:this={championFilterRef}
-        {isOpen}
-        {selectedChampion}
-        {allChampions}
-        {activeRuneChampionId}
-        bind:championSearchQuery
-        {layoutTransition}
-        onSelectChampion={selectChampion}
-        onToggleFavorite={handleToggleFavorite}
-      />
-
-      <!-- Separator -->
-      <hr class="border-gray-800" />
-
       {#if loading}
         <!-- Skeleton Loaders -->
         <SidebarSkeleton />

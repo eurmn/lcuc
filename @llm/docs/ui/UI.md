@@ -28,13 +28,16 @@ src/
 │   │   ├── rune_builder.ts             # Telemetry-backed rune tree & stats APIs
 │   │   └── champions.ts                # Champion list and favorites toggle APIs
 │   ├── components/                     # Svelte 5 Reactive UI Components
-│   │   ├── TitleBar.svelte             # Custom desktop title bar with drag region & window controls
+│   │   ├── TitleBar.svelte             # Custom desktop title bar with drag region & window action buttons
 │   │   ├── ProfileCard.svelte          # Summoner avatar, Riot ID, level, and ranked challenge badge
 │   │   ├── ChampionSelectModal.svelte  # Flowbite-styled modal overlay for picking rune page champion
 │   │   ├── Divider.svelte              # Motion-animated divider line for expandable trays
+│   │   ├── navigation/                 # Topside header navigation bar components
+│   │   │   ├── TopNavBar.svelte        # Top navigation orchestrator (Sidebar Toggle + Profile + Tabs + Champion Search)
+│   │   │   ├── NavTabs.svelte          # "Runes" (active) and "Builds" navigation tabs
+│   │   │   └── TopChampionSearch.svelte# Horizontal champion search bar, selected slot & scrollable carousel
 │   │   ├── sidebar/                    # Dual-list collapsible sidebar
 │   │   │   ├── RunesSidebar.svelte     # Main sidebar layout orchestrator with motion transitions
-│   │   │   ├── ChampionFilterSection.svelte # Collapsible search input + carousel container
 │   │   │   ├── SelectedChampionSlot.svelte # Dedicated pinned active champion slot with bookmark
 │   │   │   ├── ChampionCarousel.svelte # Scrollable horizontal champions carousel with navigation arrows
 │   │   │   ├── SidebarSkeleton.svelte  # Animated pulse placeholder when sidebar is loading

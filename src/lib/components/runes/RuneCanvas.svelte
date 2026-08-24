@@ -39,6 +39,7 @@
       subStyleId: number;
       selectedPerks: number[];
       championId: number;
+      role?: number;
     }) => Promise<void>;
     onExport: (runesetId: number) => Promise<void>;
     onImport?: (pageId: number) => Promise<void>;
@@ -53,6 +54,7 @@
 
   // Builder filters
   let selectedRole = $state<number>(1); // Jungle default
+  let backupRole = $state<number>(1);
   let selectedTiers = $state<number[]>([4, 5, 6, 7]); // Platinum+
   let pageName = $state<string>("Custom Rune Page");
   let saving = $state<boolean>(false);
@@ -82,16 +84,22 @@
   /**
    * Loads telemetry data for current champion and filters.
    */
-  async function loadBuilderData(overrideKeystone?: number, overridePrimaryStyle?: number, overrideSubStyle?: number) {
+  async function loadBuilderData(
+    overrideKeystone?: number,
+    overridePrimaryStyle?: number,
+    overrideSubStyle?: number,
+    overrideRole?: number,
+  ) {
     try {
       telemetryLoading = true;
       const champId = runeChampion && runeChampion.id > 0 ? runeChampion.id : (selectedChampion && selectedChampion.id > 0 ? selectedChampion.id : 64);
       const primStyle = overridePrimaryStyle ?? selectedPrimaryStyleId;
       const subStyle = overrideSubStyle ?? selectedSubStyleId;
+      const roleToUse = overrideRole !== undefined ? overrideRole : selectedRole;
 
       const query: BuilderQuery = {
         champion_id: champId,
-        role: selectedRole,
+        role: roleToUse,
         league_tiers: selectedTiers,
         keystone_id: overrideKeystone ?? selectedKeystoneId,
         primary_style_id: primStyle,
@@ -142,7 +150,11 @@
         if (tree.sub_style_id) selectedSubStyleId = tree.sub_style_id;
         if (selectedPerkIds.length > 0) selectedKeystoneId = selectedPerkIds[0];
 
-        loadBuilderData(selectedPerkIds[0], selectedPrimaryStyleId, selectedSubStyleId);
+        const treeRole = tree.role !== undefined && tree.role !== null ? tree.role : 1;
+        selectedRole = treeRole;
+        backupRole = treeRole;
+
+        loadBuilderData(selectedPerkIds[0], selectedPrimaryStyleId, selectedSubStyleId, treeRole);
       }
     }
   });
@@ -251,7 +263,7 @@
   // Handler: Role switcher
   async function handleSelectRole(role: number) {
     selectedRole = role;
-    await loadBuilderData();
+    await loadBuilderData(selectedKeystoneId ?? undefined, selectedPrimaryStyleId, selectedSubStyleId, role);
   }
 
   // Handler: Rank tier toggle
@@ -270,7 +282,9 @@
   function handleCancelEdit() {
     selectedPerkIds = [...backupPerkIds];
     pageName = backupName;
+    selectedRole = backupRole;
     isEditing = false;
+    loadBuilderData(selectedPerkIds[0], selectedPrimaryStyleId, selectedSubStyleId, backupRole);
   }
 
   // Handler: Save
@@ -285,9 +299,11 @@
         subStyleId: selectedSubStyleId,
         selectedPerks: selectedPerkIds,
         championId: champId,
+        role: selectedRole,
       });
       backupPerkIds = [...selectedPerkIds];
       backupName = pageName;
+      backupRole = selectedRole;
       isEditing = false;
     } finally {
       saving = false;
@@ -309,7 +325,7 @@
   }
 </script>
 
-<main class="flex-1 flex flex-col bg-gray-900 p-5 overflow-y-auto h-full relative select-none">
+<main class="flex-1 flex flex-col bg-gray-950/40 p-5 overflow-y-auto h-full relative select-none scrollbar-thin">
   <div class="w-full max-w-6xl mx-auto flex flex-col gap-4">
     <!-- Header: Mode Switcher, Page Title, Action Buttons & Filter Tray -->
     <RuneCanvasHeader

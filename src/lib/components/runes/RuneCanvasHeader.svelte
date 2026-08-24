@@ -3,6 +3,7 @@
   import type { ChampionSummary } from "../../types/champions";
   import { ALL_CHAMPIONS_ICON_URL } from "../../types/champions";
   import type { RuneTreePayload } from "../../types/runes";
+  import { LEAGUE_ROLES_MAP, type LeagueRole } from "../../types/rune_builder";
 
   let {
     tree = null,
@@ -39,7 +40,7 @@
   } = $props();
 </script>
 
-<div class="flex flex-col rounded-2xl border border-gray-800 bg-gray-950/90 p-4 shadow-md">
+<div class="flex flex-col rounded-2xl border border-gray-800 bg-gray-900 p-4 shadow-md">
   <div class="flex flex-wrap items-center justify-between gap-3">
     <!-- Page Title & Champion Avatar / Asterisk -->
     <div class="flex items-center gap-2.5 flex-1 min-w-[240px]">
@@ -96,6 +97,9 @@
           <h2 class="text-base font-extrabold text-white truncate max-w-md">
             {pageName || tree?.page_name || "Custom Rune Page"}
           </h2>
+          <span class="inline-flex items-center rounded-lg bg-gray-800/90 border border-gray-700/60 px-2 py-0.5 text-[11px] font-semibold text-gray-300">
+            {LEAGUE_ROLES_MAP[selectedRole as LeagueRole]?.label || "Jungle"}
+          </span>
         </div>
       {/if}
     </div>

@@ -1,7 +1,6 @@
 <script lang="ts">
   import {
     formatGameCount,
-    formatPickRate,
     getPickRateOpacity,
     getWpaBarMetrics,
     getWpaText,

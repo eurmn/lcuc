@@ -52,7 +52,7 @@
 
   <!-- 2. All Champions Icon -->
   <div
-    class="relative flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-full border border-gray-700/80 bg-gray-950 p-0 shadow-inner"
+    class="relative flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-full border border-gray-700/80 bg-gray-900 p-0 shadow-inner"
   >
     <img
       src={ALL_CHAMPIONS_ICON_URL}

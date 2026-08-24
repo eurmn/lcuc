@@ -12,6 +12,7 @@ pub struct RuneSetRecord {
     pub sub_style_id: Option<i64>,
     pub selected_perk_ids: Vec<i64>,
     pub source: String,
+    pub role: u32,
     pub created_at: String,
 }
 
@@ -22,6 +23,8 @@ pub struct RuneSetSummary {
     pub primary_style_id: Option<i64>,
     pub sub_style_id: Option<i64>,
     pub champion_id: i64,
+    pub role: u32,
     pub source: String,
     pub created_at: String,
 }
+
