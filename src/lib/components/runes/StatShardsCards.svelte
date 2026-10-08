@@ -1,7 +1,7 @@
 <script lang="ts">
   import TelemetryStats from "./TelemetryStats.svelte";
+  import RunePopover from "./RunePopover.svelte";
   import type { StatShardOption, StatShardsStats } from "../../types/rune_builder";
-  import { formatOccurrence, formatPickRate, getWpaText } from "../../utils/wpa";
 
   let {
     statShards,
@@ -57,15 +57,12 @@
         <div class="grid grid-cols-3 gap-2">
           {#each row.options as option (option.id)}
             {@const isSelected = selectedShardIds[rowIndex] === option.id}
-            {@const hasData = option.occurrence > 0 || option.pick_rate_pct > 0}
-            {@const wpaText = getWpaText(option.wpa, hasData)}
+            {@const shardCardId = `shard-card-${option.id}-${rowIndex}`}
 
             <button
+              id={shardCardId}
               type="button"
               disabled={!isEditing}
-              title={hasData
-                ? `${option.name} — ${formatPickRate(option.pick_rate_pct)} (${formatOccurrence(option.occurrence)} picks), ${wpaText}`
-                : `${option.name} — No statistical information available`}
               onclick={() => isEditing && onSelectShard(option.id, rowIndex)}
               class={isSelected
                 ? (isEditing
@@ -91,6 +88,14 @@
                 wpa={option.wpa}
               />
             </button>
+
+            <RunePopover
+              targetId={shardCardId}
+              name={option.name}
+              iconUrl={option.icon_url}
+              description={option.long_desc}
+              {isEditing}
+            />
           {/each}
         </div>
       </div>

@@ -126,6 +126,12 @@ pub async fn get_style_info(style_id: Option<i64>) -> (String, String) {
 
 /// Resolves the name and icon URL for a given perk ID (e.g. `8010` for Conqueror).
 pub async fn get_perk_info(perk_id: i64) -> (String, String) {
+    let (name, icon_url, _) = get_perk_details(perk_id).await;
+    (name, icon_url)
+}
+
+/// Resolves the name, icon URL, and long description for a given perk ID.
+pub async fn get_perk_details(perk_id: i64) -> (String, String, String) {
     let perks = PERKS_CACHE.read().await;
     if let Some(perk_obj) = perks.get(&perk_id) {
         let name = perk_obj
@@ -143,9 +149,15 @@ pub async fn get_perk_info(perk_id: i64) -> (String, String) {
         } else {
             "".to_string()
         };
-        (name, icon_url)
+        let long_desc = perk_obj
+            .get("longDesc")
+            .or_else(|| perk_obj.get("shortDesc"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        (name, icon_url, long_desc)
     } else {
-        (format!("Perk {}", perk_id), "".to_string())
+        (format!("Perk {}", perk_id), "".to_string(), "".to_string())
     }
 }
 
@@ -288,11 +300,19 @@ async fn build_style_tree(
                         "".to_string()
                     };
 
+                    let perk_long_desc = perk_obj
+                        .and_then(|p| p.get("longDesc"))
+                        .or_else(|| perk_obj.and_then(|p| p.get("shortDesc")))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+
                     options.push(RuneOption {
                         id: perk_id,
                         name: perk_name,
                         icon_url: perk_icon_url,
                         selected: selected_perks.contains(&perk_id),
+                        long_desc: perk_long_desc,
                     });
                 }
             }
@@ -371,6 +391,13 @@ async fn build_stat_mod_slots(
                         "".to_string()
                     };
 
+                    let perk_long_desc = perk_obj
+                        .and_then(|p| p.get("longDesc"))
+                        .or_else(|| perk_obj.and_then(|p| p.get("shortDesc")))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+
                     let is_selected = expected_perk_id.map(|exp| exp == perk_id).unwrap_or(false);
 
                     options.push(RuneOption {
@@ -378,6 +405,7 @@ async fn build_stat_mod_slots(
                         name: perk_name,
                         icon_url: perk_icon_url,
                         selected: is_selected,
+                        long_desc: perk_long_desc,
                     });
                 }
             }

@@ -3,6 +3,7 @@ export interface RuneOption {
   name: string;
   icon_url: string;
   selected: boolean;
+  long_desc?: string;
 }
 
 export interface RuneSlot {

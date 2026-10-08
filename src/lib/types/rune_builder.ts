@@ -60,6 +60,7 @@ export interface EnrichedKeystoneOption {
   pick_rate_pct: number;
   effects: RuneEffectMetric[];
   selected: boolean;
+  long_desc?: string;
 }
 
 export interface EnrichedRuneOption {
@@ -71,6 +72,7 @@ export interface EnrichedRuneOption {
   pick_rate_pct: number;
   effects: RuneEffectMetric[];
   selected: boolean;
+  long_desc?: string;
 }
 
 export interface TreeRowStats {
@@ -103,6 +105,7 @@ export interface StatShardOption {
   occurrence: number;
   pick_rate_pct: number;
   selected: boolean;
+  long_desc?: string;
 }
 
 export interface StatShardsStats {

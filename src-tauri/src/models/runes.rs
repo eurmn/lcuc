@@ -6,6 +6,8 @@ pub struct RuneOption {
     pub name: String,
     pub icon_url: String,
     pub selected: bool,
+    #[serde(default)]
+    pub long_desc: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

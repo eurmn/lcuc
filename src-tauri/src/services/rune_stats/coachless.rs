@@ -13,7 +13,8 @@ use crate::models::{
     TreeRowStats,
 };
 use crate::services::rune_tree::{
-    ensure_cdragon_cache, get_perk_info, get_perk_style_id, get_style_info, get_style_perk_order,
+    ensure_cdragon_cache, get_perk_details, get_perk_info, get_perk_style_id, get_style_info,
+    get_style_perk_order,
 };
 
 use std::collections::HashMap;
@@ -166,7 +167,7 @@ impl CoachlessProvider {
         let mut enriched = Vec::with_capacity(items.len());
 
         for item in items {
-            let (name, icon_url) = get_perk_info(item.rune).await;
+            let (name, icon_url, long_desc) = get_perk_details(item.rune).await;
             let pick_rate = if row_total > 0 {
                 (item.occurrence as f64 / row_total as f64) * 100.0
             } else {
@@ -193,6 +194,7 @@ impl CoachlessProvider {
                 pick_rate_pct: (pick_rate * 10.0).round() / 10.0,
                 effects,
                 selected: is_selected,
+                long_desc,
             });
         }
 
@@ -231,7 +233,7 @@ impl RuneStatsProvider for CoachlessProvider {
         let mut enriched_keystones = Vec::with_capacity(items.len());
 
         for item in &items {
-            let (name, icon_url) = get_perk_info(item.rune).await;
+            let (name, icon_url, long_desc) = get_perk_details(item.rune).await;
             let style_id = get_perk_style_id(item.rune).await.unwrap_or(8000);
             let (style_name, style_icon_url) = get_style_info(Some(style_id)).await;
 
@@ -264,6 +266,7 @@ impl RuneStatsProvider for CoachlessProvider {
                 pick_rate_pct: (pick_rate * 10.0).round() / 10.0,
                 effects,
                 selected: is_selected,
+                long_desc,
             });
         }
 
@@ -271,7 +274,7 @@ impl RuneStatsProvider for CoachlessProvider {
             let (ks_list, _) = get_style_perk_order(*sid).await;
             for kid in ks_list {
                 if !enriched_keystones.iter().any(|k| k.id == kid) {
-                    let (name, icon_url) = get_perk_info(kid).await;
+                    let (name, icon_url, long_desc) = get_perk_details(kid).await;
                     let (style_name, style_icon_url) = get_style_info(Some(*sid)).await;
                     enriched_keystones.push(EnrichedKeystoneOption {
                         id: kid,
@@ -285,6 +288,7 @@ impl RuneStatsProvider for CoachlessProvider {
                         pick_rate_pct: 0.0,
                         effects: Vec::new(),
                         selected: query.keystone_id == Some(kid),
+                        long_desc,
                     });
                 }
             }
@@ -333,7 +337,7 @@ impl RuneStatsProvider for CoachlessProvider {
         if natural_rows.len() >= 3 {
             for perk_id in &natural_rows[0] {
                 if !row1_options.iter().any(|o| o.id == *perk_id) {
-                    let (name, icon_url) = get_perk_info(*perk_id).await;
+                    let (name, icon_url, long_desc) = get_perk_details(*perk_id).await;
                     row1_options.push(EnrichedRuneOption {
                         id: *perk_id,
                         name,
@@ -343,12 +347,13 @@ impl RuneStatsProvider for CoachlessProvider {
                         pick_rate_pct: 0.0,
                         effects: Vec::new(),
                         selected: false,
+                        long_desc,
                     });
                 }
             }
             for perk_id in &natural_rows[1] {
                 if !row2_options.iter().any(|o| o.id == *perk_id) {
-                    let (name, icon_url) = get_perk_info(*perk_id).await;
+                    let (name, icon_url, long_desc) = get_perk_details(*perk_id).await;
                     row2_options.push(EnrichedRuneOption {
                         id: *perk_id,
                         name,
@@ -358,12 +363,13 @@ impl RuneStatsProvider for CoachlessProvider {
                         pick_rate_pct: 0.0,
                         effects: Vec::new(),
                         selected: false,
+                        long_desc,
                     });
                 }
             }
             for perk_id in &natural_rows[2] {
                 if !row3_options.iter().any(|o| o.id == *perk_id) {
-                    let (name, icon_url) = get_perk_info(*perk_id).await;
+                    let (name, icon_url, long_desc) = get_perk_details(*perk_id).await;
                     row3_options.push(EnrichedRuneOption {
                         id: *perk_id,
                         name,
@@ -373,10 +379,10 @@ impl RuneStatsProvider for CoachlessProvider {
                         pick_rate_pct: 0.0,
                         effects: Vec::new(),
                         selected: false,
+                        long_desc,
                     });
                 }
             }
-
 
             row1_options.sort_by_key(|o| natural_rows[0].iter().position(|&id| id == o.id).unwrap_or(999));
             row2_options.sort_by_key(|o| natural_rows[1].iter().position(|&id| id == o.id).unwrap_or(999));
@@ -481,7 +487,7 @@ impl RuneStatsProvider for CoachlessProvider {
             let row_total: i64 = items.iter().map(|i| i.occurrence).sum();
             let mut options = Vec::with_capacity(items.len());
             for item in items {
-                let (name, icon_url) = get_perk_info(item.rune).await;
+                let (name, icon_url, long_desc) = get_perk_details(item.rune).await;
                 let pick_rate = if row_total > 0 {
                     (item.occurrence as f64 / row_total as f64) * 100.0
                 } else {
@@ -497,6 +503,7 @@ impl RuneStatsProvider for CoachlessProvider {
                     occurrence: item.occurrence,
                     pick_rate_pct: (pick_rate * 10.0).round() / 10.0,
                     selected: false,
+                    long_desc,
                 });
             }
             options
@@ -512,7 +519,7 @@ impl RuneStatsProvider for CoachlessProvider {
 
         for sid in &offense_order {
             if !offense.iter().any(|o| o.id == *sid) {
-                let (name, icon_url) = get_perk_info(*sid).await;
+                let (name, icon_url, long_desc) = get_perk_details(*sid).await;
                 offense.push(StatShardOption {
                     id: *sid,
                     name,
@@ -522,12 +529,13 @@ impl RuneStatsProvider for CoachlessProvider {
                     occurrence: 0,
                     pick_rate_pct: 0.0,
                     selected: false,
+                    long_desc,
                 });
             }
         }
         for sid in &flex_order {
             if !flex.iter().any(|o| o.id == *sid) {
-                let (name, icon_url) = get_perk_info(*sid).await;
+                let (name, icon_url, long_desc) = get_perk_details(*sid).await;
                 flex.push(StatShardOption {
                     id: *sid,
                     name,
@@ -537,12 +545,13 @@ impl RuneStatsProvider for CoachlessProvider {
                     occurrence: 0,
                     pick_rate_pct: 0.0,
                     selected: false,
+                    long_desc,
                 });
             }
         }
         for sid in &defense_order {
             if !defense.iter().any(|o| o.id == *sid) {
-                let (name, icon_url) = get_perk_info(*sid).await;
+                let (name, icon_url, long_desc) = get_perk_details(*sid).await;
                 defense.push(StatShardOption {
                     id: *sid,
                     name,
@@ -552,6 +561,7 @@ impl RuneStatsProvider for CoachlessProvider {
                     occurrence: 0,
                     pick_rate_pct: 0.0,
                     selected: false,
+                    long_desc,
                 });
             }
         }

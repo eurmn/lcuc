@@ -96,6 +96,8 @@ pub struct EnrichedKeystoneOption {
     pub pick_rate_pct: f64,
     pub effects: Vec<RuneEffectMetric>,
     pub selected: bool,
+    #[serde(default)]
+    pub long_desc: String,
 }
 
 /// Enriched standard perk option with performance statistics.
@@ -109,6 +111,8 @@ pub struct EnrichedRuneOption {
     pub pick_rate_pct: f64,
     pub effects: Vec<RuneEffectMetric>,
     pub selected: bool,
+    #[serde(default)]
+    pub long_desc: String,
 }
 
 /// A row of tier perks with statistics.
@@ -149,6 +153,8 @@ pub struct StatShardOption {
     pub occurrence: i64,
     pub pick_rate_pct: f64,
     pub selected: bool,
+    #[serde(default)]
+    pub long_desc: String,
 }
 
 /// 3 rows of stat shards (Offense, Flex, Defense).
