@@ -126,7 +126,7 @@ lcu-companion/
 │   │   │       ├── SavedRuneItem.svelte # Individual saved runeset card
 │   │   │       ├── SavedRunesList.svelte # Companion saved library list
 │   │   │       ├── SelectedChampionSlot.svelte # Dedicated pinned active champion slot
-│   │   │       └── SidebarSkeleton.svelte # Sidebar loading pulse placeholder��   │   │   │   └── SavedRunesList.svelte  # Companion saved library with delete action
+│   │   │       └── SidebarSkeleton.svelte # Sidebar loading pulse placeholder     │   │   │   └── SavedRunesList.svelte  # Companion saved library with delete action
 │   │   │   ├── ProfileCard.svelte      # Summoner profile card & challenge badge
 │   │   │   └── TitleBar.svelte         # Window title bar with drag region & controls
 │   │   ├── types/                      # Frontend TypeScript interface definitions
@@ -266,7 +266,7 @@ pnpm tauri dev
 - **Walkthrough Archival**: Whenever completing work in Planning Mode, in addition to generating the session walkthrough artifact, **ALWAYS save a permanent copy of the walkthrough document inside `@llm/docs/historical/walkthrough/<feature_name>_walkthrough.md`** so historical implementation context is permanently tracked across sessions. Change the file name of the markdown file if the conversation gets too long/changes subject. If the conversation includes multiple very different changes that need their own documentation, create different files for different features.
 
 ### Command Execution Guidelines
-- **Shell**: Always use `powershell -NoProfile -Command` for Bash tool calls — faster startup, no profile overhead.
+- **Shell**: Always use `pwsh -NoProfile -Command` for Bash tool calls — faster startup, no profile overhead.
 - **No Unsolicited Checks or Tests**: **DO NOT** run check, build, or test commands (such as `cargo check`, `cargo test`, `svelte-check`, `vite build`, etc.) without the user's direct and explicit request.
 
 
@@ -278,4 +278,7 @@ pnpm tauri dev
   pnpm svelte-check
   ```
 - Do not run `cargo check` or `cargo build` proactively before finishing code changes. Only run check/test commands after all code modifications are complete.
+
+# IMPORTANT
+always work out a way to reduce the amount of commands ran in a single output, if many commands are needed and interconnected, use them with && to reduce API calls.
 
