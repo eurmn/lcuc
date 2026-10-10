@@ -3,6 +3,7 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { getChallengeTierProfile, getSummonerProfile } from "../api/profile";
   import type { ChallengeTierProfile, SummonerProfile } from "../types/profile";
+  import { logger } from "../utils/logger";
 
   let profile = $state<SummonerProfile | null>(null);
   let challengeTier = $state<ChallengeTierProfile | null>(null);
@@ -50,7 +51,7 @@
         challengeTier = null;
       });
     } catch (err) {
-      console.error("[ProfileCard] Failed to attach Tauri event listeners:", err);
+      logger.error("frontend.profile", "Failed to attach Tauri event listeners", err);
     }
   });
 

@@ -146,11 +146,12 @@ pub async fn get_current_challenge_tier_profile() -> ChallengeTierProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::logger;
 
     #[tokio::test]
     async fn test_live_summoner_profile() {
         let profile = get_current_summoner_profile().await;
-        println!("Live summoner profile: {:?}", profile);
+        logger::debug("test.summoner", &format!("Live summoner profile request succeeded: {}", profile.is_ok()));
         assert!(profile.is_ok(), "Expected valid summoner profile from running League client");
     }
 }

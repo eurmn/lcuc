@@ -756,11 +756,12 @@ pub async fn get_active_companion_rune_name() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::logger;
 
     #[tokio::test]
     async fn test_live_client_rune_pages() {
         let pages = get_client_rune_pages().await;
-        println!("Live client rune pages: {:?}", pages);
+        logger::debug("test.rune-tree", &format!("Live client rune pages request succeeded: {}", pages.is_ok()));
         assert!(pages.is_ok(), "Expected valid rune pages from running League client");
     }
 }

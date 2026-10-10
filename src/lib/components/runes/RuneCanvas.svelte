@@ -21,6 +21,7 @@
     TreePerksStats,
   } from "../../types/rune_builder";
   import type { RuneTreePayload } from "../../types/runes";
+  import { logger } from "../../utils/logger";
 
   let {
     tree = null,
@@ -121,7 +122,7 @@
         selectedPerkIds = [...res.recommended_perk_ids];
       }
     } catch (err) {
-      console.error("[Builder Telemetry Error]", err);
+      logger.error("frontend.rune-canvas", "Builder telemetry failed", err);
     } finally {
       telemetryLoading = false;
     }
@@ -167,7 +168,7 @@
         if (found) runeChampion = found;
       }
     } catch (err) {
-      console.error("[RuneCanvas Champion Load Error]", err);
+      logger.error("frontend.rune-canvas", "Failed to load champions", err);
     }
     await loadBuilderData();
   });
@@ -217,7 +218,7 @@
       };
       secondaryTree = await getBuilderTreeRunes(selectedPrimaryStyleId, styleId, selectedKeystoneId, query);
     } catch (err) {
-      console.error("[SubStyle Switch Error]", err);
+      logger.error("frontend.rune-canvas", "Failed to switch secondary style", err);
     }
   }
 

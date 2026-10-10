@@ -8,6 +8,10 @@ This document provides a comprehensive snapshot of the current state of **LCU Co
 
 LCU Companion is a high-performance desktop application built with **Tauri 2.0 (Rust backend) and Svelte 5 (TypeScript frontend)**.
 
+> **Architecture direction (2026-10-10):** The application is being split into a Tauri UI process and a separately running Rust LCU Companion Agent. The agent will own LCU discovery, websocket/REST synchronization, post-game collection, statistics processing, and the canonical SQLite database. See [`BACKEND_ARCHITECTURE.md`](./BACKEND_ARCHITECTURE.md) and [`@llm/PLAN.md`](../../PLAN.md). The first process/IPC slice is implemented; full cutover is not yet complete.
+
+> **First implementation slice:** A separate agent binary, authenticated loopback IPC, agent SQLite bootstrap/import foundation, Tauri supervision, exhaustive paginated history and shared detail-cache backfill, recent-history reconciliation, an agent websocket listener, and shared application logging now exist. The existing Tauri services remain active until the compatibility cutover is complete.
+
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
 │                        Tauri Desktop Application                       │

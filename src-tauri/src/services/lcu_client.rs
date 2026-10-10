@@ -346,14 +346,15 @@ impl LcuClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::logger;
 
     #[tokio::test]
     async fn test_lcu_discovery() {
         let creds = LcuClient::find_credentials();
-        println!("Discovered LCU credentials: {:?}", creds);
+        logger::debug("test.lcu-client", &format!("LCU credentials discovered: {}", creds.is_some()));
         assert!(creds.is_some(), "Expected to find League Client credentials from running client or lockfile");
         let client = LcuClient::connect().expect("Failed connecting to LCU");
         let resp: Value = client.get_json("/riotclient/region-locale").await.expect("Failed calling region-locale");
-        println!("Region locale response: {:?}", resp);
+        logger::debug("test.lcu-client", &format!("Region locale response received: {}", resp.is_object()));
     }
 }

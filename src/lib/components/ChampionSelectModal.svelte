@@ -3,6 +3,7 @@
   import type { ChampionSummary } from "../types/champions";
   import { ALL_CHAMPIONS_ICON_URL } from "../types/champions";
   import { getChampions } from "../api/champions";
+  import { logger } from "../utils/logger";
 
   let {
     isOpen = false,
@@ -26,7 +27,7 @@
     try {
       allChampions = await getChampions();
     } catch (err) {
-      console.error("[ChampionSelectModal Load Error]", err);
+      logger.error("frontend.champion-select", "Failed to load champions", err);
     }
   });
 

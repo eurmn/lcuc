@@ -6,6 +6,10 @@ This document catalogs every documentation file available in `@llm/docs/`, organ
 
 ## 1. Context & Architecture (`@llm/docs/context/`)
 
+- [`BACKEND_ARCHITECTURE.md`](./BACKEND_ARCHITECTURE.md)
+  - **Purpose**: Current-to-target process split, database ownership, synchronization model, migration status, and implementation checklist.
+  - **Usage**: Consult before changing Tauri startup, LCU services, persistence, or background collection.
+
 - [`CONTEXT.md`](/@llm/docs/context/CONTEXT.md)
   - **Purpose**: Master introduction and onboarding document for LCU Companion.
   - **Usage**: Consult first when starting any new LLM session for system overview, architecture diagram, and directory map.
@@ -13,6 +17,10 @@ This document catalogs every documentation file available in `@llm/docs/`, organ
 - [`CURRENT_STATE.md`](/@llm/docs/context/CURRENT_STATE.md)
   - **Purpose**: Live snapshot of application features, Tauri commands, domain models, services, renderers, and verified live test results.
   - **Usage**: Read before adding or modifying any feature to see what is already implemented and registered.
+
+- [`LOGGING.md`](./LOGGING.md)
+  - **Purpose**: Shared log format, destinations, retention, redaction rules, and frontend/Rust usage.
+  - **Usage**: Consult before adding diagnostics or replacing direct console/print calls.
 
 - [`MIGRATION.md`](/@llm/docs/context/MIGRATION.md)
   - **Purpose**: Chronicle of the FastAPI $\rightarrow$ Tauri 2.0 migration, key technical insights (Rust raw string literals with HTML attributes, HTMX bridge, LCU lockfile discovery), and LLM prompt tips.
@@ -50,6 +58,11 @@ This document catalogs every documentation file available in `@llm/docs/`, organ
 
 - [`RUNES.md`](/@llm/docs/db/RUNES.md)
   - **Purpose**: Rune domain model specifications, perk IDs, and serialization schemas.
+
+## 6. External Integrations (`@llm/docs/integrations/`)
+
+- [`PENGU_LOADER.md`](../integrations/PENGU_LOADER.md)
+  - **Purpose**: Research findings, compliance caveat, and the proposed optional integration boundary for Pengu Loader.
 
 ---
 

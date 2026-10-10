@@ -6,6 +6,7 @@
 
 use crate::services::lcu_client::{LcuClient, LcuCredentials};
 use crate::services::lcu_perks::ensure_companion_slot;
+use crate::logger;
 use futures_util::{SinkExt, StreamExt};
 use native_tls::TlsConnector;
 use serde_json::Value;
@@ -32,7 +33,7 @@ impl LcuWsWatcher {
         loop {
             if let Some(creds) = LcuClient::find_credentials() {
                 if let Err(e) = Self::connect_and_listen(&app, &creds, &mut was_connected).await {
-                    eprintln!("[LCU WS] Connection closed or error: {}", e);
+                    logger::warn("tauri.lcu.websocket", &format!("Connection closed or error: {e}"));
                 }
                 if was_connected {
                     was_connected = false;
@@ -76,9 +77,9 @@ impl LcuWsWatcher {
         .await
         .map_err(|e| format!("Failed to connect to LCU WS at {}: {}", ws_url, e))?;
 
-        println!(
-            "[LCU WS] Successfully connected to League Client WebSocket on port {}",
-            creds.port
+        logger::info(
+            "tauri.lcu.websocket",
+            &format!("Connected to League Client WebSocket on port {}", creds.port),
         );
 
         *was_connected = true;
@@ -108,7 +109,7 @@ impl LcuWsWatcher {
                     Self::handle_event(app, &text, creds).await;
                 }
                 Message::Close(_) => {
-                    println!("[LCU WS] Received Close frame from server.");
+                    logger::info("tauri.lcu.websocket", "Received close frame from server");
                     break;
                 }
                 _ => {}
