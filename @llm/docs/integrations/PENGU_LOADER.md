@@ -1,5 +1,4 @@
 # Pengu Loader Research
-
 ## Finding
 
 Pengu Loader is a community JavaScript plugin loader for the League of Legends client. Its public documentation describes plugin loading, runtime helpers, RCP hooks, and access to client-side functionality. The documentation and repositories reviewed do not establish Riot Games approval. Therefore, LCU Companion must not describe Pengu Loader as a Riot-approved SDK or make it a required part of the product.
@@ -40,4 +39,3 @@ Avoid:
 ## Decision
 
 Pengu Loader is a future optional integration, not a dependency of the backend separation. The standalone agent will use the documented LCU lockfile, REST API, and websocket API first.
-
