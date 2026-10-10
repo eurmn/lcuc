@@ -14,6 +14,23 @@ LCU Companion uses **SQLite** as its lightweight, local embedded database engine
 
 ---
 
+## 1.1 Planned canonical database ownership
+
+The current SQLite store is opened by Tauri services and primarily contains rune pages, favorite champions, and app settings. The planned architecture introduces a separate LCU Companion Agent with a canonical, versioned SQLite database. The agent will be the single writer for runes, collected games, participants, items, runes, augments, raw response metadata, sync cursors, retry state, and statistics projections.
+
+Migration requirements:
+
+1. Back up the existing Tauri database before changing ownership.
+2. Import existing `runesets`, `favorite_champions`, and `app_settings` idempotently.
+3. Record schema and import versions plus an import report.
+4. Keep Tauri from opening the canonical database after cutover; use the agent API instead.
+
+The agent now has an additive `game_build_facts` table for participant-level champion,
+result, item, augment, combat, and economy facts collected with recent games. The
+authenticated `build_statistics` IPC request exposes these persisted facts. Full
+normalized projections and final Tauri cutover remain planned as specified in
+[`@llm/PLAN.md`](../../PLAN.md) and [`../context/BACKEND_ARCHITECTURE.md`](../context/BACKEND_ARCHITECTURE.md).
+
 ## 2. Table Schemas
 
 ### `runesets` Table

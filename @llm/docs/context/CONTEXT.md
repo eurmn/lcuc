@@ -1,6 +1,8 @@
 # LCU Companion — Project Context & Master Guide
 
-Welcome to **LCU Companion**, a modern desktop companion application for **League of Legends (LoL)** built with **Tauri 2.0 (Rust backend)** and **Server-Side Rendered (SSR) HTML + HTMX 2.0 + Tailwind CSS v4**.
+Welcome to **LCU Companion**, a modern desktop companion application for **League of Legends (LoL)** built with **Tauri 2.0, Rust, Svelte 5, TypeScript, and Tailwind CSS v4**.
+
+The historical sections below describe the earlier FastAPI/SSR/HTMX architecture. The current frontend is Svelte 5, and the planned next architecture separates the Tauri UI from a standalone Rust LCU Companion Agent. The agent will own LCU synchronization, post-game collection, statistics processing, and the canonical SQLite database. See [`BACKEND_ARCHITECTURE.md`](./BACKEND_ARCHITECTURE.md) and [`@llm/PLAN.md`](../../PLAN.md).
 
 ---
 

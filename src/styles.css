@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "@fontsource-variable/nunito-sans";
 @plugin "@iconify/tailwind4";
 @plugin "tailwind-scrollbar";
 
@@ -17,6 +18,15 @@
 }
 
 @layer base {
+  :root {
+    font-family: "Nunito Sans Variable", ui-sans-serif, system-ui, sans-serif;
+  }
+
+  .history-card {
+    font-family: inherit;
+    font-variant-numeric: tabular-nums;
+  }
+
   button, [role="button"], a {
     cursor: pointer;
   }

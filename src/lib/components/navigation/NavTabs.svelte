@@ -9,8 +9,8 @@
   let {
     activeTab = "runes",
     tabs = [
-      { id: "runes", label: "Runes", icon: "icon-[heroicons--sparkles]" },
-      { id: "builds", label: "Builds", icon: "icon-[heroicons--cube]" },
+      { id: "builds", label: "Builds", icon: "icon-[heroicons--sparkles]" },
+      { id: "profile", label: "Profile", icon: "icon-[heroicons--user]" },
     ],
     onTabChange,
   }: {

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { LayoutGroup, MotionDiv, type MotionTransition } from "@humanspeak/svelte-motion";
+  import { MotionDiv, type MotionTransition } from "@humanspeak/svelte-motion";
   import SelectedChampionSlot from "../sidebar/SelectedChampionSlot.svelte";
   import ChampionCarousel from "../sidebar/ChampionCarousel.svelte";
   import type { ChampionSummary } from "../../types/champions";

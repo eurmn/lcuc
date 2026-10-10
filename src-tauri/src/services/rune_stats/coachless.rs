@@ -13,7 +13,7 @@ use crate::models::{
     TreeRowStats,
 };
 use crate::services::rune_tree::{
-    ensure_cdragon_cache, get_perk_details, get_perk_info, get_perk_style_id, get_style_info,
+    ensure_cdragon_cache, get_perk_details, get_perk_style_id, get_style_info,
     get_style_perk_order,
 };
 

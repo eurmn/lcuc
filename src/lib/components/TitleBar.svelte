@@ -3,11 +3,11 @@
   import NavTabs from "./navigation/NavTabs.svelte";
 
   let {
-    activeTab = "runes",
+    activeTab = "builds",
     onTabChange,
   }: {
-    activeTab?: "runes" | "builds";
-    onTabChange?: (tab: "runes" | "builds") => void;
+    activeTab?: "builds" | "profile";
+    onTabChange?: (tab: "builds" | "profile") => void;
   } = $props();
 
   const appWindow = getCurrentWindow();

@@ -5,6 +5,9 @@
   import TopNavBar from "./lib/components/navigation/TopNavBar.svelte";
   import RunesSidebar from "./lib/components/sidebar/RunesSidebar.svelte";
   import RuneCanvas from "./lib/components/runes/RuneCanvas.svelte";
+  import MatchHistoryView from "./lib/components/history/MatchHistoryView.svelte";
+  import ProfileStatisticsView from "./lib/components/history/ProfileStatisticsView.svelte";
+  import BuildStatisticsView from "./lib/components/history/BuildStatisticsView.svelte";
   import {
     deleteRuneset,
     exportSavedRunePage,
@@ -31,6 +34,7 @@
     SaveRuneTreePayload,
   } from "./lib/types/runes";
   import type { ChampionSummary } from "./lib/types/champions";
+  import { logger } from "./lib/utils/logger";
 
   let clientPages = $state<ClientRunePageSummary[]>([]);
   let savedRunesets = $state<RuneSetSummary[]>([]);
@@ -38,13 +42,45 @@
   let selectedKey = $state<string>("");
   let selectedChampion = $state<ChampionSummary | null>(null);
   let allChampions = $state<ChampionSummary[]>([]);
-  let activeTab = $state<"runes" | "builds">("runes");
+  let activeTab = $state<"builds" | "profile">("builds");
+  let profileTab = $state<"history" | "statistics">("history");
+  let statisticsPerspective = $state<"champions" | "builds">("champions");
 
   let currentTree = $state<RuneTreePayload | null>(null);
   let sidebarLoading = $state(true);
   let treeLoading = $state(true);
   let topNavBarRef = $state<TopNavBar | null>(null);
   let isSidebarOpen = $state<boolean>(true);
+
+  onMount(() => {
+    const savedTab = localStorage.getItem("lcu-active-tab");
+    if (savedTab === "builds" || savedTab === "profile") {
+      activeTab = savedTab;
+    }
+    const savedProfileTab = localStorage.getItem("lcu-profile-tab");
+    if (savedProfileTab === "history" || savedProfileTab === "statistics") {
+      profileTab = savedProfileTab;
+    }
+    const savedStatisticsPerspective = localStorage.getItem("lcu-statistics-perspective");
+    if (savedStatisticsPerspective === "champions" || savedStatisticsPerspective === "builds") {
+      statisticsPerspective = savedStatisticsPerspective;
+    }
+  });
+
+  function handleTabChange(tab: "builds" | "profile") {
+    activeTab = tab;
+    localStorage.setItem("lcu-active-tab", tab);
+  }
+
+  function handleProfileTabChange(tab: "history" | "statistics") {
+    profileTab = tab;
+    localStorage.setItem("lcu-profile-tab", tab);
+  }
+
+  function handleStatisticsPerspectiveChange(perspective: "champions" | "builds") {
+    statisticsPerspective = perspective;
+    localStorage.setItem("lcu-statistics-perspective", perspective);
+  }
 
   function toggleSidebar() {
     isSidebarOpen = !isSidebarOpen;
@@ -55,7 +91,7 @@
       allChampions = await getChampions();
       topNavBarRef?.refreshChampions();
     } catch (err) {
-      console.error("[Champions Load Error]", err);
+      logger.error("frontend.app", "Failed to load champions", err);
     }
   }
 
@@ -69,7 +105,7 @@
         }
       }
     } catch (err) {
-      console.error("[Restore Selected Champion Error]", err);
+      logger.error("frontend.app", "Failed to restore selected champion", err);
     }
   }
 
@@ -78,7 +114,7 @@
     try {
       await setSelectedChampionId(champ ? champ.id : null);
     } catch (err) {
-      console.error("[Save Selected Champion Error]", err);
+      logger.error("frontend.app", "Failed to save selected champion", err);
     }
   }
 
@@ -90,7 +126,7 @@
       );
       topNavBarRef?.refreshChampions();
     } catch (err) {
-      console.error("[Toggle Favorite Error]", err);
+      logger.error("frontend.app", "Failed to toggle favorite champion", err);
     }
   }
 
@@ -153,7 +189,7 @@
         currentTree = await getCurrentRuneTree();
       }
     } catch (err) {
-      console.error("[Tree Load Error]", err);
+      logger.error("frontend.app", "Failed to load rune tree", err);
     } finally {
       treeLoading = false;
     }
@@ -163,7 +199,7 @@
     try {
       await setSelectedRuneKey(key);
     } catch (err) {
-      console.error("[Save Selected Rune Key Error]", err);
+      logger.error("frontend.app", "Failed to save selected rune key", err);
     }
     await loadTreeForKey(key);
   }
@@ -177,7 +213,7 @@
       await loadTreeForKey(newKey);
       topNavBarRef?.refreshChampions();
     } catch (err) {
-      console.error("[Import Error]", err);
+      logger.error("frontend.app", "Failed to import rune page", err);
     }
   }
 
@@ -187,7 +223,7 @@
       await loadOverview();
       topNavBarRef?.refreshProfile();
     } catch (err) {
-      console.error("[Export Error]", err);
+      logger.error("frontend.app", "Failed to export rune page", err);
     }
   }
 
@@ -204,7 +240,7 @@
       }
       topNavBarRef?.refreshChampions();
     } catch (err) {
-      console.error("[Delete Error]", err);
+      logger.error("frontend.app", "Failed to delete rune page", err);
     }
   }
 
@@ -220,7 +256,7 @@
       }
       topNavBarRef?.refreshChampions();
     } catch (err) {
-      console.error("[Update Runeset Champion Error]", err);
+      logger.error("frontend.app", "Failed to update runeset champion", err);
     }
   }
 
@@ -280,7 +316,7 @@
         await loadOverview(selectedKey);
       });
     } catch (err) {
-      console.error("[App] Failed to attach Tauri event listeners:", err);
+      logger.error("frontend.app", "Failed to attach Tauri event listeners", err);
     }
   });
 
@@ -295,7 +331,7 @@
   class="h-screen w-screen flex flex-col overflow-hidden bg-gray-900 text-gray-100 antialiased selection:bg-purple-600 selection:text-white"
 >
   <!-- Draggable Custom Title Bar with App Branding & Window Controls -->
-  <TitleBar {activeTab} onTabChange={(tab) => (activeTab = tab)} />
+  <TitleBar {activeTab} onTabChange={handleTabChange} />
 
   <!-- Topside Header Navigation Bar (Sidebar Toggle + Profile + Champion Search) -->
   <TopNavBar
@@ -312,9 +348,9 @@
   <!-- Main App Shell -->
   <div
     id="app-shell"
-    class="flex-1 flex overflow-hidden bg-gray-900 text-gray-100 relative scrollbar-thumb-gray-800 scrollbar-track-gray-900 scrollbar-thin"
+    class="flex min-h-0 flex-1 overflow-hidden bg-gray-900 text-gray-100 relative scrollbar-thumb-gray-800 scrollbar-track-gray-900 scrollbar-thin"
   >
-    {#if activeTab === "runes"}
+    {#if activeTab === "builds"}
       <!-- Collapsible Sidebar Component -->
       <RunesSidebar
         bind:isOpen={isSidebarOpen}
@@ -342,12 +378,52 @@
         onSelectChampion={handleSelectChampionFilter}
       />
     {:else}
-      <div
-        class="flex-1 flex items-center justify-center flex-col gap-3 text-gray-400 select-none p-6"
-      >
-        <span class="icon-[heroicons--wrench-screwdriver] h-12 w-12 text-gray-600"></span>
-        <p class="text-base font-medium text-gray-300">Champion Builds Coming Soon</p>
-        <p class="text-xs text-gray-500">Item builds, skill orders, and matchup guides are under development.</p>
+      <div class="flex min-h-0 flex-1 overflow-hidden">
+        <nav class="flex w-16 shrink-0 flex-col items-center gap-2 border-r border-gray-800 bg-gray-950 py-4">
+          <button
+            type="button"
+            title="Match history"
+            aria-label="Match history"
+            onclick={() => handleProfileTabChange("history")}
+            class="flex h-11 w-11 items-center justify-center rounded-xl transition-colors {profileTab === 'history' ? 'bg-purple-600 text-white' : 'text-gray-500 hover:bg-gray-800 hover:text-gray-200'}"
+          >
+            <span class="icon-[heroicons--clock] h-5 w-5"></span>
+          </button>
+          <button
+            type="button"
+            title="Statistics"
+            aria-label="Statistics"
+            onclick={() => handleProfileTabChange("statistics")}
+            class="flex h-11 w-11 items-center justify-center rounded-xl transition-colors {profileTab === 'statistics' ? 'bg-purple-600 text-white' : 'text-gray-500 hover:bg-gray-800 hover:text-gray-200'}"
+          >
+            <span class="icon-[heroicons--chart-bar] h-5 w-5"></span>
+          </button>
+        </nav>
+        <div class="min-h-0 min-w-0 flex-1">
+          {#if profileTab === "history"}
+            <MatchHistoryView />
+          {:else}
+            <div class="flex h-full min-h-0 flex-col">
+              <div class="flex shrink-0 items-center justify-between border-b border-gray-800 bg-gray-950 px-4 pb-3 pt-4">
+                <h1 class="flex items-center gap-2 text-lg font-bold tracking-wide text-gray-100">
+                  <span class="icon-[heroicons--chart-bar] h-5 w-5 text-purple-400"></span>
+                  Statistics
+                </h1>
+                <div class="flex rounded-lg border border-gray-700 bg-gray-900 p-0.5 text-xs">
+                  <button type="button" class="rounded-md px-3 py-1.5 transition-colors {statisticsPerspective === 'champions' ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-white'}" onclick={() => handleStatisticsPerspectiveChange("champions")}>Champions</button>
+                  <button type="button" class="rounded-md px-3 py-1.5 transition-colors {statisticsPerspective === 'builds' ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-white'}" onclick={() => handleStatisticsPerspectiveChange("builds")}>Builds</button>
+                </div>
+              </div>
+              <div class="min-h-0 flex-1">
+                {#if statisticsPerspective === "champions"}
+                  <ProfileStatisticsView showHeader={false} />
+                {:else}
+                  <BuildStatisticsView />
+                {/if}
+              </div>
+            </div>
+          {/if}
+        </div>
       </div>
     {/if}
   </div>

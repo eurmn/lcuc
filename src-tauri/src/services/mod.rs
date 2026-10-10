@@ -8,5 +8,4 @@ pub mod rune_stats;
 pub mod rune_store;
 pub mod rune_tree;
 pub mod summoner;
-
-
+pub mod history;
