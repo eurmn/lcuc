@@ -1,5 +1,6 @@
 use crate::agent_supervisor::{AgentStatus, AgentSupervisor};
 use crate::logger::{self, Level};
+use crate::services::history::{enrich_global_statistics, enrich_statistics_response};
 
 #[tauri::command]
 pub async fn api_agent_status(
@@ -13,6 +14,43 @@ pub async fn api_build_statistics(
     supervisor: tauri::State<'_, AgentSupervisor>,
 ) -> Result<serde_json::Value, String> {
     supervisor.request("build_statistics").await
+}
+
+#[tauri::command]
+pub async fn api_statistics(
+    query: serde_json::Value,
+    supervisor: tauri::State<'_, AgentSupervisor>,
+) -> Result<serde_json::Value, String> {
+    let response = supervisor.request_with_args("statistics", query).await?;
+    enrich_statistics_response(response).await
+}
+
+#[tauri::command]
+pub async fn api_global_aram_statistics(
+    supervisor: tauri::State<'_, AgentSupervisor>,
+) -> Result<serde_json::Value, String> {
+    let response = supervisor.request("global_aram_statistics").await?;
+    enrich_global_statistics(response).await
+}
+
+#[tauri::command]
+pub async fn api_global_aram_config(
+    supervisor: tauri::State<'_, AgentSupervisor>,
+) -> Result<serde_json::Value, String> {
+    supervisor.request("global_aram_config").await
+}
+
+#[tauri::command]
+pub async fn api_set_global_aram_limit(
+    limit: u32,
+    supervisor: tauri::State<'_, AgentSupervisor>,
+) -> Result<serde_json::Value, String> {
+    supervisor
+        .request_with_args(
+            "set_global_aram_limit",
+            serde_json::json!({ "limit": limit }),
+        )
+        .await
 }
 
 #[tauri::command]

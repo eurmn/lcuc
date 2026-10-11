@@ -24,8 +24,7 @@ impl RuneStore {
     pub fn new() -> Result<Self, String> {
         let mut db_dir = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
         db_dir.push("lcu_companion");
-        fs::create_dir_all(&db_dir)
-            .map_err(|e| format!("Failed creating db directory: {}", e))?;
+        fs::create_dir_all(&db_dir).map_err(|e| format!("Failed creating db directory: {}", e))?;
 
         let mut db_path = db_dir;
         db_path.push("lcu_companion.db");
@@ -197,8 +196,7 @@ impl RuneStore {
 
         if let Some(row) = rows.next().map_err(|e| format!("Row read failed: {}", e))? {
             let perks_json: String = row.get(8).unwrap_or_else(|_| "[]".to_string());
-            let selected_perks: Vec<i64> =
-                serde_json::from_str(&perks_json).unwrap_or_default();
+            let selected_perks: Vec<i64> = serde_json::from_str(&perks_json).unwrap_or_default();
 
             Ok(Some(RuneSetRecord {
                 id: row.get(0).unwrap_or(0),
@@ -443,7 +441,9 @@ mod tests {
         std::fs::create_dir_all(&temp_dir).unwrap();
         let db_path = temp_dir.join("test.db");
 
-        let store = RuneStore { db_path: db_path.clone() };
+        let store = RuneStore {
+            db_path: db_path.clone(),
+        };
         store.initialize_schema().expect("Schema init failed");
 
         let perks = vec![8010, 9111, 9104, 8299, 8126, 8135, 5008, 5008, 5002];
@@ -462,7 +462,10 @@ mod tests {
             )
             .expect("Failed saving runeset");
 
-        let loaded = store.get_runeset(id).expect("Query failed").expect("Not found");
+        let loaded = store
+            .get_runeset(id)
+            .expect("Query failed")
+            .expect("Not found");
         assert_eq!(loaded.role, 2);
         assert_eq!(loaded.champion_id, 64);
         assert_eq!(loaded.rune_page_name, "Test Mid Rune");
@@ -480,7 +483,10 @@ mod tests {
             )
             .expect("Update failed");
 
-        let updated = store.get_runeset(id).expect("Query failed").expect("Not found");
+        let updated = store
+            .get_runeset(id)
+            .expect("Query failed")
+            .expect("Not found");
         assert_eq!(updated.role, 0);
         assert_eq!(updated.rune_page_name, "Test Top Rune");
 

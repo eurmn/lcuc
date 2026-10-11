@@ -58,14 +58,55 @@
 
   async function loadHistory() {
     try {
+      const pageSize = 20;
       refreshing = true;
       error = null;
-      logger.debug("frontend.history", "Fetching latest matches");
-      const freshMatches = await getMatchHistory(0, 20);
-      matches = mergeMatches(freshMatches, matches);
+      logger.info("frontend.history", "Starting progressive match-history scan");
+      const firstPage = await getMatchHistory(0, pageSize - 1);
+      matches = mergeMatches(firstPage, matches);
       currentPage = 1;
       localStorage.setItem(historyCacheKey, JSON.stringify(matches));
-      logger.info("frontend.history", `Loaded ${freshMatches.length} matches; ${matches.length} available after cache merge`);
+      logger.info("frontend.history", `Loaded page 0..${pageSize - 1} with ${firstPage.length} matches; ${matches.length} available after cache merge`);
+
+      const seenGameIds = new Set(firstPage.map((match) => match.game_id));
+      let begin = pageSize;
+      let pageNumber = 1;
+      const maxPages = 1000;
+
+      while (pageNumber < maxPages) {
+        const end = begin + pageSize - 1;
+        const page = await getMatchHistory(begin, end);
+        if (page.length === 0) {
+          logger.info("frontend.history", `Match-history scan reached an empty page at ${begin}..${end}`);
+          break;
+        }
+
+        const newMatches = page.filter((match) => !seenGameIds.has(match.game_id));
+        for (const match of newMatches) {
+          seenGameIds.add(match.game_id);
+        }
+
+        matches = mergeMatches(page, matches);
+        localStorage.setItem(historyCacheKey, JSON.stringify(matches));
+        logger.info(
+          "frontend.history",
+          `Loaded page ${begin}..${end}: ${page.length} matches, ${newMatches.length} new, ${matches.length} total`,
+        );
+
+        if (newMatches.length === 0) {
+          logger.info("frontend.history", `Match-history scan stopped on repeated page at ${begin}..${end}`);
+          break;
+        }
+
+        begin = end + 1;
+        pageNumber += 1;
+      }
+
+      if (pageNumber >= maxPages) {
+        logger.warn("frontend.history", `Match-history scan stopped at the ${maxPages}-page safety limit`);
+      }
+
+      logger.info("frontend.history", `Match-history scan complete with ${matches.length} matches available`);
     } catch (err) {
       error = String(err);
       logger.error("frontend.history", "Match history fetch failed", err);

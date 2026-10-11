@@ -27,9 +27,28 @@ Migration requirements:
 
 The agent now has an additive `game_build_facts` table for participant-level champion,
 result, item, augment, combat, and economy facts collected with recent games. The
-authenticated `build_statistics` IPC request exposes these persisted facts. Full
-normalized projections and final Tauri cutover remain planned as specified in
+authenticated `build_statistics` IPC request exposes these persisted facts. The
+`statistics` IPC request now aggregates these facts in the agent and returns
+typed, query-shaped rows for the Statistics page. Svelte must not rebuild
+statistics from match-shaped payloads. Full normalized projections and final
+Tauri cutover remain planned as specified in
 [`@llm/PLAN.md`](../../PLAN.md) and [`../context/BACKEND_ARCHITECTURE.md`](../context/BACKEND_ARCHITECTURE.md).
+
+The agent briefly caches ordered statistics results by scope, kind, filters, and
+sort parameters. Pagination is applied to those cached rows, so page changes
+remain server-side IPC requests without rebuilding every aggregate.
+
+The agent also maintains a separate `%LOCALAPPDATA%\\lcu-companion\\global-aram.db`
+database for the opt-in global ARAM: Mayhem dataset. It contains the configured
+game limit, discovered participant PUUIDs, deduplicated ARAM games, and participant
+build facts. The collector starts from the current account, follows participant
+PUUIDs breadth-first, uses bounded concurrent detail requests, and stops when the
+configured limit (default 1000 games) is reached.
+
+Standalone-agent SQLite connections use WAL mode, `NORMAL` synchronous operation,
+in-memory temporary storage, and a five-second busy timeout. Connections are
+opened per operation and are not held across network requests or JSON parsing,
+which keeps collector writes from unnecessarily blocking UI reads.
 
 ## 2. Table Schemas
 

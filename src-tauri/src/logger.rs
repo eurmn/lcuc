@@ -65,9 +65,14 @@ fn timestamp() -> String {
 
 fn civil_date(days_since_epoch: i64) -> (i64, i64, i64) {
     let shifted = days_since_epoch + 719_468;
-    let era = (if shifted >= 0 { shifted } else { shifted - 146_096 }) / 146_097;
+    let era = (if shifted >= 0 {
+        shifted
+    } else {
+        shifted - 146_096
+    }) / 146_097;
     let day_of_era = shifted - era * 146_097;
-    let year_of_era = (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
     let year = year_of_era + era * 400;
     let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
     let month_part = (5 * day_of_year + 2) / 153;
@@ -115,14 +120,23 @@ fn rotate_if_needed(file: &mut File) {
         let _ = fs::rename(current, next);
     }
     let _ = fs::rename(path, log_dir().join("application.1.log"));
-    if let Ok(new_file) = OpenOptions::new().create(true).append(true).open(log_path()) {
+    if let Ok(new_file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path())
+    {
         *file = new_file;
     }
 }
 
 fn redact(value: &str) -> String {
     let mut redacted = value.to_string();
-    for marker in ["--remoting-auth-token=", "Authorization: Basic ", "\"token\":\"", "\"password\":\""] {
+    for marker in [
+        "--remoting-auth-token=",
+        "Authorization: Basic ",
+        "\"token\":\"",
+        "\"password\":\"",
+    ] {
         while let Some(start) = redacted.find(marker) {
             let value_start = start + marker.len();
             let value_end = redacted[value_start..]

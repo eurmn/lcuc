@@ -4,9 +4,9 @@
 //! listens for real-time client events (login, champion select, rune page updates),
 //! and ensures the `[LCU COMPANION SLOT]` is automatically created/maintained.
 
+use crate::logger;
 use crate::services::lcu_client::{LcuClient, LcuCredentials};
 use crate::services::lcu_perks::ensure_companion_slot;
-use crate::logger;
 use futures_util::{SinkExt, StreamExt};
 use native_tls::TlsConnector;
 use serde_json::Value;
@@ -33,7 +33,10 @@ impl LcuWsWatcher {
         loop {
             if let Some(creds) = LcuClient::find_credentials() {
                 if let Err(e) = Self::connect_and_listen(&app, &creds, &mut was_connected).await {
-                    logger::warn("tauri.lcu.websocket", &format!("Connection closed or error: {e}"));
+                    logger::warn(
+                        "tauri.lcu.websocket",
+                        &format!("Connection closed or error: {e}"),
+                    );
                 }
                 if was_connected {
                     was_connected = false;
@@ -68,18 +71,17 @@ impl LcuWsWatcher {
             .map_err(|e| format!("Failed to build TlsConnector: {}", e))?;
         let connector = Connector::NativeTls(tls_builder);
 
-        let (ws_stream, _) = tokio_tungstenite::connect_async_tls_with_config(
-            request,
-            None,
-            false,
-            Some(connector),
-        )
-        .await
-        .map_err(|e| format!("Failed to connect to LCU WS at {}: {}", ws_url, e))?;
+        let (ws_stream, _) =
+            tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(connector))
+                .await
+                .map_err(|e| format!("Failed to connect to LCU WS at {}: {}", ws_url, e))?;
 
         logger::info(
             "tauri.lcu.websocket",
-            &format!("Connected to League Client WebSocket on port {}", creds.port),
+            &format!(
+                "Connected to League Client WebSocket on port {}",
+                creds.port
+            ),
         );
 
         *was_connected = true;
@@ -150,9 +152,7 @@ impl LcuWsWatcher {
                 }
 
                 // Check for rune perks / pages events
-                if uri == "/lol-perks/v1/pages"
-                    || uri == "/lol-perks/v1/currentpage"
-                {
+                if uri == "/lol-perks/v1/pages" || uri == "/lol-perks/v1/currentpage" {
                     let _ = app.emit("lcu:runes-changed", ());
                 }
             }

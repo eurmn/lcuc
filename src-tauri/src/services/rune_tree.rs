@@ -3,9 +3,7 @@
 //! Fetches and caches perk metadata (`perks.json`) and style trees (`perkstyles.json`)
 //! from CommunityDragon (CDragon) and synthesizes normalized tree models for UI rendering.
 
-use crate::models::{
-    ClientRunePageSummary, RuneOption, RuneSlot, RuneStyleTree, RuneTreePayload,
-};
+use crate::models::{ClientRunePageSummary, RuneOption, RuneSlot, RuneStyleTree, RuneTreePayload};
 use crate::services::asset_cache::get_cached_asset_data_uri;
 use crate::services::lcu_client::LcuClient;
 use crate::services::rune_store::RuneStore;
@@ -108,10 +106,7 @@ pub async fn get_style_info(style_id: Option<i64>) -> (String, String) {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let icon_path = style
-            .get("iconPath")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let icon_path = style.get("iconPath").and_then(|v| v.as_str()).unwrap_or("");
         let icon_url = if !icon_path.is_empty() {
             let raw_url = icon_path_to_url(icon_path);
             get_cached_asset_data_uri(&raw_url).await
@@ -216,8 +211,6 @@ pub async fn get_style_perk_order(style_id: i64) -> (Vec<i64>, Vec<Vec<i64>>) {
     (keystones, rows)
 }
 
-
-
 /// Builds a structured style tree with slots and selected options.
 async fn build_style_tree(
     style_id: i64,
@@ -233,10 +226,7 @@ async fn build_style_tree(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let icon_path = style
-        .get("iconPath")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let icon_path = style.get("iconPath").and_then(|v| v.as_str()).unwrap_or("");
     let style_icon_url = if !icon_path.is_empty() {
         let raw_url = icon_path_to_url(icon_path);
         get_cached_asset_data_uri(&raw_url).await
@@ -330,10 +320,7 @@ async fn build_style_tree(
 }
 
 /// Builds the 3 rows of stat modification rune slots.
-async fn build_stat_mod_slots(
-    selected_stat_mods: &[i64],
-    primary_style_id: i64,
-) -> Vec<RuneSlot> {
+async fn build_stat_mod_slots(selected_stat_mods: &[i64], primary_style_id: i64) -> Vec<RuneSlot> {
     let styles = PERKSTYLES_CACHE.read().await;
     let perks = PERKS_CACHE.read().await;
 
@@ -355,11 +342,7 @@ async fn build_stat_mod_slots(
         .filter(|s| s.get("type").and_then(|v| v.as_str()).unwrap_or("") == "kStatMod")
         .collect();
 
-    let stat_order = [
-        [5008, 5005, 5007],
-        [5008, 5010, 5001],
-        [5011, 5013, 5001],
-    ];
+    let stat_order = [[5008, 5005, 5007], [5008, 5010, 5001], [5011, 5013, 5001]];
 
     let mut rendered = Vec::new();
     for (row_idx, slot) in stat_slots.iter().enumerate() {
@@ -511,13 +494,17 @@ pub async fn update_selected_perks(
                         .iter()
                         .filter(|s| {
                             s.get("type").and_then(|v| v.as_str()).unwrap_or("") != "kKeyStone"
-                                && s.get("type").and_then(|v| v.as_str()).unwrap_or("") != "kStatMod"
+                                && s.get("type").and_then(|v| v.as_str()).unwrap_or("")
+                                    != "kStatMod"
                         })
                         .collect();
 
                     for (s_idx, s) in regular_slots.iter().enumerate() {
                         if let Some(perks_arr) = s.get("perks").and_then(|p| p.as_array()) {
-                            if perks_arr.iter().any(|p| p.as_i64() == Some(clicked_perk_id)) {
+                            if perks_arr
+                                .iter()
+                                .any(|p| p.as_i64() == Some(clicked_perk_id))
+                            {
                                 clicked_sub_slot = s_idx;
                                 break;
                             }
@@ -577,7 +564,10 @@ pub async fn get_client_rune_pages() -> Result<Vec<ClientRunePageSummary>, Strin
                 .to_string();
 
             // Do not show companion slot / exported pages alongside regular client pages
-            if name == "[LCU COMPANION SLOT]" || name.starts_with("[LCUC]") || name.starts_with("[LCC]") {
+            if name == "[LCU COMPANION SLOT]"
+                || name.starts_with("[LCUC]")
+                || name.starts_with("[LCC]")
+            {
                 continue;
             }
 
@@ -606,7 +596,11 @@ pub async fn get_client_rune_pages() -> Result<Vec<ClientRunePageSummary>, Strin
 
             pages.push(ClientRunePageSummary {
                 id,
-                name: if name.is_empty() { format!("Page {}", id) } else { name },
+                name: if name.is_empty() {
+                    format!("Page {}", id)
+                } else {
+                    name
+                },
                 is_active,
                 is_editable,
                 primary_style_id,
@@ -663,7 +657,10 @@ pub async fn get_current_rune_tree_payload() -> Result<RuneTreePayload, String> 
 pub async fn get_client_page_rune_tree_payload(page_id: i64) -> Result<RuneTreePayload, String> {
     ensure_cdragon_cache().await?;
     let client = LcuClient::connect()?;
-    let page: Value = match client.get_json(&format!("/lol-perks/v1/page/{}", page_id)).await {
+    let page: Value = match client
+        .get_json(&format!("/lol-perks/v1/page/{}", page_id))
+        .await
+    {
         Ok(p) => p,
         Err(_) => {
             let all_pages: Value = client.get_json("/lol-perks/v1/pages").await?;
@@ -761,7 +758,16 @@ mod tests {
     #[tokio::test]
     async fn test_live_client_rune_pages() {
         let pages = get_client_rune_pages().await;
-        logger::debug("test.rune-tree", &format!("Live client rune pages request succeeded: {}", pages.is_ok()));
-        assert!(pages.is_ok(), "Expected valid rune pages from running League client");
+        logger::debug(
+            "test.rune-tree",
+            &format!(
+                "Live client rune pages request succeeded: {}",
+                pages.is_ok()
+            ),
+        );
+        assert!(
+            pages.is_ok(),
+            "Expected valid rune pages from running League client"
+        );
     }
 }

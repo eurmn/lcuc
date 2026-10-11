@@ -184,3 +184,20 @@ All visual icons across Svelte components use the Iconify utility class system w
 - **Flowbite Icons**: Specific functional icons (`icon-[flowbite--floppy-disk-solid]`).
 - **Never Use Raw SVG Strings**: Raw inline SVGs are disallowed in favor of consistent Iconify classes.
 
+## 6. Profile Statistics Architecture
+
+The Profile > Statistics shell owns the shared dataset scope (`Mine`, `Global`,
+or `Both`) and global ARAM database configuration. Champion and build
+perspectives request typed, server-calculated rows through the `api_statistics`
+Tauri command. Svelte owns only view state, request orchestration, loading/error
+states, and rendering; it must not normalize matches or calculate aggregate
+metrics.
+
+Global build facts are enriched through the Tauri cache pipeline before they
+reach Svelte. Item and augment rows therefore use canonical names and cached
+icons, and retain champion/partner context. WPA is displayed as a signed
+win-rate percentage-point delta; when the alternate dataset is available, the
+active perspective also shows its comparison WR/WPA without replacing the
+selected dataset. Search, sort, pick-rate filtering, and pagination are query
+parameters sent back to Rust so large global datasets do not block the UI.
+Cached rows remain visible while a newer server response is being fetched.

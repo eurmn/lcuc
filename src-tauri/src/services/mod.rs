@@ -1,6 +1,7 @@
 pub mod asset_cache;
 pub mod champions;
 pub mod friends;
+pub mod history;
 pub mod lcu_client;
 pub mod lcu_perks;
 pub mod lcu_websocket;
@@ -8,4 +9,3 @@ pub mod rune_stats;
 pub mod rune_store;
 pub mod rune_tree;
 pub mod summoner;
-pub mod history;

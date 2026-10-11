@@ -1,0 +1,155 @@
+# LCU Companion Agent Guide
+
+This is the proposed replacement project guide for future agents working on
+`lcu-companion`.
+
+## Mission and architecture
+
+LCU Companion is a Tauri 2 desktop application for League of Legends. Svelte
+renders the application, Tauri adapts commands, and a standalone Rust agent
+owns long-running LCU synchronization, collection, persistence, and expensive
+statistics work.
+
+```text
+Svelte presentation -> Tauri IPC facade -> authenticated agent IPC
+                                             -> Rust domain logic
+                                             -> SQLite and LCU
+```
+
+The migration is incremental. Existing Tauri services may still be active, but
+new collection and statistics behavior belongs in the agent unless a
+compatibility boundary requires otherwise.
+
+## Repository map
+
+```text
+src/                         Svelte 5 + TypeScript frontend
+src/lib/api/                 Typed Tauri/agent request wrappers
+src/lib/components/          Presentation components
+src-tauri/src/agent/         Standalone agent process and collector
+src-tauri/src/commands/      Tauri command facades
+src-tauri/src/services/      Existing LCU, cache, profile, and rune services
+src-tauri/src/agent_supervisor.rs
+                             Agent lifecycle and authenticated IPC
+@llm/PLAN.md                 Architecture migration plan
+@llm/docs/context/           Current state and handoffs
+@llm/docs/db/                SQLite ownership and schema documentation
+```
+
+Read `@llm/docs/context/SESSION_HANDOFF_2026-10-11.md` before modifying the
+agent.
+
+The original session request and its exact collector log are preserved in the
+handoff under **Original handoff request**. The immediate operational concern
+is the delay after `backfill_complete=true` and `Reconciled 20 recent games`;
+profile that pipeline before changing collection limits or concurrency.
+
+## Agent process
+
+The binary is `src-tauri/src/bin/lcu-companion-agent.rs`. Build it with:
+
+```powershell
+cargo build --manifest-path src-tauri\Cargo.toml --bin lcu-companion-agent
+```
+
+The supervisor normally launches
+`src-tauri\target\debug\lcu-companion-agent.exe`. Restart Tauri after building.
+`pnpm tauri dev` does not reliably rebuild an existing standalone executable.
+
+The agent accepts `--port <port> --token <token>` and listens only on
+`127.0.0.1`. Requests are newline-delimited JSON containing `token`, `command`,
+and optional `args`.
+
+## Database ownership
+
+The agent owns:
+
+```text
+%LOCALAPPDATA%\lcu-companion\agent.db
+%LOCALAPPDATA%\lcu-companion\global-aram.db
+```
+
+Do not add another writer. Personal facts and recent games belong in
+`agent.db`; global ARAM Mayhem games, participants, discovered accounts, and
+configuration belong in `global-aram.db`.
+
+Use the shared connection helper. Preserve the busy timeout, WAL-compatible
+configuration, short-lived connections, and short transactions. Do not perform
+network calls or large JSON parsing inside write transactions. Synchronous
+rusqlite work from async code belongs in bounded `spawn_blocking` tasks.
+
+## Collection flow
+
+The collector discovers credentials, identifies the current account,
+reconciles recent summaries, queues missing details, fetches details with
+bounded concurrency, writes facts, and updates state/logs. Global ARAM
+collection additionally follows participant PUUIDs breadth-first until the
+configured game limit is reached.
+
+`Reconciled 20 recent games` describes the current recent-history window. It
+does not establish that the account has only 20 games. Trace backfill cursors
+and the detail queue before changing route parameters.
+
+Every phase should log elapsed time, counts, queue depth, database duration,
+and projection duration. Collection needs durable cursors and job checkpoints
+so restarts resume completed work instead of repeating scans.
+
+## Statistics flow
+
+Statistics belong in Rust:
+
+- read normalized facts
+- compute WR, WPA, KDA, damage, gold, duration, and pick rate
+- exclude Poro-Snax IDs `2050` and `2052`
+- apply filters, deterministic sorting, and pagination
+- enrich metadata through backend caches
+- return render-ready DTOs
+
+The frontend requests scope, kind, filters, sort, and page, then renders the
+response. It must not rebuild global match objects or recalculate aggregates.
+The current agent cache is short-lived and process-local; replace it with
+revision-based invalidation or materialized projections in future optimization.
+
+## Logging and safety
+
+Use the structured logger:
+
+```text
+[UTC timestamp] [LEVEL] [source] message | context
+```
+
+Never log credentials, authorization headers, tokens, or sensitive raw LCU
+payloads. Preserve explicit errors; do not return empty success-shaped data.
+
+## Development rules
+
+- Windows paths use backslashes.
+- Use `pnpm`, not `npm`.
+- Use lowercase CommunityDragon asset paths.
+- Keep Svelte thin and domain calculations in Rust.
+- Preserve backend cached assets and data URIs.
+- Keep unrelated worktree changes intact.
+- Do not use destructive Git commands.
+- Do not run broad frontend validation proactively.
+
+## Validation
+
+```powershell
+cargo fmt --manifest-path src-tauri\Cargo.toml
+cargo fmt --manifest-path src-tauri\Cargo.toml -- --check
+cargo build --manifest-path src-tauri\Cargo.toml --bin lcu-companion-agent
+git diff --check
+```
+
+For runtime checks, launch the freshly built agent on an isolated loopback port,
+send authenticated IPC requests, verify health/statistics/collector behavior,
+and stop the test process afterward.
+
+## Current priorities
+
+1. Profile the delay after recent-history reconciliation.
+2. Add durable backfill/account/detail checkpoints.
+3. Ensure collector writes cannot starve normal reads.
+4. Replace the temporary statistics cache with revision-aware projections.
+5. Complete the Tauri-to-agent compatibility cutover after recovery behavior
+   is verified.

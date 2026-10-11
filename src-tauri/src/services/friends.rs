@@ -106,19 +106,30 @@ pub async fn remove_friends() -> Result<FriendRemovalResult, String> {
             continue;
         }
 
-        match client.delete_status(&format!("/lol-chat/v1/friends/{}", fid)).await {
+        match client
+            .delete_status(&format!("/lol-chat/v1/friends/{}", fid))
+            .await
+        {
             Ok(status) if status == 200 || status == 204 => {
                 result.deleted += 1;
-                if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&purged_path) {
+                if let Ok(mut file) = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&purged_path)
+                {
                     let display = if !riot_id.is_empty() { riot_id } else { name };
                     let _ = writeln!(file, "{},{}", display, fid);
                 }
             }
             Ok(status) => {
-                result.errors.push(format!("Failed removing friend {}: status {}", fid, status));
+                result
+                    .errors
+                    .push(format!("Failed removing friend {}: status {}", fid, status));
             }
             Err(e) => {
-                result.errors.push(format!("Error removing friend {}: {}", fid, e));
+                result
+                    .errors
+                    .push(format!("Error removing friend {}: {}", fid, e));
             }
         }
     }

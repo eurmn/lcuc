@@ -1,5 +1,13 @@
 # Project Guidelines & Rules
 
+> **Current agent handoff:** Read
+> [`@llm/docs/context/SESSION_HANDOFF_2026-10-11.md`](./@llm/docs/context/SESSION_HANDOFF_2026-10-11.md)
+> and `agent.md.new` before making changes to the standalone agent. The
+> existing guide below remains useful for frontend conventions; the handoff
+> contains the current agent/database/statistics architecture and bottlenecks.
+> The exact original request and collector log are preserved in the handoff's
+> **Original handoff request** section.
+
 # LCU Companion — Project Architecture & Developer Guide
 
 **LCU Companion** is a high-performance, low-latency desktop application designed for League of Legends players. It connects directly with the Riot Games League Client Update (LCU) to provide real-time rune page synchronization, interactive rune page editing, persistent custom runeset storage, and one-click in-game exporting.
@@ -258,7 +266,8 @@ For detailed specifications and domain knowledge, consult the specialized docume
 
 ### Running Locally
 ```powershell
-# Start frontend and Tauri in development mode
+# Build the standalone agent, then start frontend and Tauri in development mode.
+# Tauri's debug supervisor also invokes Cargo for the agent on each restart.
 pnpm tauri dev
 ```
 
@@ -281,4 +290,3 @@ pnpm tauri dev
 
 # IMPORTANT
 always work out a way to reduce the amount of commands ran in a single output, if many commands are needed and interconnected, use them with && to reduce API calls.
-

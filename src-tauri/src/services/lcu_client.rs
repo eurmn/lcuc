@@ -48,6 +48,7 @@ impl LcuCredentials {
 }
 
 /// Asynchronous HTTP client configured for communicating with the local League of Legends client.
+#[derive(Clone)]
 pub struct LcuClient {
     /// Active credentials for the current client session.
     pub credentials: LcuCredentials,
@@ -147,9 +148,8 @@ impl LcuClient {
         }
 
         // 2. Second priority: Process scanning with full command-line refresh
-        let refresh_kind = RefreshKind::nothing().with_processes(
-            ProcessRefreshKind::everything().with_cmd(UpdateKind::Always),
-        );
+        let refresh_kind = RefreshKind::nothing()
+            .with_processes(ProcessRefreshKind::everything().with_cmd(UpdateKind::Always));
         let mut sys = System::new_with_specifics(refresh_kind);
         sys.refresh_processes(ProcessesToUpdate::All, true);
 
@@ -201,8 +201,9 @@ impl LcuClient {
     /// # Errors
     /// Returns `Err(String)` if League of Legends is not running or credentials cannot be found.
     pub fn connect() -> Result<Self, String> {
-        let creds = Self::find_credentials()
-            .ok_or_else(|| "League of Legends client is not running or lockfile could not be found.".to_string())?;
+        let creds = Self::find_credentials().ok_or_else(|| {
+            "League of Legends client is not running or lockfile could not be found.".to_string()
+        })?;
         Self::new(creds)
     }
 
@@ -351,10 +352,22 @@ mod tests {
     #[tokio::test]
     async fn test_lcu_discovery() {
         let creds = LcuClient::find_credentials();
-        logger::debug("test.lcu-client", &format!("LCU credentials discovered: {}", creds.is_some()));
-        assert!(creds.is_some(), "Expected to find League Client credentials from running client or lockfile");
+        logger::debug(
+            "test.lcu-client",
+            &format!("LCU credentials discovered: {}", creds.is_some()),
+        );
+        assert!(
+            creds.is_some(),
+            "Expected to find League Client credentials from running client or lockfile"
+        );
         let client = LcuClient::connect().expect("Failed connecting to LCU");
-        let resp: Value = client.get_json("/riotclient/region-locale").await.expect("Failed calling region-locale");
-        logger::debug("test.lcu-client", &format!("Region locale response received: {}", resp.is_object()));
+        let resp: Value = client
+            .get_json("/riotclient/region-locale")
+            .await
+            .expect("Failed calling region-locale");
+        logger::debug(
+            "test.lcu-client",
+            &format!("Region locale response received: {}", resp.is_object()),
+        );
     }
 }

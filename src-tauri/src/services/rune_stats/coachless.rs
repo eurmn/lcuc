@@ -13,8 +13,7 @@ use crate::models::{
     TreeRowStats,
 };
 use crate::services::rune_tree::{
-    ensure_cdragon_cache, get_perk_details, get_perk_style_id, get_style_info,
-    get_style_perk_order,
+    ensure_cdragon_cache, get_perk_details, get_perk_style_id, get_style_info, get_style_perk_order,
 };
 
 use std::collections::HashMap;
@@ -91,7 +90,11 @@ impl CoachlessProvider {
             query.league_tiers.clone()
         };
 
-        let champ_id = if query.champion_id <= 0 { 64 } else { query.champion_id };
+        let champ_id = if query.champion_id <= 0 {
+            64
+        } else {
+            query.champion_id
+        };
 
         CoachlessCommonFilters {
             patch,
@@ -137,7 +140,10 @@ impl CoachlessProvider {
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            return Err(format!("Coachless API returned {} on {}: {}", status, endpoint, text));
+            return Err(format!(
+                "Coachless API returned {} on {}: {}",
+                status, endpoint, text
+            ));
         }
 
         let raw_text = resp
@@ -301,7 +307,10 @@ impl RuneStatsProvider for CoachlessProvider {
             natural_order.extend(ks);
         }
         enriched_keystones.sort_by_key(|k| {
-            natural_order.iter().position(|&id| id == k.id).unwrap_or(999)
+            natural_order
+                .iter()
+                .position(|&id| id == k.id)
+                .unwrap_or(999)
         });
 
         Ok(enriched_keystones)
@@ -384,9 +393,24 @@ impl RuneStatsProvider for CoachlessProvider {
                 }
             }
 
-            row1_options.sort_by_key(|o| natural_rows[0].iter().position(|&id| id == o.id).unwrap_or(999));
-            row2_options.sort_by_key(|o| natural_rows[1].iter().position(|&id| id == o.id).unwrap_or(999));
-            row3_options.sort_by_key(|o| natural_rows[2].iter().position(|&id| id == o.id).unwrap_or(999));
+            row1_options.sort_by_key(|o| {
+                natural_rows[0]
+                    .iter()
+                    .position(|&id| id == o.id)
+                    .unwrap_or(999)
+            });
+            row2_options.sort_by_key(|o| {
+                natural_rows[1]
+                    .iter()
+                    .position(|&id| id == o.id)
+                    .unwrap_or(999)
+            });
+            row3_options.sort_by_key(|o| {
+                natural_rows[2]
+                    .iter()
+                    .position(|&id| id == o.id)
+                    .unwrap_or(999)
+            });
         }
 
         let rows = vec![
@@ -566,9 +590,19 @@ impl RuneStatsProvider for CoachlessProvider {
             }
         }
 
-        offense.sort_by_key(|o| offense_order.iter().position(|&id| id == o.id).unwrap_or(999));
+        offense.sort_by_key(|o| {
+            offense_order
+                .iter()
+                .position(|&id| id == o.id)
+                .unwrap_or(999)
+        });
         flex.sort_by_key(|o| flex_order.iter().position(|&id| id == o.id).unwrap_or(999));
-        defense.sort_by_key(|o| defense_order.iter().position(|&id| id == o.id).unwrap_or(999));
+        defense.sort_by_key(|o| {
+            defense_order
+                .iter()
+                .position(|&id| id == o.id)
+                .unwrap_or(999)
+        });
 
         Ok(StatShardsStats {
             offense,

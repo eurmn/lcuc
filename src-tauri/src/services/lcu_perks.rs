@@ -27,9 +27,16 @@ pub async fn ensure_companion_slot(client: &LcuClient) -> Result<Option<i64>, St
     for page in pages_arr {
         let name = page.get("name").and_then(|v| v.as_str()).unwrap_or("");
         let id = page.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-        let is_editable = page.get("isEditable").and_then(|v| v.as_bool()).unwrap_or(true);
+        let is_editable = page
+            .get("isEditable")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
 
-        if is_editable && (name == "[LCU COMPANION SLOT]" || name.starts_with("[LCUC]") || name.starts_with("[LCC]")) {
+        if is_editable
+            && (name == "[LCU COMPANION SLOT]"
+                || name.starts_with("[LCUC]")
+                || name.starts_with("[LCC]"))
+        {
             return Ok(Some(id));
         }
     }
@@ -44,7 +51,10 @@ pub async fn ensure_companion_slot(client: &LcuClient) -> Result<Option<i64>, St
         "isActive": true
     });
 
-    if let Ok(new_page) = client.post_json::<Value>("/lol-perks/v1/pages", &create_body).await {
+    if let Ok(new_page) = client
+        .post_json::<Value>("/lol-perks/v1/pages", &create_body)
+        .await
+    {
         if let Some(new_id) = new_page.get("id").and_then(|v| v.as_i64()) {
             return Ok(Some(new_id));
         }
@@ -52,7 +62,10 @@ pub async fn ensure_companion_slot(client: &LcuClient) -> Result<Option<i64>, St
 
     // 3. Fallback: If max page capacity is reached, find the first editable client page to convert
     for page in pages_arr {
-        let is_editable = page.get("isEditable").and_then(|v| v.as_bool()).unwrap_or(false);
+        let is_editable = page
+            .get("isEditable")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let id = page.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
 
         if is_editable && id > 0 {
@@ -62,7 +75,9 @@ pub async fn ensure_companion_slot(client: &LcuClient) -> Result<Option<i64>, St
                 "isEditable": true,
                 "isActive": true
             });
-            let _ = client.put_json_status(&format!("/lol-perks/v1/pages/{}", id), &update_body).await;
+            let _ = client
+                .put_json_status(&format!("/lol-perks/v1/pages/{}", id), &update_body)
+                .await;
             return Ok(Some(id));
         }
     }
@@ -93,7 +108,10 @@ pub async fn export_runeset_to_client(runeset_id: i64) -> Result<i64, String> {
         }
     }
 
-    let pages_val: Value = client.get_json("/lol-perks/v1/pages").await.unwrap_or(json!([]));
+    let pages_val: Value = client
+        .get_json("/lol-perks/v1/pages")
+        .await
+        .unwrap_or(json!([]));
     let pages_arr = pages_val.as_array();
 
     // 1. Look for existing companion slot or [LCUC] / [LCC] page
@@ -102,10 +120,17 @@ pub async fn export_runeset_to_client(runeset_id: i64) -> Result<i64, String> {
     if let Some(arr) = pages_arr {
         for page in arr {
             let name = page.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            let is_editable = page.get("isEditable").and_then(|v| v.as_bool()).unwrap_or(true);
+            let is_editable = page
+                .get("isEditable")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
             let id = page.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
 
-            if is_editable && (name == "[LCU COMPANION SLOT]" || name.starts_with("[LCUC]") || name.starts_with("[LCC]")) {
+            if is_editable
+                && (name == "[LCU COMPANION SLOT]"
+                    || name.starts_with("[LCUC]")
+                    || name.starts_with("[LCC]"))
+            {
                 target_slot_id = Some(id);
                 break;
             }
@@ -114,7 +139,10 @@ pub async fn export_runeset_to_client(runeset_id: i64) -> Result<i64, String> {
         // If none found, look for first editable page
         if target_slot_id.is_none() {
             for page in arr {
-                let is_editable = page.get("isEditable").and_then(|v| v.as_bool()).unwrap_or(false);
+                let is_editable = page
+                    .get("isEditable")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 let id = page.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
                 if is_editable && id > 0 {
                     target_slot_id = Some(id);
@@ -136,7 +164,10 @@ pub async fn export_runeset_to_client(runeset_id: i64) -> Result<i64, String> {
             "isActive": true
         });
 
-        match client.put_json_status(&format!("/lol-perks/v1/pages/{}", id), &update_body).await {
+        match client
+            .put_json_status(&format!("/lol-perks/v1/pages/{}", id), &update_body)
+            .await
+        {
             Ok(_) => id,
             Err(e) => return Err(format!("Failed updating rune page {}: {}", id, e)),
         }
@@ -151,11 +182,11 @@ pub async fn export_runeset_to_client(runeset_id: i64) -> Result<i64, String> {
             "isActive": true
         });
 
-        match client.post_json::<Value>("/lol-perks/v1/pages", &create_body).await {
-            Ok(new_page) => new_page
-                .get("id")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0),
+        match client
+            .post_json::<Value>("/lol-perks/v1/pages", &create_body)
+            .await
+        {
+            Ok(new_page) => new_page.get("id").and_then(|v| v.as_i64()).unwrap_or(0),
             Err(e) => return Err(format!("Failed creating exported rune page: {}", e)),
         }
     };
@@ -179,4 +210,3 @@ mod tests {
         assert_eq!(DEFAULT_PERKS.len(), 9);
     }
 }
-

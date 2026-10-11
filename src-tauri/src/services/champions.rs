@@ -58,7 +58,6 @@ pub async fn ensure_champions_cache() -> Result<(), String> {
             continue; // Skip placeholder/none IDs (-1) and classic champions (600xxx)
         }
 
-
         let raw_icon_url = if !item.square_portrait_path.is_empty() {
             champion_icon_path_to_url(&item.square_portrait_path)
         } else {

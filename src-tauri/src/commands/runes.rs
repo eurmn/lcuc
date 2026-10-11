@@ -4,8 +4,8 @@
 //! interactive perk editing, and database updating endpoints to Svelte via typed JSON IPC.
 
 use crate::models::{
-    RuneSetSummary, RuneTreePayload, RunesOverviewPayload, SaveRuneTreePayload, SavedRuneSetSummary,
-    SelectPerkPayload,
+    RuneSetSummary, RuneTreePayload, RunesOverviewPayload, SaveRuneTreePayload,
+    SavedRuneSetSummary, SelectPerkPayload,
 };
 use crate::services::champions::detect_champion_from_name;
 use crate::services::lcu_perks::export_runeset_to_client;
@@ -62,10 +62,7 @@ pub async fn api_runesets() -> Result<Vec<RuneSetSummary>, String> {
 
 /// Imports a client rune page into the local SQLite database and returns the new runeset ID.
 #[tauri::command]
-pub async fn api_import_client_page(
-    page_id: i64,
-    champion_id: Option<i64>,
-) -> Result<i64, String> {
+pub async fn api_import_client_page(page_id: i64, champion_id: Option<i64>) -> Result<i64, String> {
     let client_pages = get_client_rune_pages().await?;
     let target = client_pages
         .iter()
@@ -266,4 +263,3 @@ pub async fn api_set_selected_rune_key(rune_key: Option<String>) -> Result<(), S
     let store = RuneStore::new()?;
     store.set_selected_rune_key(rune_key.as_deref())
 }
-

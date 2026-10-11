@@ -12,6 +12,15 @@ LCU Companion is a high-performance desktop application built with **Tauri 2.0 (
 
 > **First implementation slice:** A separate agent binary, authenticated loopback IPC, agent SQLite bootstrap/import foundation, Tauri supervision, exhaustive paginated history and shared detail-cache backfill, recent-history reconciliation, an agent websocket listener, and shared application logging now exist. The existing Tauri services remain active until the compatibility cutover is complete.
 
+> **Stabilization snapshot (2026-10-11):** Server-owned Statistics requests
+> now support Rust-side aggregation, filtering, sorting, pagination, and a
+> short-lived query cache. Agent SQLite connections use busy timeouts and
+> operation-scoped connections, while statistics preparation and global detail
+> writes are moved off async tasks with `spawn_blocking`. The collector still
+> needs phase-level profiling and durable checkpoints: current logs show a
+> completed account scan followed by reconciliation of 20 recent games, and
+> the time spent after that line is not yet attributed to a specific phase.
+
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
 │                        Tauri Desktop Application                       │
@@ -89,3 +98,25 @@ lcu-companion/
 - **Endpoints**: `api_rune_tree_current`, `api_rune_tree_client`, `api_rune_tree_saved`, `api_rune_tree_select_perk`, `api_save_rune_tree`, `api_export_saved_rune_page`.
 - Renders full CDragon interactive perk tree with keystones, standard perk rows, and 3 rows of stat mods.
 - Supports both View Mode (highlights active runes and dims unselected options) and Edit Mode (live perk switching and name editing).
+
+## 3.1 Agent runtime and collection state
+
+The Tauri supervisor launches `src-tauri\target\debug\lcu-companion-agent.exe`
+when it exists, otherwise falling back to Cargo. Each launch receives an
+ephemeral loopback port and authentication token. Agent requests are
+newline-delimited JSON objects containing `token`, `command`, and optional
+`args`.
+
+The agent owns:
+
+- `%LOCALAPPDATA%\\lcu-companion\\agent.db` for personal collection facts.
+- `%LOCALAPPDATA%\\lcu-companion\\global-aram.db` for global ARAM: Mayhem data.
+- LCU REST/WebSocket discovery and collection loops.
+- Server-side statistics aggregation, sorting, filtering, and pagination.
+
+The current collection flow is account discovery, recent-history
+reconciliation, missing-detail backfill, fact persistence, and optional global
+participant discovery. The log `Reconciled 20 recent games` is the current
+bounded recent-history pass; it is not evidence that the account has only 20
+games. Backfill cursors and detail queue behavior still require profiling and
+durable checkpointing.

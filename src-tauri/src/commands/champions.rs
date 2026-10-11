@@ -47,4 +47,3 @@ pub async fn api_set_selected_champion_id(champion_id: Option<i64>) -> Result<()
     let store = RuneStore::new()?;
     store.set_selected_champion_id(champion_id)
 }
-

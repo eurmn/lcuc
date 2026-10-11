@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "build:agent": "cargo build --manifest-path src-tauri\\Cargo.toml --bin lcu-companion-agent",
     "build": "vite build",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "preview": "vite preview",

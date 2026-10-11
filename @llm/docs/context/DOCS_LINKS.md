@@ -18,6 +18,10 @@ This document catalogs every documentation file available in `@llm/docs/`, organ
   - **Purpose**: Live snapshot of application features, Tauri commands, domain models, services, renderers, and verified live test results.
   - **Usage**: Read before adding or modifying any feature to see what is already implemented and registered.
 
+- [`SESSION_HANDOFF_2026-10-11.md`](./SESSION_HANDOFF_2026-10-11.md)
+  - **Purpose**: Session handoff for the standalone agent, collection pipeline, server-owned statistics, database contention, and current reconciliation bottleneck.
+  - **Usage**: Read first when continuing agent, collector, persistence, or statistics work.
+
 - [`LOGGING.md`](./LOGGING.md)
   - **Purpose**: Shared log format, destinations, retention, redaction rules, and frontend/Rust usage.
   - **Usage**: Consult before adding diagnostics or replacing direct console/print calls.

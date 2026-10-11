@@ -1,21 +1,27 @@
-pub mod commands;
 pub mod agent;
 pub mod agent_supervisor;
+pub mod commands;
+pub mod logger;
 pub mod models;
 pub mod services;
-pub mod logger;
 
-use commands::{ agent::{api_agent_status, api_build_statistics, api_log}, api_delete_runeset, api_detect_champion_from_name, api_export_saved_rune_page,
+use agent_supervisor::AgentSupervisor;
+use commands::{
+    agent::{
+        api_agent_status, api_build_statistics, api_global_aram_config, api_global_aram_statistics,
+        api_log, api_set_global_aram_limit, api_statistics,
+    },
+    api_delete_runeset, api_detect_champion_from_name, api_export_saved_rune_page,
     api_get_champion_roster, api_get_champions, api_get_selected_champion_id,
-    api_get_selected_rune_key, api_import_client_page, api_profile_challenge_tier, api_match_history, api_remove_friends, api_rune_builder_get_keystones, api_rune_builder_get_overview,
-    api_rune_builder_get_secondary_playcounts, api_rune_builder_get_shards,
-    api_rune_builder_get_tree_runes, api_rune_tree_client, api_rune_tree_current,
-    api_rune_tree_saved, api_rune_tree_select_perk, api_runes_overview, api_runesets,
-    api_save_rune_tree, api_set_selected_champion_id, api_set_selected_rune_key,
+    api_get_selected_rune_key, api_import_client_page, api_match_history,
+    api_profile_challenge_tier, api_remove_friends, api_rune_builder_get_keystones,
+    api_rune_builder_get_overview, api_rune_builder_get_secondary_playcounts,
+    api_rune_builder_get_shards, api_rune_builder_get_tree_runes, api_rune_tree_client,
+    api_rune_tree_current, api_rune_tree_saved, api_rune_tree_select_perk, api_runes_overview,
+    api_runesets, api_save_rune_tree, api_set_selected_champion_id, api_set_selected_rune_key,
     api_summoner_profile, api_toggle_favorite_champion, api_update_runeset_champion,
 };
 use services::lcu_websocket::LcuWsWatcher;
-use agent_supervisor::AgentSupervisor;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, WindowEvent};
@@ -34,16 +40,12 @@ pub fn run() {
             let menu = Menu::with_items(app, &[&show, &separator, &quit])?;
 
             TrayIconBuilder::new()
-                .icon(
-                    app.default_window_icon()
-                        .cloned()
-                    .ok_or_else(|| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            "missing default application icon",
-                        )
-                    })?,
-                )
+                .icon(app.default_window_icon().cloned().ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "missing default application icon",
+                    )
+                })?)
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
@@ -88,9 +90,15 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             api_agent_status,
             api_build_statistics,
+            api_statistics,
+            api_global_aram_config,
+            api_global_aram_statistics,
             api_log,
+            api_set_global_aram_limit,
             api_summoner_profile,
-            api_profile_challenge_tier, api_match_history, api_runes_overview,
+            api_profile_challenge_tier,
+            api_match_history,
+            api_runes_overview,
             api_runesets,
             api_import_client_page,
             api_export_saved_rune_page,
@@ -117,7 +125,5 @@ pub fn run() {
             api_set_selected_rune_key,
         ])
         .run(tauri::generate_context!())
-
-
         .expect("error while running tauri application");
 }

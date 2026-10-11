@@ -1,5 +1,5 @@
-pub mod champions;
 pub mod agent;
+pub mod champions;
 pub mod friends;
 pub mod profile;
 pub mod rune_builder;
@@ -10,9 +10,6 @@ pub use friends::*;
 pub use profile::*;
 pub use rune_builder::*;
 pub use runes::*;
-
-
-
 
 pub mod history;
 pub use history::*;

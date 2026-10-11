@@ -27,4 +27,3 @@ pub struct RuneSetSummary {
     pub source: String,
     pub created_at: String,
 }
-

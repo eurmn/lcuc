@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
+use tokio::time::{sleep, Duration};
 
 #[derive(Clone)]
 pub struct AgentSupervisor {
@@ -37,6 +38,10 @@ impl AgentSupervisor {
             state: Arc::new(Mutex::new(AgentProcessState::default())),
         };
         if let Err(error) = supervisor.spawn_agent() {
+            crate::logger::error(
+                "tauri.agent.supervisor",
+                &format!("Failed to start companion agent: {error}"),
+            );
             let mut state = supervisor
                 .state
                 .lock()
@@ -53,7 +58,10 @@ impl AgentSupervisor {
 
         std::env::current_exe()
             .ok()
-            .and_then(|path| path.parent().map(|parent| parent.join("lcu-companion-agent.exe")))
+            .and_then(|path| {
+                path.parent()
+                    .map(|parent| parent.join("lcu-companion-agent.exe"))
+            })
             .unwrap_or_else(|| PathBuf::from("lcu-companion-agent.exe"))
     }
 
@@ -79,7 +87,7 @@ impl AgentSupervisor {
         let token = Self::generate_token();
         let binary = Self::agent_binary();
 
-        let (program, arguments) = if binary.exists() {
+        let (program, arguments) = if !cfg!(debug_assertions) && binary.exists() {
             (
                 binary.to_string_lossy().to_string(),
                 vec![
@@ -90,10 +98,24 @@ impl AgentSupervisor {
                 ],
             )
         } else {
-            let manifest = std::env::current_dir()
-                .map_err(|error| format!("failed finding agent manifest: {error}"))?
-                .join("src-tauri")
-                .join("Cargo.toml");
+            let current_dir = std::env::current_dir()
+                .map_err(|error| format!("failed finding agent manifest: {error}"))?;
+            let manifest = [
+                current_dir.join("Cargo.toml"),
+                current_dir.join("src-tauri").join("Cargo.toml"),
+                current_dir
+                    .parent()
+                    .map(|parent| parent.join("src-tauri").join("Cargo.toml"))
+                    .unwrap_or_default(),
+            ]
+            .into_iter()
+            .find(|path| path.is_file())
+            .ok_or_else(|| {
+                format!(
+                    "failed finding agent manifest from {}",
+                    current_dir.display()
+                )
+            })?;
             (
                 "cargo".to_string(),
                 vec![
@@ -135,15 +157,20 @@ impl AgentSupervisor {
     }
 
     pub async fn status(&self) -> AgentStatus {
-        let (port, token, running) = match self.state.lock() {
+        let (port, token, running, process_error) = match self.state.lock() {
             Ok(mut state) => {
-                let running = state
-                    .child
-                    .as_mut()
-                    .and_then(|child| child.try_wait().ok())
-                    .flatten()
-                    .is_none();
-                (state.port, state.token.clone(), running)
+                let process_error = match state.child.as_mut() {
+                    Some(child) => match child.try_wait() {
+                        Ok(Some(status)) => {
+                            Some(format!("agent process exited with status {status}"))
+                        }
+                        Ok(None) => None,
+                        Err(error) => Some(format!("failed checking agent process: {error}")),
+                    },
+                    None => state.startup_error.clone(),
+                };
+                let running = process_error.is_none() && state.child.is_some();
+                (state.port, state.token.clone(), running, process_error)
             }
             Err(_) => {
                 return AgentStatus {
@@ -156,6 +183,16 @@ impl AgentSupervisor {
                 };
             }
         };
+        if let Some(error) = process_error {
+            return AgentStatus {
+                running,
+                reachable: false,
+                port,
+                collector_state: None,
+                database_ready: false,
+                error: Some(error),
+            };
+        }
 
         let Some(port) = port else {
             return AgentStatus {
@@ -258,7 +295,10 @@ impl AgentSupervisor {
 
         AgentStatus {
             running,
-            reachable: response.get("ok").and_then(|value| value.as_bool()).unwrap_or(false),
+            reachable: response
+                .get("ok")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false),
             port: Some(port),
             collector_state: response
                 .pointer("/data/collector_state")
@@ -276,44 +316,78 @@ impl AgentSupervisor {
     }
 
     pub async fn request(&self, command: &str) -> Result<Value, String> {
-            let (port, token) = {
-                let state = self
-                    .state
-                    .lock()
-                    .map_err(|_| "agent supervisor state lock poisoned".to_string())?;
-                (
-                    state.port.ok_or_else(|| "agent port is unavailable".to_string())?,
-                    state.token.clone().ok_or_else(|| "agent token is unavailable".to_string())?,
-                )
-            };
-            let mut stream = TcpStream::connect(("127.0.0.1", port))
-                .await
-                .map_err(|error| format!("agent connection failed: {error}"))?;
-            let mut request = serde_json::to_vec(&serde_json::json!({
-                "token": token,
-                "command": command,
-            }))
-            .map_err(|error| format!("agent request encoding failed: {error}"))?;
-            request.push(b'\n');
-            stream
-                .write_all(&request)
-                .await
-                .map_err(|error| format!("agent request failed: {error}"))?;
-            let mut line = String::new();
-            BufReader::new(&mut stream)
-                .read_line(&mut line)
-                .await
-                .map_err(|error| format!("agent response failed: {error}"))?;
-            let response: Value = serde_json::from_str(&line)
-                .map_err(|error| format!("agent response parsing failed: {error}"))?;
-            if !response.get("ok").and_then(Value::as_bool).unwrap_or(false) {
-                return Err(response
-                    .get("error")
-                    .and_then(Value::as_str)
-                    .unwrap_or("agent request failed")
-                    .to_string());
+        self.request_with_args(command, serde_json::Value::Null)
+            .await
+    }
+
+    pub async fn request_with_args(
+        &self,
+        command: &str,
+        args: serde_json::Value,
+    ) -> Result<Value, String> {
+        let (port, token) = {
+            let state = self
+                .state
+                .lock()
+                .map_err(|_| "agent supervisor state lock poisoned".to_string())?;
+            (
+                state
+                    .port
+                    .ok_or_else(|| "agent port is unavailable".to_string())?,
+                state
+                    .token
+                    .clone()
+                    .ok_or_else(|| "agent token is unavailable".to_string())?,
+            )
+        };
+        let mut stream = None;
+        let mut last_error = None;
+        for _ in 0..10 {
+            match TcpStream::connect(("127.0.0.1", port)).await {
+                Ok(connected) => {
+                    stream = Some(connected);
+                    break;
+                }
+                Err(error) => {
+                    last_error = Some(error);
+                    sleep(Duration::from_millis(200)).await;
+                }
             }
-            Ok(response.get("data").cloned().unwrap_or(Value::Null))
+        }
+        let mut stream = stream.ok_or_else(|| {
+            format!(
+                "agent connection failed: {}",
+                last_error
+                    .map(|error| error.to_string())
+                    .unwrap_or_else(|| "unknown connection error".to_string())
+            )
+        })?;
+        let mut request = serde_json::to_vec(&serde_json::json!({
+            "token": token,
+            "command": command,
+            "args": args,
+        }))
+        .map_err(|error| format!("agent request encoding failed: {error}"))?;
+        request.push(b'\n');
+        stream
+            .write_all(&request)
+            .await
+            .map_err(|error| format!("agent request failed: {error}"))?;
+        let mut line = String::new();
+        BufReader::new(&mut stream)
+            .read_line(&mut line)
+            .await
+            .map_err(|error| format!("agent response failed: {error}"))?;
+        let response: Value = serde_json::from_str(&line)
+            .map_err(|error| format!("agent response parsing failed: {error}"))?;
+        if !response.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+            return Err(response
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("agent request failed")
+                .to_string());
+        }
+        Ok(response.get("data").cloned().unwrap_or(Value::Null))
     }
 }
 

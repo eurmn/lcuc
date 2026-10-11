@@ -1,276 +1,110 @@
 <script lang="ts">
-  import { onMount } from "svelte";
-  import { getAgentBuildStatistics } from "../../api/agent";
-  import { getMatchHistory } from "../../api/history";
-  import type { BuildStatisticChampion, BuildStatisticEntry, MatchHistoryItem } from "../../types/history";
-  import { logger } from "../../utils/logger";
+  import { onMount, untrack } from "svelte";
+  import { getCachedStatistics, requestStatistics, type StatisticsKind, type StatisticsScope } from "../../utils/statistics-data";
+  import type { ServerStatisticRow } from "../../api/agent";
 
-  type Kind = "item" | "augment" | "combo";
-
-  let matches = $state<MatchHistoryItem[]>([]);
+  let { scope = "personal", hideLowPickrate = false }: { scope?: StatisticsScope; hideLowPickrate?: boolean } = $props();
+  let kind = $state<StatisticsKind>("item");
+  let rows = $state<ServerStatisticRow[]>([]);
   let selectedId = $state<string | null>(null);
-  let kind = $state<Kind>("item");
+  let search = $state("");
+  type SortKey = "name" | "games" | "pickRate" | "winRate" | "personalWinRate" | "globalWinRate" | "wpa" | "personalWpa" | "globalWpa" | "kda";
+  let sortKey = $state<SortKey>("wpa");
+  let sortDescending = $state(true);
   let loading = $state(true);
+  let refreshing = $state(false);
   let error = $state<string | null>(null);
+  let sampleCount = $state(0);
+  let baseline = $state(0);
+  let requestVersion = 0;
 
-  function normalizeMatches(value: MatchHistoryItem[]) {
-    return value.map((match) => ({
-      ...match,
-      damage_dealt_to_champions: match.damage_dealt_to_champions ?? null,
-      augments: Array.isArray(match.augments) ? match.augments : [],
-      items: Array.isArray(match.items) ? match.items : [],
-    }));
+  function query() {
+    const effectiveSortKey = scope === "compare"
+      ? sortKey === "winRate" ? "personalWinRate" : sortKey === "wpa" ? "personalWpa" : sortKey
+      : sortKey === "personalWinRate" || sortKey === "globalWinRate" ? "winRate" : sortKey === "personalWpa" || sortKey === "globalWpa" ? "wpa" : sortKey;
+    return { scope: scope ?? "personal", kind, search, hide_low_pickrate: hideLowPickrate, sort_key: effectiveSortKey, descending: sortDescending, limit: 100 };
   }
 
-  const baseline = $derived.by(() => {
-    let observations = 0;
-    let wins = 0;
-    for (const match of matches) {
-      const hasObservation = kind === "item"
-        ? match.items.some(Boolean)
-        : kind === "augment"
-          ? match.augments.length > 0
-          : match.items.filter(Boolean).length + match.augments.length > 1;
-      if (hasObservation) {
-        observations += 1;
-        wins += match.win ? 1 : 0;
-      }
-    }
-    return observations ? wins / observations : 0;
-  });
-
-  function addChampion(map: Map<number, BuildStatisticChampion>, match: MatchHistoryItem) {
-    if (!match.champion) return;
-    const champion = map.get(match.champion.id) ?? {
-      id: match.champion.id,
-      name: match.champion.name,
-      icon_url: match.champion.square_icon_url,
-      games: 0,
-      wins: 0,
-      kills: 0,
-      deaths: 0,
-      assists: 0,
-      damage: 0,
-      gold: 0,
-    };
-    champion.games += 1;
-    champion.wins += match.win ? 1 : 0;
-    champion.kills += match.kills;
-    champion.deaths += match.deaths;
-    champion.assists += match.assists;
-    champion.damage += match.damage_dealt_to_champions ?? 0;
-    champion.gold += match.gold_earned;
-    map.set(champion.id, champion);
-  }
-
-  const entries = $derived.by(() => {
-    const result = new Map<string, BuildStatisticEntry>();
-    const add = (id: string, name: string, icon_url: string, match: MatchHistoryItem) => {
-      const entry = result.get(id) ?? {
-        id,
-        name,
-        icon_url,
-        kind,
-        games: 0,
-        wins: 0,
-        kills: 0,
-        deaths: 0,
-        assists: 0,
-        damage: 0,
-        gold: 0,
-        duration: 0,
-        champions: [],
-        partners: [],
-      };
-      entry.games += 1;
-      entry.wins += match.win ? 1 : 0;
-      entry.kills += match.kills;
-      entry.deaths += match.deaths;
-      entry.assists += match.assists;
-      entry.damage += match.damage_dealt_to_champions ?? 0;
-      entry.gold += match.gold_earned;
-      entry.duration += match.game_duration_secs;
-      result.set(id, entry);
-    };
-
-    for (const match of matches) {
-      if (kind === "item") {
-        for (const item of match.items) {
-          if (item) add(`item:${item.id}`, item.name, item.icon_url, match);
-        }
-      } else if (kind === "augment") {
-        for (const augment of match.augments) {
-          add(`augment:${augment.id}`, augment.name, augment.icon_url, match);
-        }
-      } else {
-        const items = match.items.filter((item): item is NonNullable<typeof item> => Boolean(item));
-        const augments = match.augments;
-        const parts = [...items.map((item) => `i${item.id}`), ...augments.map((augment) => `a${augment.id}`)].sort();
-        if (parts.length < 2) continue;
-        const labels = [...items.map((item) => item.name), ...augments.map((augment) => augment.name)].sort();
-        add(`combo:${parts.join("+")}`, labels.join(" + "), items[0]?.icon_url ?? augments[0]?.icon_url ?? "", match);
-      }
-    }
-
-    for (const entry of result.values()) {
-      const championMap = new Map<number, BuildStatisticChampion>();
-      const partnerMap = new Map<string, { id: string; name: string; icon_url: string; games: number }>();
-      for (const match of matches) {
-        const candidateIds = kind === "item"
-          ? match.items.filter(Boolean).map((item) => `item:${item!.id}`)
-          : kind === "augment"
-            ? match.augments.map((augment) => `augment:${augment.id}`)
-            : (() => {
-                const itemIds = match.items.filter(Boolean).map((item) => `i${item!.id}`);
-                const augmentIds = match.augments.map((augment) => `a${augment.id}`);
-                return itemIds.concat(augmentIds).sort().length > 1
-                  ? [`combo:${itemIds.concat(augmentIds).sort().join("+")}`]
-                  : [];
-              })();
-        if (!candidateIds.includes(entry.id)) continue;
-        addChampion(championMap, match);
-        for (const item of match.items) {
-          if (item && `item:${item.id}` !== entry.id) {
-            const partner = partnerMap.get(`item:${item.id}`) ?? { id: `item:${item.id}`, name: item.name, icon_url: item.icon_url, games: 0 };
-            partner.games += 1;
-            partnerMap.set(partner.id, partner);
-          }
-        }
-        for (const augment of match.augments) {
-          if (`augment:${augment.id}` !== entry.id) {
-            const partner = partnerMap.get(`augment:${augment.id}`) ?? { id: `augment:${augment.id}`, name: augment.name, icon_url: augment.icon_url, games: 0 };
-            partner.games += 1;
-            partnerMap.set(partner.id, partner);
-          }
-        }
-      }
-      entry.champions = [...championMap.values()].sort((a, b) => b.games - a.games);
-      entry.partners = [...partnerMap.values()].sort((a, b) => b.games - a.games);
-    }
-    return [...result.values()].sort((a, b) => wpa(b) - wpa(a) || b.games - a.games);
-  });
-
-  const selected = $derived(entries.find((entry) => entry.id === selectedId) ?? entries[0] ?? null);
-
-  function percent(value: number) {
-    return `${Math.round(value * 100)}%`;
-  }
-
-  function formatWpa(value: number) {
-    const points = value * 100;
-    return `${points >= 0 ? "+" : ""}${points.toFixed(2)}%`;
-  }
-
-  function wpa(entry: BuildStatisticEntry) {
-    return entry.wins / entry.games - baseline;
-  }
-
-  function averageKda(entry: BuildStatisticEntry) {
-    return `${(entry.kills / entry.games).toFixed(1)} / ${(entry.deaths / entry.games).toFixed(1)} / ${(entry.assists / entry.games).toFixed(1)}`;
-  }
-
-  async function loadMatches() {
+  async function load(force = false) {
+    const version = ++requestVersion;
+    const cached = getCachedStatistics(query());
+    if (cached && !force) {
+      rows = cached.rows; sampleCount = cached.sample_count; baseline = cached.baseline;  loading = false;
+    } else if (rows.length) refreshing = true;
     try {
-      try {
-        const agentData = await getAgentBuildStatistics();
-        logger.debug("frontend.build-statistics", `Agent has ${agentData.facts.length} persisted participant facts`);
-      } catch (agentError) {
-        logger.debug("frontend.build-statistics", "Agent facts unavailable; using cached detailed history", agentError);
-      }
-      const cached = localStorage.getItem("lcu-match-history");
-      if (cached) matches = normalizeMatches(JSON.parse(cached) as MatchHistoryItem[]);
-      const fresh = await getMatchHistory(0, 20);
-      const merged = new Map<number, MatchHistoryItem>();
-      for (const match of [...fresh, ...matches]) if (!merged.has(match.game_id)) merged.set(match.game_id, match);
-      matches = normalizeMatches([...merged.values()]);
-      localStorage.setItem("lcu-match-history", JSON.stringify(matches));
+      const response = await requestStatistics(query(), { force });
+      if (version !== requestVersion) return;
+      rows = response.rows; sampleCount = response.sample_count; baseline = response.baseline;  error = null;
     } catch (err) {
-      error = String(err);
+      if (version === requestVersion) error = String(err);
     } finally {
-      loading = false;
+      if (version === requestVersion) { loading = false; refreshing = false; }
     }
   }
 
-  onMount(loadMatches);
+  const visibleRows = $derived(rows);
+  const selected = $derived(rows.find((row) => row.id === selectedId) ?? visibleRows[0] ?? null);
+
+  function setSort(key: typeof sortKey) {
+    if (sortKey === key) sortDescending = !sortDescending;
+    else { sortKey = key; sortDescending = key !== "name"; }
+    void load(true);
+  }
+  function percent(value: number) { return `${Math.round(value * 100)}%`; }
+  function formatWpa(value: number) { return `${value >= 0 ? "+" : ""}${(value * 100).toFixed(1)}`; }
+  function formatWpaPoints(value: number) { return `${value >= 0 ? "+" : ""}${(value * 100).toFixed(1)}`; }
+  function averageKda(row: ServerStatisticRow) { return (row.kills + row.assists) / Math.max(1, row.deaths); }
+  function sortIndicator(key: SortKey) {
+    const activeKey = scope === "compare"
+      ? sortKey === "winRate" ? "personalWinRate" : sortKey === "wpa" ? "personalWpa" : sortKey
+      : sortKey === "personalWinRate" || sortKey === "globalWinRate" ? "winRate" : sortKey === "personalWpa" || sortKey === "globalWpa" ? "wpa" : sortKey;
+    return activeKey === key ? (sortDescending ? "↓" : "↑") : "";
+  }
+  function partnerLabel(row: ServerStatisticRow) {
+    return row.kind === "augment" ? "Often paired with this" : "Often paired with this augment";
+  }
+
+  $effect(() => {
+    void scope;
+    void kind;
+    void search;
+    void hideLowPickrate;
+    const timer = setTimeout(() => void untrack(() => load()), 180);
+    return () => clearTimeout(timer);
+  });
+  onMount(() => void load());
 </script>
 
 <div class="flex h-full min-h-0 flex-col overflow-hidden bg-gray-950 p-4 text-gray-200">
-  {#if loading && matches.length === 0}
-    <div class="mt-3 grid flex-1 animate-pulse grid-cols-[minmax(0,1fr)_minmax(280px,360px)] gap-3">
-      <div class="rounded-lg border border-gray-800 bg-gray-900/50"></div>
-      <div class="rounded-lg border border-gray-800 bg-gray-900/50"></div>
-    </div>
-  {:else if error && matches.length === 0}
+  {#if loading && rows.length === 0}
+    <div class="mt-3 grid flex-1 animate-pulse grid-cols-[minmax(0,1fr)_minmax(280px,360px)] gap-3"><div class="rounded-lg border border-gray-800 bg-gray-900/50"></div><div class="rounded-lg border border-gray-800 bg-gray-900/50"></div></div>
+  {:else if error && rows.length === 0}
     <div class="flex flex-1 items-center justify-center text-sm text-red-400">{error}</div>
-  {:else if matches.length === 0}
-    <div class="flex flex-1 items-center justify-center text-sm text-gray-500">No match data available.</div>
+  {:else if rows.length === 0}
+    <div class="flex flex-1 items-center justify-center text-sm text-gray-500">No build statistics available.</div>
   {:else}
     <div class="mt-3 grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_minmax(280px,360px)] gap-3">
       <section class="min-h-0 overflow-auto rounded-lg border border-gray-800 bg-black/40 scrollbar-thin scrollbar-thumb-gray-800">
-        <div class="sticky top-0 z-10 flex items-center justify-between border-b border-gray-800 bg-gray-900 px-3 py-2">
-          <div>
-            <h2 class="text-sm font-semibold text-white">Build performance</h2>
-            <p class="text-[11px] text-gray-500">WPA = win-rate percentage-point delta · peer baseline {percent(baseline)} · {matches.length} matches</p>
-          </div>
-          <div class="flex rounded-lg border border-gray-700 bg-gray-950 p-0.5 text-[11px]">
-            {#each [["item", "Items"], ["augment", "Augments"], ["combo", "Combos"]] as option}
-              <button type="button" class="rounded-md px-2 py-1 transition-colors {kind === option[0] ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-white'}" onclick={() => { kind = option[0] as Kind; selectedId = null; }}>{option[1]}</button>
-            {/each}
-          </div>
+        <div class="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-2 border-b border-gray-800 bg-gray-900 px-3 py-2">
+          <div><h2 class="text-sm font-semibold text-white">Build performance</h2><p class="text-[11px] text-gray-500">{scope === "compare" ? "Compare your performance with the database" : `WPA = win-rate delta · baseline ${percent(baseline)}`} · {sampleCount} games {#if refreshing}· refreshing{/if}</p></div>
+          <div class="flex flex-wrap items-center gap-2"><input bind:value={search} type="search" placeholder="Search builds..." class="w-36 rounded-md border border-gray-700 bg-gray-950 px-2 py-1.5 text-[11px] text-gray-100 outline-none placeholder:text-gray-600 focus:border-purple-500" /><div class="flex rounded-lg border border-gray-700 bg-gray-950 p-0.5 text-[11px]">{#each [["item", "Items"], ["augment", "Augments"], ["combo", "Combos"]] as option}<button type="button" class="rounded-md px-2 py-1 {kind === option[0] ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-white'}" onclick={() => { kind = option[0] as StatisticsKind; selectedId = null; }}>{option[1]}</button>{/each}</div></div>
         </div>
-        <table class="w-full text-left text-xs">
-          <thead class="sticky top-[57px] bg-gray-900 text-[10px] uppercase tracking-wider text-gray-500">
-            <tr><th class="px-3 py-2">Build</th><th class="px-3 py-2">Games</th><th class="px-3 py-2">WR</th><th class="px-3 py-2">WPA</th><th class="px-3 py-2">Avg KDA</th></tr>
-          </thead>
-          <tbody class="divide-y divide-gray-800">
-            {#each entries as entry (entry.id)}
-              <tr class="cursor-pointer hover:bg-gray-800/60 {selected?.id === entry.id ? 'bg-purple-950/40' : ''}" onclick={() => (selectedId = entry.id)}>
-                <td class="flex max-w-[360px] items-center gap-2 px-3 py-2">
-                  {#if entry.icon_url}<img src={entry.icon_url} alt={entry.name} class="h-7 w-7 rounded object-cover" />{/if}
-                  <span class="truncate text-gray-200">{entry.name}</span>
-                </td>
-                <td class="px-3 py-2 text-gray-400">{entry.games}</td>
-                <td class="px-3 py-2">{percent(entry.wins / entry.games)}</td>
-                <td class="px-3 py-2 {wpa(entry) >= 0 ? 'text-emerald-300' : 'text-red-300'}">{formatWpa(wpa(entry))}</td>
-                <td class="px-3 py-2 text-gray-400">{averageKda(entry)}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
+        <table class="w-full text-left text-xs"><thead class="sticky top-[57px] bg-gray-900 text-[10px] uppercase tracking-wider text-gray-500"><tr>
+          <th class="cursor-pointer px-3 py-2" onclick={() => setSort("name")}>Build {sortIndicator("name")}</th><th class="cursor-pointer px-3 py-2 text-right" onclick={() => setSort("games")}>Games {sortIndicator("games")}</th><th class="cursor-pointer px-3 py-2 text-right" onclick={() => setSort("pickRate")}>Pick rate {sortIndicator("pickRate")}</th><th class="cursor-pointer px-3 py-2 text-right" onclick={() => setSort(scope === "compare" ? "personalWinRate" : "winRate")}>{scope === "compare" ? "Mine WR" : "WR"} {sortIndicator(scope === "compare" ? "personalWinRate" : "winRate")}</th>{#if scope === "compare"}<th class="cursor-pointer px-3 py-2 text-right" onclick={() => setSort("globalWinRate")}>Global WR {sortIndicator("globalWinRate")}</th>{/if}<th class="cursor-pointer px-3 py-2 text-right" onclick={() => setSort(scope === "compare" ? "personalWpa" : "wpa")}>{scope === "compare" ? "Mine WPA" : "WPA"} {sortIndicator(scope === "compare" ? "personalWpa" : "wpa")}</th>{#if scope === "compare"}<th class="cursor-pointer px-3 py-2 text-right" onclick={() => setSort("globalWpa")}>Global WPA {sortIndicator("globalWpa")}</th>{/if}<th class="cursor-pointer px-3 py-2 text-right" onclick={() => setSort("kda")}>KDA {sortIndicator("kda")}</th>
+        </tr></thead><tbody class="divide-y divide-gray-800">{#each visibleRows as row (row.id)}{@const localWpa = scope === "compare" ? row.personal_wpa ?? 0 : row.wpa}{@const globalWpa = row.global_wpa ?? row.wpa}<tr class="cursor-pointer hover:bg-gray-800/60 {selected?.id === row.id ? 'bg-purple-950/40' : ''}" onclick={() => (selectedId = row.id)}><td class="flex max-w-[360px] items-center gap-2 px-3 py-2">{#if row.icon_url}<img src={row.icon_url} alt={row.name} class="h-7 w-7 rounded object-cover" />{/if}<span class="truncate">{row.name}</span></td><td class="px-3 py-2 text-right text-gray-400">{scope === "compare" ? `${row.personal_games ?? 0}/${row.global_observed ? row.global_games ?? row.games : "—"}` : row.games}</td><td class="px-3 py-2 text-right text-gray-400">{percent(row.pick_rate)}</td><td class="px-3 py-2 text-right">{scope === "compare" ? (row.personal_games ? percent(row.personal_win_rate ?? 0) : "—") : percent(row.win_rate)}</td>{#if scope === "compare"}<td class="px-3 py-2 text-right">{row.global_observed ? percent(row.global_win_rate ?? row.win_rate) : "—"}</td>{/if}<td class="px-3 py-2 text-right {localWpa >= 0 ? 'text-emerald-300' : 'text-red-300'}">{scope === "compare" && !row.personal_games ? "—" : formatWpaPoints(localWpa)}</td>{#if scope === "compare"}<td class="px-3 py-2 text-right {globalWpa >= 0 ? 'text-emerald-300' : 'text-red-300'}">{row.global_observed ? formatWpaPoints(globalWpa) : "—"}</td>{/if}<td class="px-3 py-2 text-right text-gray-400">{averageKda(row).toFixed(2)}</td></tr>{/each}</tbody></table>
       </section>
-
       <aside class="min-h-0 overflow-y-auto rounded-lg border border-gray-800 bg-gray-900/40 p-3 scrollbar-thin scrollbar-thumb-gray-800">
-        {#if selected}
-          <div class="border-b border-gray-800 pb-3">
-            <div class="flex items-center gap-2">
-              {#if selected.icon_url}<img src={selected.icon_url} alt={selected.name} class="h-10 w-10 rounded object-cover" />{/if}
-              <div><h2 class="font-bold text-white">{selected.name}</h2><p class="text-xs text-gray-400">{selected.games} games · {percent(selected.wins / selected.games)} win rate</p></div>
-            </div>
-            <p class="mt-2 text-[11px] leading-relaxed text-gray-500">This build is associated with <span class="text-gray-300">{selected.champions.length}</span> champions. WPA compares its observed win rate with the {percent(baseline)} peer baseline; it is not a causal win-probability model.</p>
-          </div>
-          <dl class="grid grid-cols-2 gap-2 border-b border-gray-800 py-3 text-xs">
-            <div><dt class="text-gray-500">WPA</dt><dd class="{wpa(selected) >= 0 ? 'text-emerald-300' : 'text-red-300'}">{formatWpa(wpa(selected))}</dd></div>
-            <div><dt class="text-gray-500">Avg KDA</dt><dd>{averageKda(selected)}</dd></div>
-            <div><dt class="text-gray-500">Avg damage</dt><dd>{Math.round(selected.damage / selected.games).toLocaleString()}</dd></div>
-            <div><dt class="text-gray-500">Avg gold</dt><dd>{Math.round(selected.gold / selected.games).toLocaleString()}</dd></div>
-          </dl>
+        {#if selected}<div class="border-b border-gray-800 pb-3"><div class="flex items-center gap-2">{#if selected.icon_url}<img src={selected.icon_url} alt={selected.name} class="h-10 w-10 rounded object-cover" />{/if}<div><h2 class="font-bold text-white">{selected.name}</h2>{#if scope === "compare"}<p class="text-xs text-gray-400">Mine: {selected.personal_games ? `${selected.personal_games} games · ${percent(selected.personal_win_rate ?? 0)} WR · ${formatWpaPoints(selected.personal_wpa ?? 0)} WPA` : "No personal observations yet"}</p><p class="text-xs text-gray-400">Database: {selected.global_observed ? `${selected.global_games ?? selected.games} games · ${percent(selected.global_win_rate ?? selected.win_rate)} WR · ${formatWpaPoints(selected.global_wpa ?? selected.wpa)} WPA` : "No database observations yet"}</p>{:else}<p class="text-xs text-gray-400">{selected.games} games · {percent(selected.win_rate)} WR · {formatWpaPoints(selected.wpa)} WPA</p>{/if}</div></div><p class="mt-2 text-[11px] text-gray-500">Server-calculated statistics for {selected.champions.length} associated champions.</p></div>
+          <dl class="grid grid-cols-2 gap-2 border-b border-gray-800 py-3 text-xs"><div><dt class="text-gray-500">KDA</dt><dd>{averageKda(selected).toFixed(2)}</dd></div><div><dt class="text-gray-500">Avg damage</dt><dd>{Math.round(selected.damage / Math.max(1, selected.games)).toLocaleString()}</dd></div><div><dt class="text-gray-500">Avg gold</dt><dd>{Math.round(selected.gold / Math.max(1, selected.games)).toLocaleString()}</dd></div><div><dt class="text-gray-500">{scope === "compare" ? "Mine WPA" : "WPA"}</dt><dd class={scope === "compare" ? (selected.personal_wpa ?? 0) >= 0 ? "text-emerald-300" : "text-red-300" : selected.wpa >= 0 ? "text-emerald-300" : "text-red-300"}>{formatWpaPoints(scope === "compare" ? (selected.personal_wpa ?? 0) : selected.wpa)}</dd></div>{#if scope === "compare"}<div><dt class="text-gray-500">Global WPA</dt><dd class={(selected.global_wpa ?? 0) >= 0 ? "text-emerald-300" : "text-red-300"}>{selected.global_observed ? formatWpaPoints(selected.global_wpa ?? 0) : "—"}</dd></div>{/if}</dl>
           <h3 class="mb-1.5 mt-3 text-xs font-semibold uppercase tracking-wider text-gray-500">Champions used with this build</h3>
-          <div class="space-y-1.5">
-            {#each selected.champions.slice(0, 8) as champion (champion.id)}
-              <div class="flex items-center justify-between text-xs"><span class="flex items-center gap-1.5"><img src={champion.icon_url} alt={champion.name} class="h-5 w-5 rounded-full object-cover" />{champion.name}</span><span class="text-gray-400">{champion.games} games · {percent(champion.wins / champion.games)}</span></div>
-            {/each}
-          </div>
-          {#if selected.partners.length > 0}
-            <h3 class="mb-1.5 mt-3 text-xs font-semibold uppercase tracking-wider text-gray-500">Often paired with</h3>
-            <div class="space-y-1.5">
-              {#each selected.partners.slice(0, 6) as partner (partner.id)}
-                <div class="flex items-center justify-between text-xs"><span class="flex items-center gap-1.5"><img src={partner.icon_url} alt={partner.name} class="h-5 w-5 rounded object-cover" />{partner.name}</span><span class="text-gray-400">{partner.games} games</span></div>
-              {/each}
-            </div>
-          {/if}
-        {:else}
-          <div class="flex h-full items-center justify-center text-center text-sm text-gray-500">Select an item, augment, or combo to inspect its champion and performance context.</div>
-        {/if}
+          <div class="space-y-1.5">{#each selected.champions.slice(0, 8) as champion (champion.id)}
+            <div class="flex items-center justify-between gap-2 text-xs"><span class="truncate">{champion.name}</span><span class="shrink-0 text-right text-gray-400">{champion.games} games · {percent(champion.win_rate)} WR · <span class={champion.wpa >= 0 ? "text-emerald-300" : "text-red-300"}>{formatWpa(champion.wpa)} WPA</span></span></div>
+          {/each}</div>
+          <h3 class="mb-1.5 mt-3 text-xs font-semibold uppercase tracking-wider text-gray-500">{partnerLabel(selected)}</h3>
+          <div class="space-y-1.5">{#each selected.partners.filter((partner) => selected.kind !== "item" || String(partner.id).startsWith("augment:")).slice(0, 8) as partner (partner.id)}
+            <div class="flex items-center justify-between gap-2 text-xs"><span class="truncate">{partner.name}</span><span class="shrink-0 text-right text-gray-400">{partner.games} games · {percent(partner.win_rate)} WR · <span class={partner.wpa >= 0 ? "text-emerald-300" : "text-red-300"}>{formatWpa(partner.wpa)} WPA</span></span></div>
+          {/each}</div>
+        {:else}<div class="flex h-full items-center justify-center text-center text-sm text-gray-500">Select a build to inspect its context.</div>{/if}
       </aside>
     </div>
   {/if}

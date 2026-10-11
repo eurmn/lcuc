@@ -2,7 +2,18 @@
 
 ## Status
 
-The first implementation slice is now in progress. A standalone agent binary, authenticated loopback IPC, agent-owned SQLite bootstrap, legacy rune-store import foundation, Tauri supervision, and basic LCU summary/websocket collection have been added. The full cutover remains incomplete.
+The first implementation slice is implemented and is now in stabilization. A
+standalone agent binary, authenticated loopback IPC, agent-owned SQLite
+bootstrap, legacy rune-store import foundation, Tauri supervision, LCU
+summary/websocket collection, server-owned statistics, structured logging, and
+global ARAM collection have been added. The full Tauri cutover, durable
+checkpointed job scheduler, and final aggregate projections remain incomplete.
+
+The current reconciliation log reports `puuid_present=true` and
+`backfill_complete=true`, followed by reconciliation of 20 recent games. This
+is the current bounded recent-history pass, not proof that all available
+history has been collected. The next agent must profile the reconciliation and
+backfill phases separately before changing their limits or concurrency.
 
 The application now uses Fontsource Nunito Sans globally for a friendly, readable visual voice. Match-history cards emphasize game-analysis context: result, champion, mode, KDA, CS, gold, optional champion damage, map, duration/date, and augments.
 
@@ -219,6 +230,50 @@ Treat ARAM Mayhem as a first-class mode, not a frontend special case. Preserve r
 - Retry only transient failures; retain explicit errors for authentication, schema, and malformed payloads.
 - Add a diagnostic export that excludes credentials and secrets.
 
+## Current implementation notes and next steps
+
+### Implemented
+
+- `src-tauri/src/bin/lcu-companion-agent.rs` launches the standalone agent.
+- `src-tauri/src/agent/mod.rs` owns agent IPC, database initialization,
+  recent-history reconciliation, global ARAM collection, structured logging,
+  and server-side statistics.
+- `src-tauri/src/agent_supervisor.rs` reserves a loopback port, creates a
+  per-process token, launches the existing agent executable when available,
+  and proxies authenticated requests.
+- Statistics requests are calculated in Rust, sorted and paginated server-side,
+  and briefly cached by query dimensions. Svelte should not aggregate facts.
+- Agent SQLite connections use WAL-compatible initialization, a five-second
+  busy timeout, normal synchronous mode, and short-lived operation-scoped
+  connections. Statistics and global-detail writes run through
+  `spawn_blocking` so synchronous rusqlite work does not occupy async tasks.
+- Global ARAM data is stored separately in
+  `%LOCALAPPDATA%\\lcu-companion\\global-aram.db`; personal agent data is stored
+  in `%LOCALAPPDATA%\\lcu-companion\\agent.db`.
+- Poro-Snax IDs `2050` and `2052` are excluded during cleanup, insertion,
+  aggregation, and cached frontend response handling.
+
+### Immediate investigation
+
+1. Instrument the account scan, recent-history reconciliation, detail
+   backfill, and projection phases independently with item counts and elapsed
+   time. The log line `Reconciled 20 recent games` currently does not explain
+   which subsequent operation is slow.
+2. Inspect whether the collector performs a synchronous network or database
+   operation on the same task before the next collector phase. Move blocking
+   rusqlite work to dedicated blocking tasks or a single writer queue.
+3. Add durable sync cursors and completed-job checkpoints so stopping the app
+   resumes from the last successful account/game rather than repeating a whole
+   scan.
+4. Replace the current brief statistics response cache with revision-based
+   invalidation tied to fact writes. Keep server-side sorting, filtering, and
+   pagination.
+5. Complete the Tauri compatibility cutover only after health, history,
+   statistics, and collection recovery are covered by targeted smoke tests.
+
+See [`docs/context/SESSION_HANDOFF_2026-10-11.md`](docs/context/SESSION_HANDOFF_2026-10-11.md)
+for the detailed session handoff and navigation guide.
+
 ## Security and compliance
 
 - Keep LCU credentials in memory only; never write lockfile tokens or Authorization headers to logs.
@@ -254,6 +309,7 @@ Treat ARAM Mayhem as a first-class mode, not a frontend special case. Preserve r
 ### Phase 3 — LCU supervisor
 
 - [x] Add agent-side LCU discovery and basic recent-history reconciliation.
+- [x] Add exhaustive available-history pagination with shared detail-cache backfill and progress logging.
 - [x] Add an agent-side websocket listener with reconnect behavior.
 - [ ] Move all credential discovery and REST ownership out of Tauri.
 - [ ] Add durable event-to-job scheduling and complete reconciliation.
@@ -261,7 +317,8 @@ Treat ARAM Mayhem as a first-class mode, not a frontend special case. Preserve r
 
 ### Phase 4 — Game collector
 
-- Move match summary/detail collection, raw response logging, detail caching, catalog loading, asset resolution, and ARAM augment handling.
+- The initial collector now paginates the available account history through the PUUID-specific `/lol-match-history/v1/products/lol/{puuid}/matches` route, stores summaries, caches details, and logs page/detail progress. Full durable job scheduling and normalized projection ownership remain outstanding.
+- A separate `global-aram.db` collector now breadth-first discovers participant PUUIDs from ARAM: Mayhem details, fetches their histories with bounded concurrent detail requests, and stops at a configurable game limit (default 1000).
 - Add durable job tables and bounded concurrency.
 - Add incremental game/projection events.
 
@@ -270,6 +327,7 @@ Treat ARAM Mayhem as a first-class mode, not a frontend special case. Preserve r
 - Normalize participant/game data.
 - Add most-played, win-rate, KDA, damage/minute, gold/minute, item, rune, and augment projections.
 - Add query pagination and indexes.
+- Expose personal/global/both dataset selection and global database limit configuration in the statistics UI.
 
 ### Phase 6 — Tauri/frontend cutover
 

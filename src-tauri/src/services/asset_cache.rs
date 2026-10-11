@@ -45,8 +45,15 @@ fn url_to_filename(url: &str) -> String {
         .collect();
 
     // Use truncated sanitized string + simple checksum for uniqueness
-    let hash: u64 = url.bytes().fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
-    format!("{}_{:x}.{}", &sanitized[..sanitized.len().min(40)], hash, ext)
+    let hash: u64 = url
+        .bytes()
+        .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+    format!(
+        "{}_{:x}.{}",
+        &sanitized[..sanitized.len().min(40)],
+        hash,
+        ext
+    )
 }
 
 /// Determines the MIME type string from a filename or URL.
@@ -84,7 +91,11 @@ pub async fn get_cached_asset_data_uri(remote_url: &str) -> String {
     let filename = url_to_filename(url);
     let disk_path = cache_dir.join(&filename);
 
-    let bytes = if disk_path.exists() && fs::metadata(&disk_path).map(|m| m.len() > 0).unwrap_or(false) {
+    let bytes = if disk_path.exists()
+        && fs::metadata(&disk_path)
+            .map(|m| m.len() > 0)
+            .unwrap_or(false)
+    {
         fs::read(&disk_path).ok()
     } else {
         None
@@ -116,7 +127,11 @@ pub async fn get_cached_asset_data_uri(remote_url: &str) -> String {
     };
 
     let mime = get_mime_type(url);
-    let data_uri = format!("data:{};base64,{}", mime, BASE64_STANDARD.encode(&final_bytes));
+    let data_uri = format!(
+        "data:{};base64,{}",
+        mime,
+        BASE64_STANDARD.encode(&final_bytes)
+    );
 
     // 4. Save into in-memory cache
     {
