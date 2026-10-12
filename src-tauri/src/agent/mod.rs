@@ -308,7 +308,7 @@ fn statistic_row(
     } else {
         baseline
     };
-    let champion_rows = aggregate
+    let mut champion_rows = aggregate
         .champions
         .iter()
         .map(|(id, context)| {
@@ -325,6 +325,13 @@ fn statistic_row(
             })
         })
         .collect::<Vec<_>>();
+    champion_rows.sort_by(|a, b| {
+        let wpa_b = b.get("wpa").and_then(Value::as_f64).unwrap_or(0.0);
+        let wpa_a = a.get("wpa").and_then(Value::as_f64).unwrap_or(0.0);
+        wpa_b
+            .partial_cmp(&wpa_a)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let mut partner_rows = aggregate
         .partners
         .iter()
@@ -482,6 +489,16 @@ fn render_statistics_response(
                 .get("damage_per_minute")
                 .and_then(Value::as_f64)
                 .unwrap_or(0.0),
+            "champWpa" => row
+                .get("champions")
+                .and_then(Value::as_array)
+                .and_then(|champs| {
+                    champs
+                        .iter()
+                        .filter_map(|c| c.get("wpa").and_then(Value::as_f64))
+                        .fold(None, |acc: Option<f64>, v| Some(acc.map_or(v, |m| m.max(v))))
+                })
+                .unwrap_or(-999.0),
             _ => row.get("wpa").and_then(Value::as_f64).unwrap_or(0.0),
         };
         let ordering = if sort_key == "name" {
@@ -686,6 +703,16 @@ fn build_statistics_response(
                     .and_then(Value::as_f64)
                     .unwrap_or(0.0),
                 "globalWpa" => row.get("global_wpa").and_then(Value::as_f64).unwrap_or(0.0),
+                "champWpa" => row
+                    .get("champions")
+                    .and_then(Value::as_array)
+                    .and_then(|champs| {
+                        champs
+                            .iter()
+                            .filter_map(|c| c.get("wpa").and_then(Value::as_f64))
+                            .fold(None, |acc: Option<f64>, v| Some(acc.map_or(v, |m| m.max(v))))
+                    })
+                    .unwrap_or(-999.0),
                 _ => row
                     .get("global_wpa")
                     .or_else(|| row.get("wpa"))
@@ -939,6 +966,16 @@ fn build_statistics_response(
                 .get("damage_per_minute")
                 .and_then(Value::as_f64)
                 .unwrap_or(0.0),
+            "champWpa" => row
+                .get("champions")
+                .and_then(Value::as_array)
+                .and_then(|champs| {
+                    champs
+                        .iter()
+                        .filter_map(|c| c.get("wpa").and_then(Value::as_f64))
+                        .fold(None, |acc: Option<f64>, v| Some(acc.map_or(v, |m| m.max(v))))
+                })
+                .unwrap_or(-999.0),
             _ => row.get("wpa").and_then(Value::as_f64).unwrap_or(0.0),
         };
         let ordering = if sort_key == "name" {

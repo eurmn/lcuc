@@ -12,7 +12,7 @@
   let search = $state("");
   let debouncedSearch = $state("");
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
-  type SortKey = "name" | "games" | "pickRate" | "winRate" | "personalWinRate" | "globalWinRate" | "wpa" | "personalWpa" | "globalWpa" | "kda" | "rarity";
+  type SortKey = "name" | "games" | "pickRate" | "winRate" | "personalWinRate" | "globalWinRate" | "wpa" | "personalWpa" | "globalWpa" | "kda" | "rarity" | "champWpa";
   let sortKey = $state<SortKey>("wpa");
   let sortDescending = $state(true);
   let loading = $state(true);
@@ -73,6 +73,26 @@
     return 0;
   }
 
+  function getTopChampions(row: ServerStatisticRow, count = 3): ServerStatisticRow["champions"] {
+    if (!row.champions || row.champions.length === 0) return [];
+    return row.champions
+      .slice()
+      .sort((a, b) => {
+        if (b.wpa !== a.wpa) return b.wpa - a.wpa;
+        return b.games - a.games;
+      })
+      .slice(0, count);
+  }
+
+  function getBestChampionWpa(row: ServerStatisticRow): number {
+    if (!row.champions || row.champions.length === 0) return -999;
+    let best = -999;
+    for (const c of row.champions) {
+      if (c.wpa > best) best = c.wpa;
+    }
+    return best === -999 ? 0 : best;
+  }
+
   const visibleRows = $derived(
     rows
       .filter((row) => {
@@ -99,6 +119,10 @@
       .sort((a, b) => {
         if (sortKey === "rarity") {
           const diff = rarityScore(b.rarity) - rarityScore(a.rarity);
+          return sortDescending ? diff : -diff;
+        }
+        if (sortKey === "champWpa") {
+          const diff = getBestChampionWpa(b) - getBestChampionWpa(a);
           return sortDescending ? diff : -diff;
         }
         return 0;
@@ -266,6 +290,9 @@
               {#if kind === "augment"}
                 <th class="cursor-pointer px-3 py-2" onclick={() => setSort("rarity")}>Tier {sortIndicator("rarity")}</th>
               {/if}
+              <th class="cursor-pointer px-3 py-2" onclick={() => setSort("champWpa")} title="Champions benefiting most from this build (by WPA)">
+                Best Champs {sortIndicator("champWpa")}
+              </th>
               <th class="cursor-pointer px-3 py-2 text-right" onclick={() => setSort("games")}>Games {sortIndicator("games")}</th>
               <th class="cursor-pointer px-3 py-2 text-right" onclick={() => setSort("pickRate")}>Pick rate {sortIndicator("pickRate")}</th>
               <th class="cursor-pointer px-3 py-2 text-right" onclick={() => setSort(scope === "compare" ? "personalWinRate" : "winRate")}>{scope === "compare" ? "Mine WR" : "WR"} {sortIndicator(scope === "compare" ? "personalWinRate" : "winRate")}</th>
@@ -284,6 +311,7 @@
               {@const localWpa = scope === "compare" ? row.personal_wpa ?? 0 : row.wpa}
               {@const globalWpa = row.global_wpa ?? row.wpa}
               {@const domId = cleanDomId(row.id)}
+              {@const topChamps = getTopChampions(row, 3)}
               <tr
                 id={domId}
                 class="cursor-pointer hover:bg-gray-800/60 {selected?.id === row.id ? 'bg-purple-950/40' : ''}"
@@ -306,6 +334,41 @@
                     {/if}
                   </td>
                 {/if}
+                <!-- Best Champions Preview (Card Deck Hand) -->
+                <td class="px-3 py-2">
+                  {#if topChamps.length > 0}
+                    <div class="flex items-center gap-2">
+                      <div class="flex items-center -space-x-2.5 hover:space-x-0.5 transition-all duration-200 py-0.5">
+                        {#each topChamps as champ, i (champ.id)}
+                          <div
+                            class="relative rounded-full transition-transform hover:scale-125 hover:z-30 cursor-pointer"
+                            style="z-index: {10 + i};"
+                            title={`${champ.name}: ${champ.wpa >= 0 ? '+' : ''}${(champ.wpa * 100).toFixed(1)}% WPA (${champ.games} games, ${percent(champ.win_rate)} WR)`}
+                          >
+                            {#if champ.icon_url}
+                              <img
+                                src={champ.icon_url}
+                                alt={champ.name}
+                                class="h-6 w-6 rounded-full border-2 border-gray-900 object-cover shadow-sm bg-gray-950"
+                              />
+                            {:else}
+                              <div class="h-6 w-6 rounded-full border-2 border-gray-900 bg-gray-800 text-[8px] flex items-center justify-center font-bold text-gray-200">
+                                {champ.name.slice(0, 1)}
+                              </div>
+                            {/if}
+                          </div>
+                        {/each}
+                      </div>
+                      {#if topChamps[0]}
+                        <span class="text-[10px] font-semibold {topChamps[0].wpa >= 0 ? 'text-emerald-400' : 'text-red-400'}">
+                          {formatWpaPoints(topChamps[0].wpa)}
+                        </span>
+                      {/if}
+                    </div>
+                  {:else}
+                    <span class="text-gray-600 text-[11px]">—</span>
+                  {/if}
+                </td>
                 <td class="px-3 py-2 text-right text-gray-400">{scope === "compare" ? `${row.personal_games ?? 0}/${row.global_observed ? row.global_games ?? row.games : "—"}` : row.games}</td>
                 <td class="px-3 py-2 text-right text-gray-400">{percent(row.pick_rate)}</td>
                 <td class="px-3 py-2 text-right">{scope === "compare" ? (row.personal_games ? percent(row.personal_win_rate ?? 0) : "—") : percent(row.win_rate)}</td>
