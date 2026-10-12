@@ -187,9 +187,10 @@ export function parseGameDescription(raw?: string | null): string {
 
   let html = raw.trim();
 
-  // 1. Standardize line breaks and dividers
+  // 1. Standardize line breaks and dividers, collapsing duplicate consecutive <br> tags
   html = html.replace(/<hr\s*\/?>/gi, '<hr class="border-gray-800 my-2" />');
   html = html.replace(/<br\s*\/?>/gi, "<br />");
+  html = html.replace(/(<br\s*\/?>\s*){2,}/gi, "<br />");
 
   // 2. Standard formatting tags (b, strong, i, em, u)
   html = html.replace(/<b\b[^>]*>([\s\S]*?)<\/b>/gi, '<strong class="font-bold text-white">$1</strong>');
@@ -250,6 +251,10 @@ export function parseGameDescription(raw?: string | null): string {
     }
     return "";
   });
+
+  // 8. Final pass: collapse any leftover duplicate <br /> tags and trim leading/trailing breaks
+  html = html.replace(/(<br\s*\/?>\s*){2,}/gi, "<br />");
+  html = html.replace(/^(\s*<br\s*\/?>\s*)+|(\s*<br\s*\/?>\s*)+$/gi, "").trim();
 
   return html;
 }

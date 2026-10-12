@@ -20,6 +20,8 @@
   let error = $state<string | null>(null);
   let sampleCount = $state(0);
   let baseline = $state(0);
+  const gamesWon = $derived(Math.round(sampleCount * baseline));
+  const overallWpa = $derived(baseline - 0.5);
   let requestVersion = 0;
 
   // Item category toggles (default: only legendary items are shown)
@@ -200,13 +202,13 @@
         {@const pairedAugments = filterAndSortPartnersByKind(selected.partners, "augment", selected.games)}
         <section class="rounded-lg border border-gray-800 bg-gray-900/50 p-3 shadow-lg shrink-0 max-h-[300px] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-800">
           <div class="grid grid-cols-1 lg:grid-cols-12 gap-3">
-            <!-- 1. Selected Build Details & Description (No separate What It Does box) -->
-            <div class="lg:col-span-5 flex flex-col justify-between rounded-lg border border-gray-800/80 bg-gray-950/60 p-3">
+            <!-- 1. Selected Build Details & Description (No separate What It Does box, reduced width) -->
+            <div class="lg:col-span-4 flex flex-col justify-between rounded-lg border border-gray-800/80 bg-gray-950/60 p-2.5">
               <div>
                 <div class="flex items-start justify-between gap-2">
                   <div class="flex items-start gap-2.5 min-w-0">
                     {#if selected.icon_url}
-                      <img src={selected.icon_url} alt={selected.name} class="h-11 w-11 rounded-lg border border-gray-700 object-cover shrink-0 shadow-sm" />
+                      <img src={selected.icon_url} alt={selected.name} class="h-10 w-10 rounded-lg border border-gray-700 object-cover shrink-0 shadow-sm" />
                     {/if}
                     <div class="min-w-0 flex-1">
                       <div class="flex flex-wrap items-center gap-1.5">
@@ -228,7 +230,7 @@
                           <span class="capitalize text-gray-400 font-medium">{selected.item_class}</span>
                         {/if}
                         {#if selected.categories?.length}
-                          <span class="text-gray-500 truncate max-w-[140px]" title={selected.categories.join(", ")}>{selected.categories.slice(0, 2).join(", ")}</span>
+                          <span class="text-gray-500 truncate max-w-[120px]" title={selected.categories.join(", ")}>{selected.categories.slice(0, 2).join(", ")}</span>
                         {/if}
                       </div>
                     </div>
@@ -245,39 +247,39 @@
 
                 <!-- Description directly inside the card (no nested box/container) -->
                 {#if selected.description}
-                  <div class="mt-2.5 text-xs leading-relaxed text-gray-300 max-h-[125px] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-800 select-text">
+                  <div class="mt-2 text-xs leading-relaxed text-gray-300 max-h-[125px] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-800 select-text">
                     {@html parseGameDescription(selected.description)}
                   </div>
                 {/if}
               </div>
 
-              <!-- Info (WR, matches, WPA, etc.) underneath item description -->
-              <div class="mt-2.5 pt-2 border-t border-gray-800/80 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
-                <div class="flex items-center gap-1.5">
+              <!-- Info (WR, WPA, etc.) underneath item description -->
+              <div class="mt-2.5 pt-2 border-t border-gray-800/80 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                <div class="flex items-center gap-1">
                   <span class="text-gray-500 text-[10px] uppercase font-semibold">Record</span>
                   <span class="font-semibold text-gray-200">
-                    {scope === "compare" ? `${selected.personal_games ?? 0} matches · ${percent(selected.personal_win_rate ?? 0)} WR` : `${selected.games} matches · ${percent(selected.win_rate)} WR`}
+                    {scope === "compare" ? `${selected.personal_games ?? 0} · ${percent(selected.personal_win_rate ?? 0)} WR` : `${selected.games} · ${percent(selected.win_rate)} WR`}
                   </span>
                 </div>
-                <div class="flex items-center gap-1.5">
+                <div class="flex items-center gap-1">
                   <span class="text-gray-500 text-[10px] uppercase font-semibold">{scope === "compare" ? "Mine WPA" : "WPA"}</span>
                   <span class="font-bold {scope === "compare" ? (selected.personal_wpa ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400' : selected.wpa >= 0 ? 'text-emerald-400' : 'text-red-400'}">
                     {formatWpaPoints(scope === "compare" ? (selected.personal_wpa ?? 0) : selected.wpa)}
                   </span>
                 </div>
-                <div class="flex items-center gap-1.5">
+                <div class="flex items-center gap-1">
                   <span class="text-gray-500 text-[10px] uppercase font-semibold">KDA</span>
                   <span class="font-semibold text-gray-200">{averageKda(selected).toFixed(2)}</span>
                 </div>
-                <div class="flex items-center gap-1.5">
+                <div class="flex items-center gap-1">
                   <span class="text-gray-500 text-[10px] uppercase font-semibold">Avg Dmg</span>
                   <span class="font-semibold text-gray-200">{Math.round(selected.damage / Math.max(1, selected.games)).toLocaleString()}</span>
                 </div>
               </div>
             </div>
 
-            <!-- 2. "Best Matches" Combined Card (Champions, Items, Augments) -->
-            <div class="lg:col-span-7 flex flex-col rounded-lg border border-gray-800/80 bg-gray-950/60 p-3">
+            <!-- 2. "Best Matches" Combined Card (Champions, Items, Augments - Expanded, no gap between columns) -->
+            <div class="lg:col-span-8 flex flex-col rounded-lg border border-gray-800/80 bg-gray-950/60 p-3">
               <div class="flex items-center justify-between pb-2 border-b border-gray-800/80">
                 <div class="flex items-center gap-1.5">
                   <span class="icon-[heroicons--sparkles] h-4 w-4 text-purple-400"></span>
@@ -286,9 +288,9 @@
                 <span class="text-[10px] text-gray-500">Highest synergy & win rates</span>
               </div>
 
-              <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2.5 flex-1 min-h-0">
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-0 pt-2 flex-1 min-h-0 divide-y sm:divide-y-0 sm:divide-x divide-gray-800/60">
                 <!-- Champions Column -->
-                <div class="flex flex-col min-h-0">
+                <div class="flex flex-col min-h-0 sm:px-2.5 first:pl-0">
                   <h4 class="text-[10px] font-semibold uppercase tracking-wider text-cyan-400 mb-1.5 flex items-center gap-1">
                     <span class="icon-[heroicons--user] h-3 w-3"></span> Champions
                   </h4>
@@ -307,7 +309,7 @@
                           <p class="text-[10px] text-gray-400 truncate mt-0.5">
                             <span class="text-gray-300 font-medium">{percent(champion.win_rate)}</span>
                             <span class="text-gray-600 mx-0.5">·</span>
-                            <span>{champion.games} matches</span>
+                            <span>{champion.games}</span>
                             {#if champion.wpa !== undefined}
                               <span class="text-gray-600 mx-0.5">·</span>
                               <span class="{champion.wpa >= 0 ? 'text-emerald-400' : 'text-red-400'} font-medium">{formatWpa(champion.wpa)}</span>
@@ -322,7 +324,7 @@
                 </div>
 
                 <!-- Items Column -->
-                <div class="flex flex-col min-h-0">
+                <div class="flex flex-col min-h-0 sm:px-2.5">
                   <h4 class="text-[10px] font-semibold uppercase tracking-wider text-amber-400 mb-1.5 flex items-center gap-1">
                     <span class="icon-[heroicons--archive-box] h-3 w-3"></span> Items
                   </h4>
@@ -347,7 +349,7 @@
                           <p class="text-[10px] text-gray-400 truncate mt-0.5">
                             <span class="text-gray-300 font-medium">{percent(partner.win_rate)}</span>
                             <span class="text-gray-600 mx-0.5">·</span>
-                            <span>{partner.games} matches</span>
+                            <span>{partner.games}</span>
                             <span class="text-gray-600 mx-0.5">·</span>
                             <span class="{partner.wpa >= 0 ? 'text-emerald-400' : 'text-red-400'} font-medium">{formatWpa(partner.wpa)}</span>
                           </p>
@@ -369,7 +371,7 @@
                 </div>
 
                 <!-- Augments Column -->
-                <div class="flex flex-col min-h-0">
+                <div class="flex flex-col min-h-0 sm:px-2.5 last:pr-0">
                   <h4 class="text-[10px] font-semibold uppercase tracking-wider text-purple-400 mb-1.5 flex items-center gap-1">
                     <span class="icon-[heroicons--sparkles] h-3 w-3"></span> Augments
                   </h4>
@@ -396,7 +398,7 @@
                           <p class="text-[10px] text-gray-400 truncate mt-0.5">
                             <span class="text-gray-300 font-medium">{percent(partner.win_rate)}</span>
                             <span class="text-gray-600 mx-0.5">·</span>
-                            <span>{partner.games} matches</span>
+                            <span>{partner.games}</span>
                             <span class="text-gray-600 mx-0.5">·</span>
                             <span class="{partner.wpa >= 0 ? 'text-emerald-400' : 'text-red-400'} font-medium">{formatWpa(partner.wpa)}</span>
                           </p>
@@ -424,7 +426,12 @@
       <!-- Main Table Section (Spanning 100% Width) -->
       <section class="min-h-0 flex-1 overflow-auto rounded-lg border border-gray-800 bg-black/40 scrollbar-thin scrollbar-thumb-gray-800">
         <div class="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-2 border-b border-gray-800 bg-gray-900 px-3 py-2">
-          <div><h2 class="text-sm font-semibold text-white">Build performance</h2><p class="text-[11px] text-gray-500">{scope === "compare" ? "Compare your performance with the database" : `WPA = win-rate delta · baseline ${percent(baseline)}`} · {sampleCount} games {#if refreshing}· refreshing{/if}</p></div>
+          <div>
+            <h2 class="text-sm font-semibold text-white">Build performance</h2>
+            <p class="text-[11px] text-gray-400">
+              WR {gamesWon}/{sampleCount} ({percent(baseline)}) <span class="{overallWpa >= 0 ? 'text-emerald-400 font-semibold' : 'text-red-400 font-semibold'}">{formatWpaPoints(overallWpa)}</span>{#if refreshing} · refreshing{/if}
+            </p>
+          </div>
           <div class="flex flex-wrap items-center gap-2">
             <input
               value={search}
