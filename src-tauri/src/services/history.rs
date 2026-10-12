@@ -24,8 +24,6 @@ const CDRAGON_CHERRY_AUGMENTS_URL: &str =
     "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/cherry-augments.json";
 const CDRAGON_KIWI_AUGMENTS_URL: &str =
     "https://raw.communitydragon.org/latest/game/maps/modespecificdata/kiwi.bin.json";
-const CDRAGON_AUGMENT_ICON_BASE: &str =
-    "https://raw.communitydragon.org/latest/game/assets/ux/kiwi/augments/icons";
 const CDRAGON_CHERRY_AUGMENT_ICON_BASE: &str =
     "https://raw.communitydragon.org/latest/game/assets/ux/cherry/augments/icons";
 
@@ -117,7 +115,7 @@ fn augment_resolution_cache_path() -> PathBuf {
     history_data_dir()
         .join("cache")
         .join("match-history")
-        .join("augments_v3.json")
+        .join("augments_v4.json")
 }
 
 fn read_augment_resolution_cache() -> HashMap<String, MatchHistoryAugmentInfo> {
@@ -180,13 +178,24 @@ fn normalize_augment_icon_url(icon_path: &str) -> String {
     if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
         return trimmed.to_lowercase();
     }
-    let lower = trimmed.to_lowercase();
-    if let Some(pos) = lower.find("/assets/") {
-        let relative = &lower[pos + "/assets/".len()..];
-        return format!("https://raw.communitydragon.org/latest/game/assets/{relative}");
+
+    let mut path = trimmed.to_lowercase();
+    const PREFIX: &str = "/lol-game-data/assets/";
+    if path.starts_with(PREFIX) {
+        path = path[PREFIX.len()..].to_string();
     }
-    let file_name = lower.rsplit('/').next().unwrap_or(&lower);
-    format!("{CDRAGON_CHERRY_AUGMENT_ICON_BASE}/{file_name}")
+
+    loop {
+        if let Some(stripped) = path.strip_prefix('/') {
+            path = stripped.to_string();
+        } else if let Some(stripped) = path.strip_prefix("assets/") {
+            path = stripped.to_string();
+        } else {
+            break;
+        }
+    }
+
+    format!("https://raw.communitydragon.org/latest/game/assets/{path}")
 }
 
 #[derive(Clone, Debug)]

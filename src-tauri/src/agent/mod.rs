@@ -1924,48 +1924,6 @@ fn reset_fetching_global_accounts(path: &PathBuf) -> Result<usize, String> {
         .map_err(|error| format!("failed resetting in-flight global accounts: {error}"))
 }
 
-fn load_visited_global_accounts(path: &PathBuf) -> Result<HashSet<String>, String> {
-    let connection = open_connection(path).map_err(|error| {
-        format!("failed opening global ARAM database for visited accounts: {error}")
-    })?;
-    let mut statement = connection
-        .prepare("SELECT puuid FROM discovered_accounts WHERE status IN ('complete', 'failed')")
-        .map_err(|error| format!("failed preparing visited accounts query: {error}"))?;
-    let rows = statement
-        .query_map([], |row| row.get::<_, String>(0))
-        .map_err(|error| format!("failed querying visited accounts: {error}"))?;
-    let mut visited = HashSet::new();
-    for row in rows {
-        if let Ok(puuid) = row {
-            visited.insert(puuid);
-        }
-    }
-    Ok(visited)
-}
-
-fn load_queued_global_accounts(path: &PathBuf, limit: usize) -> Result<Vec<String>, String> {
-    let connection = open_connection(path).map_err(|error| {
-        format!("failed opening global ARAM database for queued accounts: {error}")
-    })?;
-    let mut statement = connection
-        .prepare(
-            "SELECT puuid FROM discovered_accounts WHERE status = 'queued' ORDER BY discovered_at ASC LIMIT ?1",
-        )
-        .map_err(|error| format!("failed preparing queued accounts query: {error}"))?;
-    let rows = statement
-        .query_map(rusqlite::params![limit as i64], |row| {
-            row.get::<_, String>(0)
-        })
-        .map_err(|error| format!("failed querying queued accounts: {error}"))?;
-    let mut accounts = Vec::new();
-    for row in rows {
-        if let Ok(puuid) = row {
-            accounts.push(puuid);
-        }
-    }
-    Ok(accounts)
-}
-
 fn claim_next_queued_account(path: &PathBuf) -> Result<Option<String>, String> {
     let connection = open_connection(path).map_err(|error| {
         format!("failed opening global ARAM database to claim account: {error}")
