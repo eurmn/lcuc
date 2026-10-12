@@ -433,29 +433,6 @@
     onToggleFavoriteChampion={handleToggleFavorite}
   />
 
-  {#if agentOperations.length > 0}
-    <div class="shrink-0 border-b border-cyan-900/70 bg-cyan-950/80 px-4 py-2 shadow-lg">
-      <div class="mx-auto flex max-w-5xl flex-col gap-1.5">
-        {#each agentOperations as operation (operation.id)}
-          <div class="flex items-center gap-3 text-[11px] text-cyan-100">
-            <span class="min-w-0 flex-1 truncate">{operation.message}</span>
-            {#if operation.current !== null && operation.total !== null}
-              <span class="shrink-0 tabular-nums text-cyan-300">{operation.current}/{operation.total}</span>
-            {/if}
-          </div>
-          {#if operation.current !== null && operation.total !== null && operation.total > 0}
-            <div class="h-1.5 overflow-hidden rounded-full bg-cyan-950">
-              <div
-                class="h-full rounded-full bg-cyan-400 transition-[width] duration-300"
-                style={`width: ${Math.min(100, Math.round((operation.current / operation.total) * 100))}%`}
-              ></div>
-            </div>
-          {/if}
-        {/each}
-      </div>
-    </div>
-  {/if}
-
   <!-- Main App Shell -->
   <div
     id="app-shell"
@@ -521,11 +498,53 @@
                   Statistics
                 </h1>
                 <div class="flex items-center gap-2">
+                  {#if agentOperations.length > 0}
+                    <div class="relative group">
+                      <button
+                        type="button"
+                        class="flex h-8 w-8 items-center justify-center rounded-md border border-cyan-700/60 bg-cyan-950/60 text-cyan-300 hover:border-cyan-500 hover:text-cyan-200 transition-colors"
+                        title={agentOperations.map((o) => `${o.message}${o.current !== null && o.total !== null ? ` (${o.current}/${o.total})` : ''}`).join('\n')}
+                        aria-label="Background agent operation in progress"
+                      >
+                        <span class="relative flex h-3 w-3">
+                          <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-cyan-400 opacity-75"></span>
+                          <span class="relative inline-flex h-3 w-3 rounded-full bg-cyan-500"></span>
+                        </span>
+                      </button>
+                      <!-- Tooltip dropdown on hover/focus -->
+                      <div class="pointer-events-none absolute left-0 top-9 z-30 hidden w-64 rounded-lg border border-cyan-800/80 bg-gray-950/95 p-2.5 text-[11px] text-cyan-100 shadow-2xl backdrop-blur group-hover:block group-focus-within:block">
+                        <div class="font-semibold text-cyan-300 mb-1 flex items-center justify-between">
+                          <span>Active Operations</span>
+                          <span class="text-[10px] text-cyan-400">{agentOperations.length}</span>
+                        </div>
+                        {#each agentOperations as operation (operation.id)}
+                          <div class="py-1 border-t border-gray-800">
+                            <div class="flex items-center justify-between gap-2">
+                              <span class="truncate">{operation.message}</span>
+                              {#if operation.current !== null && operation.total !== null}
+                                <span class="tabular-nums text-cyan-300 shrink-0">{operation.current}/{operation.total}</span>
+                              {/if}
+                            </div>
+                            {#if operation.current !== null && operation.total !== null && operation.total > 0}
+                              <div class="mt-1 h-1 overflow-hidden rounded-full bg-cyan-950">
+                                <div
+                                  class="h-full rounded-full bg-cyan-400 transition-[width] duration-200"
+                                  style={`width: ${Math.min(100, Math.round((operation.current / operation.total) * 100))}%`}
+                                ></div>
+                              </div>
+                            {/if}
+                          </div>
+                        {/each}
+                      </div>
+                    </div>
+                  {/if}
+
                   <div class="flex rounded-lg border border-gray-700 bg-gray-900 p-0.5 text-xs">
                     {#each [["personal", "Mine"], ["compare", "Compare"]] as option}
                       <button type="button" class="rounded-md px-2.5 py-1.5 transition-colors {statisticsScope === option[0] ? 'bg-cyan-700 text-white' : 'text-gray-400 hover:text-white'}" onclick={() => handleStatisticsScopeChange(option[0] as "personal" | "compare")}>{option[1]}</button>
                     {/each}
                   </div>
+
                   <div class="relative">
                     <button type="button" class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-gray-700 p-0 text-gray-400 hover:text-white" title="Global database settings" aria-label="Global database settings" onclick={() => (statisticsConfigOpen = !statisticsConfigOpen)}>
                       <span class="icon-[heroicons--cog-6-tooth] h-4 w-4"></span>
@@ -546,6 +565,7 @@
                       </div>
                     {/if}
                   </div>
+
                   <div class="flex rounded-lg border border-gray-700 bg-gray-900 p-0.5 text-xs">
                     <button type="button" class="rounded-md px-3 py-1.5 transition-colors {statisticsPerspective === 'champions' ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-white'}" onclick={() => handleStatisticsPerspectiveChange("champions")}>Champions</button>
                     <button type="button" class="rounded-md px-3 py-1.5 transition-colors {statisticsPerspective === 'builds' ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-white'}" onclick={() => handleStatisticsPerspectiveChange("builds")}>Builds</button>
