@@ -199,14 +199,14 @@
         {@const pairedItems = filterAndSortPartnersByKind(selected.partners, "item", selected.games)}
         {@const pairedAugments = filterAndSortPartnersByKind(selected.partners, "augment", selected.games)}
         <section class="rounded-lg border border-gray-800 bg-gray-900/50 p-3 shadow-lg shrink-0 max-h-[300px] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-800">
-          <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
-            <!-- 1. Identity, Tier/Cost & What It Does -->
-            <div class="flex flex-col justify-between rounded-lg border border-gray-800/80 bg-gray-950/60 p-3">
+          <div class="grid grid-cols-1 lg:grid-cols-12 gap-3">
+            <!-- 1. Selected Build Details & Description (No separate What It Does box) -->
+            <div class="lg:col-span-5 flex flex-col justify-between rounded-lg border border-gray-800/80 bg-gray-950/60 p-3">
               <div>
                 <div class="flex items-start justify-between gap-2">
                   <div class="flex items-start gap-2.5 min-w-0">
                     {#if selected.icon_url}
-                      <img src={selected.icon_url} alt={selected.name} class="h-10 w-10 rounded-lg border border-gray-700 object-cover shrink-0 shadow-sm" />
+                      <img src={selected.icon_url} alt={selected.name} class="h-11 w-11 rounded-lg border border-gray-700 object-cover shrink-0 shadow-sm" />
                     {/if}
                     <div class="min-w-0 flex-1">
                       <div class="flex flex-wrap items-center gap-1.5">
@@ -243,146 +243,178 @@
                   </button>
                 </div>
 
+                <!-- Description directly inside the card (no nested box/container) -->
                 {#if selected.description}
-                  <div class="mt-2.5 rounded-md border border-gray-800/90 bg-black/60 p-2.5 shadow-inner">
-                    <div class="mb-1 flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider text-purple-400">
-                      <span class="icon-[heroicons--sparkles] h-3 w-3"></span>
-                      What It Does
-                    </div>
-                    <div class="text-[11px] leading-relaxed text-gray-300 max-h-[120px] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-800 select-text">
-                      {@html parseGameDescription(selected.description)}
-                    </div>
+                  <div class="mt-2.5 text-xs leading-relaxed text-gray-300 max-h-[125px] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-800 select-text">
+                    {@html parseGameDescription(selected.description)}
                   </div>
                 {/if}
               </div>
-            </div>
 
-            <!-- 2. Performance Metrics & Top Champions -->
-            <div class="flex flex-col rounded-lg border border-gray-800/80 bg-gray-950/60 p-3">
-              <dl class="grid grid-cols-2 gap-2 pb-2.5 border-b border-gray-800 text-[11px]">
-                <div class="rounded bg-gray-900/60 p-1.5 border border-gray-800/50">
-                  <dt class="text-[10px] uppercase text-gray-500">Games · WR</dt>
-                  <dd class="font-semibold text-gray-200 truncate">{scope === "compare" ? `${selected.personal_games ?? 0}g · ${percent(selected.personal_win_rate ?? 0)}` : `${selected.games}g · ${percent(selected.win_rate)}`}</dd>
+              <!-- Info (WR, matches, WPA, etc.) underneath item description -->
+              <div class="mt-2.5 pt-2 border-t border-gray-800/80 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+                <div class="flex items-center gap-1.5">
+                  <span class="text-gray-500 text-[10px] uppercase font-semibold">Record</span>
+                  <span class="font-semibold text-gray-200">
+                    {scope === "compare" ? `${selected.personal_games ?? 0} matches · ${percent(selected.personal_win_rate ?? 0)} WR` : `${selected.games} matches · ${percent(selected.win_rate)} WR`}
+                  </span>
                 </div>
-                <div class="rounded bg-gray-900/60 p-1.5 border border-gray-800/50">
-                  <dt class="text-[10px] uppercase text-gray-500">{scope === "compare" ? "Mine WPA" : "WPA"}</dt>
-                  <dd class="font-semibold {scope === "compare" ? (selected.personal_wpa ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400' : selected.wpa >= 0 ? 'text-emerald-400' : 'text-red-400'}">
+                <div class="flex items-center gap-1.5">
+                  <span class="text-gray-500 text-[10px] uppercase font-semibold">{scope === "compare" ? "Mine WPA" : "WPA"}</span>
+                  <span class="font-bold {scope === "compare" ? (selected.personal_wpa ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400' : selected.wpa >= 0 ? 'text-emerald-400' : 'text-red-400'}">
                     {formatWpaPoints(scope === "compare" ? (selected.personal_wpa ?? 0) : selected.wpa)}
-                  </dd>
+                  </span>
                 </div>
-                <div class="rounded bg-gray-900/60 p-1.5 border border-gray-800/50">
-                  <dt class="text-[10px] uppercase text-gray-500">KDA Ratio</dt>
-                  <dd class="font-semibold text-gray-200">{averageKda(selected).toFixed(2)}</dd>
+                <div class="flex items-center gap-1.5">
+                  <span class="text-gray-500 text-[10px] uppercase font-semibold">KDA</span>
+                  <span class="font-semibold text-gray-200">{averageKda(selected).toFixed(2)}</span>
                 </div>
-                <div class="rounded bg-gray-900/60 p-1.5 border border-gray-800/50">
-                  <dt class="text-[10px] uppercase text-gray-500">Avg Damage</dt>
-                  <dd class="font-semibold text-gray-200">{Math.round(selected.damage / Math.max(1, selected.games)).toLocaleString()}</dd>
+                <div class="flex items-center gap-1.5">
+                  <span class="text-gray-500 text-[10px] uppercase font-semibold">Avg Dmg</span>
+                  <span class="font-semibold text-gray-200">{Math.round(selected.damage / Math.max(1, selected.games)).toLocaleString()}</span>
                 </div>
-              </dl>
+              </div>
+            </div>
 
-              <div class="mt-2.5 flex-1 min-h-0">
-                <h3 class="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-400 flex items-center justify-between">
-                  <span>Top Champions</span>
-                  <span class="text-[9px] text-gray-500 font-normal">WPA</span>
-                </h3>
-                <div class="space-y-1 overflow-y-auto max-h-[110px] scrollbar-thin scrollbar-thumb-gray-800 pr-1">
-                  {#each selected.champions.slice(0, 4) as champion (champion.id)}
-                    <div class="flex items-center justify-between gap-1.5 text-[11px]">
-                      <div class="flex min-w-0 items-center gap-1.5">
+            <!-- 2. "Best Matches" Combined Card (Champions, Items, Augments) -->
+            <div class="lg:col-span-7 flex flex-col rounded-lg border border-gray-800/80 bg-gray-950/60 p-3">
+              <div class="flex items-center justify-between pb-2 border-b border-gray-800/80">
+                <div class="flex items-center gap-1.5">
+                  <span class="icon-[heroicons--sparkles] h-4 w-4 text-purple-400"></span>
+                  <h3 class="text-xs font-bold uppercase tracking-wider text-white">Best Matches</h3>
+                </div>
+                <span class="text-[10px] text-gray-500">Highest synergy & win rates</span>
+              </div>
+
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2.5 flex-1 min-h-0">
+                <!-- Champions Column -->
+                <div class="flex flex-col min-h-0">
+                  <h4 class="text-[10px] font-semibold uppercase tracking-wider text-cyan-400 mb-1.5 flex items-center gap-1">
+                    <span class="icon-[heroicons--user] h-3 w-3"></span> Champions
+                  </h4>
+                  <div class="space-y-1.5 overflow-y-auto max-h-[180px] scrollbar-thin scrollbar-thumb-gray-800 pr-1 flex-1">
+                    {#each selected.champions.slice(0, 5) as champion (champion.id)}
+                      <div class="flex items-center gap-2 p-1 rounded-md hover:bg-gray-800/50 transition-colors">
                         {#if champion.icon_url}
-                          <img src={champion.icon_url} alt={champion.name} class="h-4 w-4 shrink-0 rounded-full object-cover" />
+                          <img src={champion.icon_url} alt={champion.name} class="h-7 w-7 shrink-0 rounded-full object-cover border border-gray-700 shadow-sm" />
+                        {:else}
+                          <div class="h-7 w-7 shrink-0 rounded-full bg-gray-800 border border-gray-700 flex items-center justify-center text-[10px] font-bold text-gray-300">
+                            {champion.name.slice(0, 1)}
+                          </div>
                         {/if}
-                        <span class="truncate font-medium text-gray-300" title={champion.name}>{champion.name}</span>
+                        <div class="min-w-0 flex-1">
+                          <p class="truncate font-medium text-xs text-gray-200" title={champion.name}>{champion.name}</p>
+                          <p class="text-[10px] text-gray-400 truncate mt-0.5">
+                            <span class="text-gray-300 font-medium">{percent(champion.win_rate)}</span>
+                            <span class="text-gray-600 mx-0.5">·</span>
+                            <span>{champion.games} matches</span>
+                            {#if champion.wpa !== undefined}
+                              <span class="text-gray-600 mx-0.5">·</span>
+                              <span class="{champion.wpa >= 0 ? 'text-emerald-400' : 'text-red-400'} font-medium">{formatWpa(champion.wpa)}</span>
+                            {/if}
+                          </p>
+                        </div>
                       </div>
-                      <span class="shrink-0 text-right text-[10px]">
-                        <span class="text-gray-400 mr-1">{champion.games}g</span>
-                        <span class={champion.wpa >= 0 ? "text-emerald-400 font-medium" : "text-red-400 font-medium"}>{formatWpa(champion.wpa)}</span>
-                      </span>
-                    </div>
-                  {:else}
-                    <span class="text-gray-600 text-[11px] italic">No champion data</span>
-                  {/each}
+                    {:else}
+                      <span class="text-gray-600 text-[11px] italic py-2">No champion data</span>
+                    {/each}
+                  </div>
                 </div>
-              </div>
-            </div>
 
-            <!-- 3. Often Paired Items -->
-            <div class="flex flex-col rounded-lg border border-gray-800/80 bg-gray-950/60 p-3">
-              <h3 class="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-amber-400">
-                <span class="icon-[heroicons--archive-box] h-3.5 w-3.5"></span>
-                Often Paired Items
-              </h3>
-              <div class="space-y-1.5 overflow-y-auto max-h-[160px] scrollbar-thin scrollbar-thumb-gray-800 pr-1 flex-1">
-                {#each pairedItems as partner (partner.id)}
-                  {@const pDomId = cleanDomId(`item-${partner.id}`)}
-                  <div id={pDomId} class="flex items-center justify-between gap-1.5 text-[11px] hover:bg-gray-800/50 p-1 rounded transition-colors cursor-help">
-                    <div class="flex min-w-0 items-center gap-1.5">
-                      {#if partner.icon_url}
-                        <img src={partner.icon_url} alt={partner.name} class="h-4 w-4 shrink-0 rounded object-cover" />
-                      {/if}
-                      <span class="truncate font-medium text-gray-300" title={partner.name}>{partner.name}</span>
-                    </div>
-                    <span class="shrink-0 text-right text-[10px]">
-                      <span class="text-gray-500 mr-1">{partner.games}g</span>
-                      <span class={partner.wpa >= 0 ? "text-emerald-400 font-medium" : "text-red-400 font-medium"}>{formatWpa(partner.wpa)}</span>
-                    </span>
+                <!-- Items Column -->
+                <div class="flex flex-col min-h-0">
+                  <h4 class="text-[10px] font-semibold uppercase tracking-wider text-amber-400 mb-1.5 flex items-center gap-1">
+                    <span class="icon-[heroicons--archive-box] h-3 w-3"></span> Items
+                  </h4>
+                  <div class="space-y-1.5 overflow-y-auto max-h-[180px] scrollbar-thin scrollbar-thumb-gray-800 pr-1 flex-1">
+                    {#each pairedItems.slice(0, 5) as partner (partner.id)}
+                      {@const pDomId = cleanDomId(`item-${partner.id}`)}
+                      <div id={pDomId} class="flex items-center gap-2 p-1 rounded-md hover:bg-gray-800/50 transition-colors cursor-help">
+                        {#if partner.icon_url}
+                          <img src={partner.icon_url} alt={partner.name} class="h-7 w-7 shrink-0 rounded-md object-cover border border-gray-700 shadow-sm" />
+                        {:else}
+                          <div class="h-7 w-7 shrink-0 rounded-md bg-gray-800 border border-gray-700 flex items-center justify-center text-[10px] font-bold text-gray-300">
+                            {partner.name.slice(0, 1)}
+                          </div>
+                        {/if}
+                        <div class="min-w-0 flex-1">
+                          <div class="flex items-center gap-1">
+                            <p class="truncate font-medium text-xs text-gray-200" title={partner.name}>{partner.name}</p>
+                            {#if (partner.price_total ?? 0) > 0}
+                              <span class="text-[9px] text-yellow-500 shrink-0">{(partner.price_total ?? 0).toLocaleString()}g</span>
+                            {/if}
+                          </div>
+                          <p class="text-[10px] text-gray-400 truncate mt-0.5">
+                            <span class="text-gray-300 font-medium">{percent(partner.win_rate)}</span>
+                            <span class="text-gray-600 mx-0.5">·</span>
+                            <span>{partner.games} matches</span>
+                            <span class="text-gray-600 mx-0.5">·</span>
+                            <span class="{partner.wpa >= 0 ? 'text-emerald-400' : 'text-red-400'} font-medium">{formatWpa(partner.wpa)}</span>
+                          </p>
+                        </div>
+                      </div>
+                      <GameEntityPopover
+                        targetId={pDomId}
+                        name={partner.name}
+                        iconUrl={partner.icon_url}
+                        description={partner.description}
+                        itemClass={partner.item_class}
+                        priceTotal={partner.price_total}
+                        placement="bottom"
+                      />
+                    {:else}
+                      <span class="text-gray-600 text-[11px] italic py-2">No item matches</span>
+                    {/each}
                   </div>
-                  <GameEntityPopover
-                    targetId={pDomId}
-                    name={partner.name}
-                    iconUrl={partner.icon_url}
-                    description={partner.description}
-                    itemClass={partner.item_class}
-                    priceTotal={partner.price_total}
-                    placement="bottom"
-                  />
-                {:else}
-                  <div class="flex h-full items-center justify-center text-center text-gray-600 text-[11px] italic py-4">
-                    No item synergies found
-                  </div>
-                {/each}
-              </div>
-            </div>
+                </div>
 
-            <!-- 4. Often Paired Augments -->
-            <div class="flex flex-col rounded-lg border border-gray-800/80 bg-gray-950/60 p-3">
-              <h3 class="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-purple-400">
-                <span class="icon-[heroicons--sparkles] h-3.5 w-3.5"></span>
-                Often Paired Augments
-              </h3>
-              <div class="space-y-1.5 overflow-y-auto max-h-[160px] scrollbar-thin scrollbar-thumb-gray-800 pr-1 flex-1">
-                {#each pairedAugments as partner (partner.id)}
-                  {@const pDomId = cleanDomId(`aug-${partner.id}`)}
-                  <div id={pDomId} class="flex items-center justify-between gap-1.5 text-[11px] hover:bg-gray-800/50 p-1 rounded transition-colors cursor-help">
-                    <div class="flex min-w-0 items-center gap-1.5">
-                      {#if partner.icon_url}
-                        <img src={partner.icon_url} alt={partner.name} class="h-4 w-4 shrink-0 rounded object-cover" />
-                      {/if}
-                      <span class="truncate font-medium text-gray-300" title={partner.name}>{partner.name}</span>
-                      {#if partner.rarity}
-                        <span class="shrink-0 rounded px-1 py-0.2 text-[8px] font-bold uppercase tracking-wider {partner.rarity === 'silver' ? 'bg-slate-700/60 text-slate-300' : partner.rarity === 'gold' ? 'bg-yellow-950/60 text-yellow-300' : 'bg-fuchsia-950/60 text-fuchsia-300'}">
-                          {partner.rarity.slice(0, 1)}
-                        </span>
-                      {/if}
-                    </div>
-                    <span class="shrink-0 text-right text-[10px]">
-                      <span class="text-gray-500 mr-1">{partner.games}g</span>
-                      <span class={partner.wpa >= 0 ? "text-emerald-400 font-medium" : "text-red-400 font-medium"}>{formatWpa(partner.wpa)}</span>
-                    </span>
+                <!-- Augments Column -->
+                <div class="flex flex-col min-h-0">
+                  <h4 class="text-[10px] font-semibold uppercase tracking-wider text-purple-400 mb-1.5 flex items-center gap-1">
+                    <span class="icon-[heroicons--sparkles] h-3 w-3"></span> Augments
+                  </h4>
+                  <div class="space-y-1.5 overflow-y-auto max-h-[180px] scrollbar-thin scrollbar-thumb-gray-800 pr-1 flex-1">
+                    {#each pairedAugments.slice(0, 5) as partner (partner.id)}
+                      {@const pDomId = cleanDomId(`aug-${partner.id}`)}
+                      <div id={pDomId} class="flex items-center gap-2 p-1 rounded-md hover:bg-gray-800/50 transition-colors cursor-help">
+                        {#if partner.icon_url}
+                          <img src={partner.icon_url} alt={partner.name} class="h-7 w-7 shrink-0 rounded-md object-cover border border-gray-700 shadow-sm" />
+                        {:else}
+                          <div class="h-7 w-7 shrink-0 rounded-md bg-gray-800 border border-gray-700 flex items-center justify-center text-[10px] font-bold text-gray-300">
+                            {partner.name.slice(0, 1)}
+                          </div>
+                        {/if}
+                        <div class="min-w-0 flex-1">
+                          <div class="flex items-center gap-1">
+                            <p class="truncate font-medium text-xs text-gray-200" title={partner.name}>{partner.name}</p>
+                            {#if partner.rarity}
+                              <span class="shrink-0 rounded px-1 text-[8px] font-bold uppercase tracking-wider {partner.rarity === 'silver' ? 'bg-slate-700/60 text-slate-300' : partner.rarity === 'gold' ? 'bg-yellow-950/60 text-yellow-300' : 'bg-fuchsia-950/60 text-fuchsia-300'}">
+                                {partner.rarity.slice(0, 1)}
+                              </span>
+                            {/if}
+                          </div>
+                          <p class="text-[10px] text-gray-400 truncate mt-0.5">
+                            <span class="text-gray-300 font-medium">{percent(partner.win_rate)}</span>
+                            <span class="text-gray-600 mx-0.5">·</span>
+                            <span>{partner.games} matches</span>
+                            <span class="text-gray-600 mx-0.5">·</span>
+                            <span class="{partner.wpa >= 0 ? 'text-emerald-400' : 'text-red-400'} font-medium">{formatWpa(partner.wpa)}</span>
+                          </p>
+                        </div>
+                      </div>
+                      <GameEntityPopover
+                        targetId={pDomId}
+                        name={partner.name}
+                        iconUrl={partner.icon_url}
+                        description={partner.description}
+                        rarity={partner.rarity}
+                        placement="bottom"
+                      />
+                    {:else}
+                      <span class="text-gray-600 text-[11px] italic py-2">No augment matches</span>
+                    {/each}
                   </div>
-                  <GameEntityPopover
-                    targetId={pDomId}
-                    name={partner.name}
-                    iconUrl={partner.icon_url}
-                    description={partner.description}
-                    rarity={partner.rarity}
-                    placement="bottom"
-                  />
-                {:else}
-                  <div class="flex h-full items-center justify-center text-center text-gray-600 text-[11px] italic py-4">
-                    No augment synergies found
-                  </div>
-                {/each}
+                </div>
               </div>
             </div>
           </div>
