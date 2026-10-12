@@ -1,122 +1,92 @@
-# Current Project State: LCU Companion (Tauri + Svelte 5 Desktop Architecture)
+# Current Project State: LCU Companion
 
-This document provides a comprehensive snapshot of the current state of **LCU Companion**, outlining the architecture, tech stack, directory structure, active features, and command integrations.
-
----
-
-## 1. Architecture Overview
-
-LCU Companion is a high-performance desktop application built with **Tauri 2.0 (Rust backend) and Svelte 5 (TypeScript frontend)**.
-
-> **Architecture direction (2026-10-10):** The application is being split into a Tauri UI process and a separately running Rust LCU Companion Agent. The agent will own LCU discovery, websocket/REST synchronization, post-game collection, statistics processing, and the canonical SQLite database. See [`BACKEND_ARCHITECTURE.md`](./BACKEND_ARCHITECTURE.md) and [`@llm/PLAN.md`](../../PLAN.md). The first process/IPC slice is implemented; full cutover is not yet complete.
-
-> **First implementation slice:** A separate agent binary, authenticated loopback IPC, agent SQLite bootstrap/import foundation, Tauri supervision, exhaustive paginated history and shared detail-cache backfill, recent-history reconciliation, an agent websocket listener, and shared application logging now exist. The existing Tauri services remain active until the compatibility cutover is complete.
-
-> **Stabilization snapshot (2026-10-11):** Server-owned Statistics requests
-> now support Rust-side aggregation, filtering, sorting, pagination, and a
-> short-lived query cache. Agent SQLite connections use busy timeouts and
-> operation-scoped connections, while statistics preparation and global detail
-> writes are moved off async tasks with `spawn_blocking`. The collector still
-> needs phase-level profiling and durable checkpoints: current logs show a
-> completed account scan followed by reconciliation of 20 recent games, and
-> the time spent after that line is not yet attributed to a specific phase.
-
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│                        Tauri Desktop Application                       │
-├───────────────────────────────────┬────────────────────────────────────┤
-│       Embedded Frontend           │          Rust Backend              │
-│  (Svelte 5 + Vite + TypeScript)   │       (src-tauri/src/)             │
-│                                   │                                    │
-│  • Svelte 5 Runes ($state, etc.)  │  • Multi-Tiered LCU Discovery:     │
-│  • Strict TypeScript Types        │    - Lockfile parsing              │
-│  • Tailwind CSS 4.0 Theming       │    - sysinfo Process scanning      │
-│  • Typed Tauri IPC Wrappers       │  • LCU Client (reqwest + TLS)      │
-│    (invoke("api_*"))              │  • CDragon Rune Cache              │
-│  • Thematic League Path Colors    │  • SQLite Store (rusqlite)         │
-│                                   │  • Strongly Typed JSON Endpoints   │
-└───────────────────────────────────┴────────────────────────────────────┘
-```
+Date: 2026-10-11
+Repository: eurmn/lcuc
+Architecture: Tauri 2.0 (Rust) + Svelte 5 (TypeScript) Desktop App + Standalone Agent (`lcu-companion-agent`)
 
 ---
 
-## 2. Directory Structure
+## 1. Architecture & Current State
 
+LCU Companion runs as a client-rendered desktop container with a dedicated background data/crawler agent:
+
+```text
+Svelte 5 (UI) -> Tauri IPC Facade -> Authenticated Loopback IPC (JSON-lines)
+                                         -> Standalone Rust Agent (`lcu-companion-agent.exe`)
+                                         -> SQLite (agent.db & global-aram.db)
+                                         -> LCU REST & WebSocket (127.0.0.1:<port>)
 ```
-lcu-companion/
-├── index.html                      # Embedded desktop frontend entrypoint (<div id="app">)
-├── package.json                    # Frontend dependencies (svelte 5, @tauri-apps/api, tailwindcss v4)
-├── svelte.config.js                # Svelte compiler configuration with vitePreprocess
-├── vite.config.ts                  # Vite build pipeline with svelte() and @tailwindcss/vite
-├── tsconfig.json                   # TypeScript configuration
-├── src/
-│   ├── main.ts                     # Svelte 5 mount(App, { target: ... }) bootstrap
-│   ├── App.svelte                  # Root component (TitleBar, RunesSidebar, RuneCanvas)
-│   ├── styles.css                  # Tailwind CSS v4 entrypoint with custom scrollbar
-│   └── lib/
-│       ├── api/                    # Typed Tauri invoke wrappers (profile.ts, runes.ts, client.ts)
-│       ├── components/             # Reactive UI components (TitleBar, ProfileCard, sidebar, runes)
-│       ├── types/                  # TypeScript interface definitions (profile.ts, runes.ts)
-│       └── utils/                  # Utility helpers & rune theme color palettes (theme.ts)
-└── src-tauri/
-    ├── Cargo.toml                  # Rust dependencies (tauri, reqwest, rusqlite, sysinfo, tokio)
-    ├── tauri.conf.json             # Tauri 2.0 configuration (1280x720 window, withGlobalTauri)
-    └── src/
-        ├── main.rs                 # Windows desktop application entrypoint
-        ├── lib.rs                  # Tauri builder & command handler registrations
-        ├── models/                 # Strongly-typed domain models
-        │   ├── database.rs         # SQLite entity models
-        │   ├── lcu.rs              # LCU API request/response structures
-        │   └── runes.rs            # RuneTreePayload, RuneSlot, RuneOption, StyleTree, etc.
-        ├── services/               # Core domain & external communication logic
-        │   ├── lcu_client.rs       # Multi-tiered lockfile & process scanner, TLS client
-        │   ├── summoner.rs         # Summoner profile, regalia borders, challenge tier
-        │   ├── rune_tree.rs        # CommunityDragon perk cache, client pages, tree builder
-        │   ├── rune_store.rs       # SQLite repository (schema init, save, get, list, delete)
-        │   └── friends.rs          # Whitelist check & friend management
-        └── commands/               # #[tauri::command] typed JSON IPC endpoints
-            ├── profile.rs          # api_summoner_profile, api_profile_challenge_tier
-            ├── runes.rs            # api_runes_overview, api_rune_tree_current, api_rune_tree_select_perk, etc.
-            └── friends.rs          # api_remove_friends
-```
+
+- **Frontend**: Svelte 5 (Runes), Tailwind CSS v4, Flowbite-Svelte patterns, typed IPC wrappers in `src/lib/api/agent.ts`.
+- **Backend / Tauri**: Supervised child process management via `src-tauri/src/agent_supervisor.rs`.
+- **Standalone Agent**: `src-tauri/src/agent/mod.rs` owns all data collection, SQLite operations, global ARAM crawling, precomputed projections, and statistics aggregation.
 
 ---
 
-## 3. Active Features & Verified Endpoints
+## 2. Databases Owned by Agent
 
-### A. Real-Time Summoner Profile Card
-- **Endpoints**: `api_summoner_profile`, `api_profile_challenge_tier`
-- **Data Model**: `SummonerProfile` and `ChallengeTierProfile`
-- Displays Summoner Riot ID, profile icon from CDragon, level, and ranked challenge token.
+Located in `%LOCALAPPDATA%\lcu-companion\`:
 
-### B. Dual-Section Runes Sidebar
-- **Endpoint**: `api_runes_overview`
-- **League Client Pages**: Lists live client pages with active indicator and one-click import into SQLite (`api_import_client_page`).
-- **Companion Saved Runes (SQLite)**: Lists saved pages with primary style icons, badges, creation dates, and delete actions (`api_delete_runeset`).
+1. `agent.db`:
+   - `accounts`, `recent_games`, `game_build_facts`
+   - `statistics_projections` (precomputed aggregate metrics cached by kind, role, rank)
+2. `global-aram.db`:
+   - `discovered_accounts` (status tracking: `queued`, `fetching`, `complete`, `failed`, indexed)
+   - `aram_games`, `aram_build_facts`
+   - `statistics_projections` (global precomputed aggregate metrics)
+   - Configuration table for target limits and crawler state
 
-### C. Center Rune Tree Canvas
-- **Endpoints**: `api_rune_tree_current`, `api_rune_tree_client`, `api_rune_tree_saved`, `api_rune_tree_select_perk`, `api_save_rune_tree`, `api_export_saved_rune_page`.
-- Renders full CDragon interactive perk tree with keystones, standard perk rows, and 3 rows of stat mods.
-- Supports both View Mode (highlights active runes and dims unselected options) and Edit Mode (live perk switching and name editing).
+---
 
-## 3.1 Agent runtime and collection state
+## 3. Implemented Features & Work Done
 
-The Tauri supervisor launches `src-tauri\target\debug\lcu-companion-agent.exe`
-when it exists, otherwise falling back to Cargo. Each launch receives an
-ephemeral loopback port and authentication token. Agent requests are
-newline-delimited JSON objects containing `token`, `command`, and optional
-`args`.
+### A. Statistics & Compare Mode
+- Server-side Rust aggregation of personal vs. global statistics.
+- Metrics calculated:
+  - Benchmark-relative WPA (Win Probability Added compared to champion baseline winrate).
+  - Separate personal WR/WPA vs. global WR/WPA columns.
+  - Pick rates calculated with total matches denominator.
+  - Formatted numeric KDA ratio (two decimal places).
+  - Poro-Snax item IDs 2050 and 2052 explicitly filtered out.
+- Augment facts:
+  - Normalized ARAM Mayhem augment IDs stored and queried for items/augments compare tabs.
 
-The agent owns:
+### B. Precomputed Projections & Invalidation
+- Table `statistics_projections` stores precomputed rows in SQLite.
+- Facts updates invalidate projections and trigger background re-calculation.
+- Query cache `STATISTICS_QUERY_CACHE` provides in-memory sub-millisecond responses for repeated queries.
 
-- `%LOCALAPPDATA%\\lcu-companion\\agent.db` for personal collection facts.
-- `%LOCALAPPDATA%\\lcu-companion\\global-aram.db` for global ARAM: Mayhem data.
-- LCU REST/WebSocket discovery and collection loops.
-- Server-side statistics aggregation, sorting, filtering, and pagination.
+### C. Persistent Global ARAM Crawler
+- Persistent node queue: Discovered participant PUUIDs are stored in `discovered_accounts`.
+- Resilient crawl loop:
+  - On restart, un-crawled accounts are loaded from DB (`status = 'queued'`).
+  - Visited accounts (`complete`, `failed`) are loaded into memory to prevent duplicate fetches.
+  - Match deduplication: Checks game IDs against `aram_games` with `uncollected_global_games` before sending LCU detail requests.
+  - Node errors mark account `failed` rather than halting crawler loop.
 
-The current collection flow is account discovery, recent-history
-reconciliation, missing-detail backfill, fact persistence, and optional global
-participant discovery. The log `Reconciled 20 recent games` is the current
-bounded recent-history pass; it is not evidence that the account has only 20
-games. Backfill cursors and detail queue behavior still require profiling and
-durable checkpointing.
+### D. UI Progress Banner
+- Top horizontal multi-operation progress banner in `src/App.svelte`.
+- Shows live crawler progress (e.g., `124/1000 games`), projection builds, and database updates.
+
+---
+
+## 4. Active Endpoints & IPC Commands
+
+### Agent IPC (`api_agent_request` / loopback TCP):
+- `status`: Collector state, connection status, game count.
+- `global_aram_config`: Get/set global ARAM crawl limits, active status, queue depths.
+- `agent_operations`: List active background tasks with percentage/fraction progress for the UI banner.
+- `statistics`: Server-side calculated and precomputed statistics for champions, items, augments, combos.
+- `build_statistics`: Raw/compare build facts.
+- `history_summary`: Reconciled match history.
+
+---
+
+## 5. Development & Verification Rules
+
+- Rebuild standalone agent executable:
+  `cargo build --manifest-path src-tauri\Cargo.toml --bin lcu-companion-agent`
+- Frontend type check:
+  `pnpm svelte-check`
+- Do not run Cargo checks or builds without explicit user instructions.
+- All domain statistics and aggregation logic belong in Rust; Svelte is a presentation layer.

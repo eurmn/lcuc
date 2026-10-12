@@ -54,6 +54,19 @@ pub async fn api_set_global_aram_limit(
 }
 
 #[tauri::command]
+pub async fn api_set_global_aram_workers(
+    workers: u32,
+    supervisor: tauri::State<'_, AgentSupervisor>,
+) -> Result<serde_json::Value, String> {
+    supervisor
+        .request_with_args(
+            "set_global_aram_workers",
+            serde_json::json!({ "workers": workers }),
+        )
+        .await
+}
+
+#[tauri::command]
 pub fn api_log(
     level: String,
     source: String,

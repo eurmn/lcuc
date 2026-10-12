@@ -7,8 +7,10 @@
 
   type SortKey = "name" | "games" | "pickRate" | "winRate" | "personalWinRate" | "globalWinRate" | "wpa" | "personalWpa" | "globalWpa" | "kda" | "damagePerMinute";
   let rows = $state<ServerStatisticRow[]>([]);
-  let selectedId = $state<string | null>(null);
-  let sortKey = $state<SortKey>(scope === "compare" ? "personalWpa" : "wpa");
+  let sortKey = $state<SortKey>("wpa");
+  $effect(() => {
+    sortKey = scope === "compare" ? "personalWpa" : "wpa";
+  });
   let sortDescending = $state(true);
   let search = $state("");
   let loading = $state(true);

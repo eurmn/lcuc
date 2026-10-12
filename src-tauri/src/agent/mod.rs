@@ -1,5 +1,5 @@
 use crate::logger;
-use futures_util::{stream::FuturesUnordered, SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt};
 use lazy_static::lazy_static;
 use native_tls::TlsConnector;
 use rusqlite::{Connection, OptionalExtension};
@@ -48,28 +48,28 @@ struct AgentRequest {
 }
 
 #[derive(Debug, Serialize)]
-struct AgentResponse {
-    ok: bool,
-    data: Value,
-    error: Option<String>,
+pub struct AgentResponse {
+    pub ok: bool,
+    pub data: Value,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Default)]
-struct RuntimeState {
-    collector_state: String,
-    league_client_connected: bool,
-    queued_jobs: usize,
-    global_collection_running: bool,
-    projection_running: bool,
-    operations: Vec<ProgressOperation>,
+pub struct RuntimeState {
+    pub collector_state: String,
+    pub league_client_connected: bool,
+    pub queued_jobs: usize,
+    pub global_collection_running: bool,
+    pub projection_running: bool,
+    pub operations: Vec<ProgressOperation>,
 }
 
 #[derive(Debug, Clone)]
-struct ProgressOperation {
-    id: String,
-    message: String,
-    current: Option<usize>,
-    total: Option<usize>,
+pub struct ProgressOperation {
+    pub id: String,
+    pub message: String,
+    pub current: Option<usize>,
+    pub total: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -1002,7 +1002,7 @@ fn build_statistics_response(
     )
 }
 
-fn database_path() -> PathBuf {
+pub fn database_path() -> PathBuf {
     dirs::data_local_dir()
         .or_else(dirs::home_dir)
         .unwrap_or_else(|| PathBuf::from("."))
@@ -1010,7 +1010,7 @@ fn database_path() -> PathBuf {
         .join("agent.db")
 }
 
-fn global_aram_database_path() -> PathBuf {
+pub fn global_aram_database_path() -> PathBuf {
     dirs::data_local_dir()
         .or_else(dirs::home_dir)
         .unwrap_or_else(|| PathBuf::from("."))
@@ -1075,7 +1075,9 @@ fn initialize_global_aram_database(path: &PathBuf) -> Result<(), String> {
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS idx_aram_participants_puuid ON aram_participants(puuid);
+        CREATE INDEX IF NOT EXISTS idx_discovered_accounts_status ON discovered_accounts(status);
         INSERT OR IGNORE INTO config (key, value) VALUES ('game_limit', '1000');
+        INSERT OR IGNORE INTO config (key, value) VALUES ('worker_count', '3');
         "#,
         )
         .map_err(|error| format!("failed initializing global ARAM database: {error}"))?;
@@ -1189,7 +1191,7 @@ fn legacy_database_path() -> PathBuf {
         .join("lcu_companion.db")
 }
 
-fn initialize_database(path: &PathBuf) -> Result<(), String> {
+pub fn initialize_database(path: &PathBuf) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("Failed creating agent database directory: {error}"))?;
@@ -1449,7 +1451,16 @@ async fn handle_request(
         return response_error("unauthorized");
     }
 
-    match request.command.as_str() {
+    handle_command(&request.command, request.args, path, runtime).await
+}
+
+pub async fn handle_command(
+    command: &str,
+    args: Value,
+    path: &PathBuf,
+    runtime: &Arc<RwLock<RuntimeState>>,
+) -> AgentResponse {
+    match command {
         "health" => {
             let database_ready = path.exists();
             let state = runtime.read().await;
@@ -1524,7 +1535,7 @@ async fn handle_request(
         "statistics" => {
             let started = Instant::now();
             let global_path = global_aram_database_path();
-            let args = request.args.clone();
+            let args = args.clone();
             let database = path.clone();
             match tokio::task::spawn_blocking(move || {
                 initialize_global_aram_database(&global_path)?;
@@ -1554,10 +1565,12 @@ async fn handle_request(
                 Ok::<_, String>((
                     global_game_limit(&config_path)?,
                     global_game_count(&config_path)?,
+                    global_queued_account_count(&config_path).unwrap_or(0),
+                    global_worker_count(&config_path).unwrap_or(3),
                 ))
             })
             .await;
-            let (limit, games) = match config {
+            let (limit, games, queued_accounts, workers) = match config {
                 Ok(Ok(values)) => values,
                 Ok(Err(error)) => return response_error(error),
                 Err(error) => return response_error(format!("global config worker failed: {error}")),
@@ -1566,9 +1579,10 @@ async fn handle_request(
             response_ok(json!({
                 "limit": limit,
                 "games": games,
+                "workers": workers,
                 "database_path": global_path,
                 "collector_state": state.collector_state,
-                "queued_jobs": state.queued_jobs,
+                "queued_jobs": queued_accounts,
                 "operations": state.operations.iter().map(|operation| json!({
                     "id": operation.id,
                     "message": operation.message,
@@ -1582,8 +1596,7 @@ async fn handle_request(
             if let Err(error) = initialize_global_aram_database(&global_path) {
                 return response_error(error);
             }
-            let limit = request
-                .args
+            let limit = args
                 .get("limit")
                 .and_then(Value::as_u64)
                 .unwrap_or(1000) as usize;
@@ -1598,6 +1611,20 @@ async fn handle_request(
                     };
                     response_ok(json!({ "limit": limit }))
                 }
+                Err(error) => response_error(error),
+            }
+        }
+        "set_global_aram_workers" => {
+            let global_path = global_aram_database_path();
+            if let Err(error) = initialize_global_aram_database(&global_path) {
+                return response_error(error);
+            }
+            let workers = args
+                .get("workers")
+                .and_then(Value::as_u64)
+                .unwrap_or(3) as usize;
+            match set_global_worker_count(&global_path, workers) {
+                Ok(()) => response_ok(json!({ "workers": workers.clamp(1, 16) })),
                 Err(error) => response_error(error),
             }
         }
@@ -1650,6 +1677,20 @@ async fn handle_request(
         }
         "shutdown" => response_ok(json!({ "accepted": true })),
         command => response_error(format!("unknown command: {command}")),
+    }
+}
+
+pub async fn dispatch_command(
+    command: &str,
+    args: Value,
+    path: &PathBuf,
+    runtime: &Arc<RwLock<RuntimeState>>,
+) -> Result<Value, String> {
+    let response = handle_command(command, args, path, runtime).await;
+    if response.ok {
+        Ok(response.data)
+    } else {
+        Err(response.error.unwrap_or_else(|| "agent request failed".to_string()))
     }
 }
 
@@ -1837,6 +1878,158 @@ fn mark_global_account(path: &PathBuf, puuid: &str, status: &str) -> Result<(), 
         .map_err(|error| format!("failed updating global account state: {error}"))
 }
 
+fn reset_fetching_global_accounts(path: &PathBuf) -> Result<usize, String> {
+    let connection = open_connection(path).map_err(|error| {
+        format!("failed opening global ARAM database for account reset: {error}")
+    })?;
+    connection
+        .execute(
+            "UPDATE discovered_accounts SET status = 'queued', updated_at = CURRENT_TIMESTAMP WHERE status = 'fetching'",
+            [],
+        )
+        .map_err(|error| format!("failed resetting in-flight global accounts: {error}"))
+}
+
+fn load_visited_global_accounts(path: &PathBuf) -> Result<HashSet<String>, String> {
+    let connection = open_connection(path).map_err(|error| {
+        format!("failed opening global ARAM database for visited accounts: {error}")
+    })?;
+    let mut statement = connection
+        .prepare("SELECT puuid FROM discovered_accounts WHERE status IN ('complete', 'failed')")
+        .map_err(|error| format!("failed preparing visited accounts query: {error}"))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("failed querying visited accounts: {error}"))?;
+    let mut visited = HashSet::new();
+    for row in rows {
+        if let Ok(puuid) = row {
+            visited.insert(puuid);
+        }
+    }
+    Ok(visited)
+}
+
+fn load_queued_global_accounts(path: &PathBuf, limit: usize) -> Result<Vec<String>, String> {
+    let connection = open_connection(path).map_err(|error| {
+        format!("failed opening global ARAM database for queued accounts: {error}")
+    })?;
+    let mut statement = connection
+        .prepare(
+            "SELECT puuid FROM discovered_accounts WHERE status = 'queued' ORDER BY discovered_at ASC LIMIT ?1",
+        )
+        .map_err(|error| format!("failed preparing queued accounts query: {error}"))?;
+    let rows = statement
+        .query_map(rusqlite::params![limit as i64], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("failed querying queued accounts: {error}"))?;
+    let mut accounts = Vec::new();
+    for row in rows {
+        if let Ok(puuid) = row {
+            accounts.push(puuid);
+        }
+    }
+    Ok(accounts)
+}
+
+fn claim_next_queued_account(path: &PathBuf) -> Result<Option<String>, String> {
+    let connection = open_connection(path).map_err(|error| {
+        format!("failed opening global ARAM database to claim account: {error}")
+    })?;
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|error| format!("failed starting account claim transaction: {error}"))?;
+    let puuid: Option<String> = transaction
+        .query_row(
+            "SELECT puuid FROM discovered_accounts WHERE status = 'queued' ORDER BY discovered_at ASC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| format!("failed querying next queued account: {error}"))?;
+    if let Some(ref p) = puuid {
+        transaction
+            .execute(
+                "UPDATE discovered_accounts SET status = 'fetching', updated_at = CURRENT_TIMESTAMP WHERE puuid = ?1",
+                rusqlite::params![p],
+            )
+            .map_err(|error| format!("failed marking account fetching: {error}"))?;
+    }
+    transaction
+        .commit()
+        .map_err(|error| format!("failed committing account claim: {error}"))?;
+    Ok(puuid)
+}
+
+fn global_fetching_account_count(path: &PathBuf) -> Result<usize, String> {
+    let connection = open_connection(path).map_err(|error| {
+        format!("failed opening global ARAM database for fetching count: {error}")
+    })?;
+    connection
+        .query_row(
+            "SELECT count(*) FROM discovered_accounts WHERE status = 'fetching'",
+            [],
+            |row| row.get(0),
+        )
+        .map(|count: i64| count as usize)
+        .map_err(|error| format!("failed counting fetching global accounts: {error}"))
+}
+
+fn seed_accounts_from_existing_participants(path: &PathBuf) -> Result<usize, String> {
+    let connection = open_connection(path).map_err(|error| {
+        format!("failed opening global ARAM database for account seeding: {error}")
+    })?;
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO discovered_accounts (puuid)
+             SELECT DISTINCT puuid FROM aram_participants
+             WHERE puuid IS NOT NULL AND puuid != ''",
+            [],
+        )
+        .map_err(|error| format!("failed seeding accounts from participants: {error}"))
+}
+
+fn uncollected_global_games(path: &PathBuf, game_ids: &[i64]) -> Result<Vec<i64>, String> {
+    if game_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let connection = open_connection(path).map_err(|error| {
+        format!("failed opening global ARAM database for uncollected games: {error}")
+    })?;
+    let placeholders = game_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let query = format!("SELECT game_id FROM aram_games WHERE game_id IN ({placeholders})");
+    let mut statement = connection
+        .prepare(&query)
+        .map_err(|error| format!("failed preparing uncollected games query: {error}"))?;
+    let params = rusqlite::params_from_iter(game_ids.iter());
+    let rows = statement
+        .query_map(params, |row| row.get::<_, i64>(0))
+        .map_err(|error| format!("failed querying stored games: {error}"))?;
+    let mut stored = HashSet::new();
+    for row in rows {
+        if let Ok(id) = row {
+            stored.insert(id);
+        }
+    }
+    Ok(game_ids
+        .iter()
+        .copied()
+        .filter(|id| !stored.contains(id))
+        .collect())
+}
+
+fn global_queued_account_count(path: &PathBuf) -> Result<usize, String> {
+    let connection = open_connection(path).map_err(|error| {
+        format!("failed opening global ARAM database for queued count: {error}")
+    })?;
+    connection
+        .query_row(
+            "SELECT count(*) FROM discovered_accounts WHERE status = 'queued'",
+            [],
+            |row| row.get(0),
+        )
+        .map(|count: i64| count as usize)
+        .map_err(|error| format!("failed counting queued global accounts: {error}"))
+}
+
 fn store_global_detail(
     path: &PathBuf,
     source_puuid: &str,
@@ -1855,6 +2048,9 @@ fn store_global_detail(
             |_| Ok(()),
         )
         .is_ok();
+    if game_exists {
+        return Ok(Vec::new());
+    }
     let detail_json = serde_json::to_string(detail)
         .map_err(|error| format!("failed encoding global ARAM detail {game_id}: {error}"))?;
     connection
@@ -1970,6 +2166,279 @@ fn store_global_detail(
     Ok(discovered)
 }
 
+struct CrawlerCircuitBreaker {
+    consecutive_errors: u32,
+    cooldown_until: Option<std::time::Instant>,
+    current_backoff_secs: u64,
+}
+
+impl CrawlerCircuitBreaker {
+    fn new() -> Self {
+        Self {
+            consecutive_errors: 0,
+            cooldown_until: None,
+            current_backoff_secs: 120, // 2 minutes initial backoff
+        }
+    }
+}
+
+async fn run_global_aram_worker(
+    worker_id: usize,
+    client: crate::services::lcu_client::LcuClient,
+    path: PathBuf,
+    runtime: Arc<RwLock<RuntimeState>>,
+    in_flight_games: Arc<tokio::sync::Mutex<HashSet<i64>>>,
+    circuit_breaker: Arc<tokio::sync::Mutex<CrawlerCircuitBreaker>>,
+) {
+    logger::info(
+        "agent.global-aram",
+        &format!("Global ARAM worker #{worker_id} started"),
+    );
+    let mut empty_streak = 0;
+
+    loop {
+        // If the circuit breaker is active, pause until cooldown expires
+        let wait_dur = {
+            let cb = circuit_breaker.lock().await;
+            if let Some(until) = cb.cooldown_until {
+                let now = std::time::Instant::now();
+                if until > now {
+                    Some(until - now)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+        if let Some(dur) = wait_dur {
+            tokio::time::sleep(dur).await;
+        }
+
+        let live_limit = match global_game_limit(&path) {
+            Ok(limit) => limit,
+            Err(_) => break,
+        };
+        let live_count = match global_game_count(&path) {
+            Ok(count) => count,
+            Err(_) => break,
+        };
+        if live_count >= live_limit {
+            break;
+        }
+
+        let claim_path = path.clone();
+        let account_puuid = match tokio::task::spawn_blocking(move || claim_next_queued_account(&claim_path)).await {
+            Ok(Ok(Some(puuid))) => {
+                empty_streak = 0;
+                puuid
+            }
+            Ok(Ok(None)) => {
+                empty_streak += 1;
+                if empty_streak <= 5 {
+                    let seed_path = path.clone();
+                    let _ = tokio::task::spawn_blocking(move || seed_accounts_from_existing_participants(&seed_path)).await;
+                    tokio::time::sleep(Duration::from_millis(1000)).await;
+                    continue;
+                } else {
+                    let check_path = path.clone();
+                    let fetching_count = tokio::task::spawn_blocking(move || global_fetching_account_count(&check_path))
+                        .await
+                        .unwrap_or(Ok(0))
+                        .unwrap_or(0);
+                    if fetching_count > 0 {
+                        tokio::time::sleep(Duration::from_millis(1500)).await;
+                        continue;
+                    }
+                    logger::info(
+                        "agent.global-aram",
+                        &format!("Worker #{worker_id}: queue exhausted and no active fetches; stopping"),
+                    );
+                    break;
+                }
+            }
+            Ok(Err(err)) => {
+                logger::error("agent.global-aram", &format!("Worker #{worker_id} claim error: {err}"));
+                tokio::time::sleep(Duration::from_millis(1000)).await;
+                continue;
+            }
+            Err(_) => {
+                tokio::time::sleep(Duration::from_millis(1000)).await;
+                continue;
+            }
+        };
+
+        // 0.5 - 1.0 second delay between requests
+        request_delay().await;
+
+        let route = format!(
+            "/lol-match-history/v1/products/lol/{account_puuid}/matches?begIndex=0&endIndex=19"
+        );
+        let history = match client.get_json::<Value>(&route).await {
+            Ok(history) => {
+                {
+                    let mut cb = circuit_breaker.lock().await;
+                    if cb.consecutive_errors > 0 {
+                        logger::info(
+                            "agent.global-aram",
+                            &format!("Worker #{worker_id}: Match history recovered successfully; resetting backoff streak"),
+                        );
+                        cb.consecutive_errors = 0;
+                        cb.current_backoff_secs = 120;
+                        cb.cooldown_until = None;
+                    }
+                }
+                history
+            }
+            Err(error) => {
+                logger::warn(
+                    "agent.global-aram",
+                    &format!("Worker #{worker_id}: Match history unavailable for account {account_puuid}: {error}"),
+                );
+                let mark_path = path.clone();
+                let mark_puuid = account_puuid.clone();
+
+                let cooldown_action = {
+                    let mut cb = circuit_breaker.lock().await;
+                    cb.consecutive_errors += 1;
+                    if cb.consecutive_errors >= 4 {
+                        let cooldown = cb.current_backoff_secs;
+                        cb.cooldown_until = Some(std::time::Instant::now() + Duration::from_secs(cooldown));
+                        let next_backoff = (cb.current_backoff_secs * 2).min(1800);
+                        cb.current_backoff_secs = next_backoff;
+                        Some((cb.consecutive_errors, cooldown, next_backoff))
+                    } else {
+                        None
+                    }
+                };
+
+                if let Some((streak, cooldown_secs, next_backoff)) = cooldown_action {
+                    let mins = (cooldown_secs + 59) / 60;
+                    let next_mins = (next_backoff + 59) / 60;
+                    logger::warn(
+                        "agent.global-aram",
+                        &format!(
+                            "Match history unavailable {streak} times consecutively. Backing off all workers for {mins} minute(s) before retrying (next backoff: {next_mins}m)..."
+                        ),
+                    );
+                    {
+                        let mut state = runtime.write().await;
+                        state.collector_state = format!("global-aram:paused (backoff {mins}m)");
+                    }
+                    // Re-queue this account so it is not permanently lost due to the LCU outage
+                    let _ = tokio::task::spawn_blocking(move || mark_global_account(&mark_path, &mark_puuid, "queued")).await;
+                    tokio::time::sleep(Duration::from_secs(cooldown_secs)).await;
+                } else {
+                    let _ = tokio::task::spawn_blocking(move || mark_global_account(&mark_path, &mark_puuid, "failed")).await;
+                }
+                continue;
+            }
+        };
+
+        let summaries = history
+            .get("games")
+            .and_then(|value| value.get("games"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let aram_summaries: Vec<Value> = summaries.into_iter().filter(is_aram_mayhem).collect();
+
+        let aram_game_ids: Vec<i64> = aram_summaries
+            .iter()
+            .filter_map(|summary| summary.get("gameId").and_then(Value::as_i64))
+            .collect();
+
+        let check_path = path.clone();
+        let ids_to_check = aram_game_ids.clone();
+        let needed_game_ids = tokio::task::spawn_blocking(move || {
+            uncollected_global_games(&check_path, &ids_to_check)
+        })
+        .await
+        .unwrap_or(Ok(aram_game_ids.clone()))
+        .unwrap_or(aram_game_ids);
+
+        // Claim uncollected games in in_flight_games so other workers don't search the same place
+        let mut games_to_fetch = Vec::new();
+        {
+            let mut inflight = in_flight_games.lock().await;
+            for id in needed_game_ids {
+                if inflight.insert(id) {
+                    games_to_fetch.push(id);
+                }
+            }
+        }
+
+        for game_id in games_to_fetch {
+            if let Ok(count) = global_game_count(&path) {
+                if let Ok(limit) = global_game_limit(&path) {
+                    if count >= limit {
+                        in_flight_games.lock().await.remove(&game_id);
+                        break;
+                    }
+                }
+            }
+
+            // 0.5 - 1.0 second delay between requests
+            request_delay().await;
+
+            let result = client
+                .get_json::<Value>(&format!("/lol-match-history/v1/games/{game_id}"))
+                .await;
+
+            match result {
+                Ok(detail) if is_aram_mayhem(&detail) => {
+                    let write_path = path.clone();
+                    let write_source = account_puuid.clone();
+                    let store_result = tokio::task::spawn_blocking(move || {
+                        store_global_detail(&write_path, &write_source, &detail)
+                    })
+                    .await;
+                    if let Ok(Ok(_)) = store_result {
+                        if let (Ok(count), Ok(live_limit)) = (global_game_count(&path), global_game_limit(&path)) {
+                            let mut state = runtime.write().await;
+                            state.collector_state = format!("global-aram:{count}/{live_limit}");
+                            if let Some(operation) = state
+                                .operations
+                                .iter_mut()
+                                .find(|operation| operation.id == "global-database")
+                            {
+                                operation.current = Some(count);
+                                operation.total = Some(live_limit);
+                                operation.message = "Updating global game database".to_string();
+                            }
+                            logger::info(
+                                "agent.global-aram",
+                                &format!("Worker #{worker_id} stored game {game_id}; dataset is {count}/{live_limit}"),
+                            );
+                            if count >= live_limit {
+                                in_flight_games.lock().await.remove(&game_id);
+                                break;
+                            }
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    logger::warn(
+                        "agent.global-aram",
+                        &format!("Worker #{worker_id} failed fetching game {game_id}: {error}"),
+                    );
+                }
+            }
+            in_flight_games.lock().await.remove(&game_id);
+        }
+
+        let mark_path = path.clone();
+        let mark_puuid = account_puuid.clone();
+        let _ = tokio::task::spawn_blocking(move || mark_global_account(&mark_path, &mark_puuid, "complete")).await;
+    }
+
+    logger::info(
+        "agent.global-aram",
+        &format!("Global ARAM worker #{worker_id} finished"),
+    );
+}
+
 async fn collect_global_aram(
     client: &crate::services::lcu_client::LcuClient,
     seed_puuid: &str,
@@ -1982,6 +2451,7 @@ async fn collect_global_aram(
         .map_err(|error| format!("global database initialization failed: {error}"))??;
     let current = global_game_count(&path)?;
     let limit = global_game_limit(&path)?;
+    let worker_count = global_worker_count(&path).unwrap_or(3);
     {
         let mut state = runtime.write().await;
         state.operations.retain(|operation| operation.id != "global-database");
@@ -2000,116 +2470,48 @@ async fn collect_global_aram(
             .retain(|operation| operation.id != "global-database");
         return Ok(());
     }
-    queue_global_account(&path, seed_puuid)?;
-    let mut queue = std::collections::VecDeque::from([seed_puuid.to_string()]);
-    let mut visited = std::collections::HashSet::new();
+
+    let reset_path = path.clone();
+    let _ = tokio::task::spawn_blocking(move || reset_fetching_global_accounts(&reset_path)).await;
+
+    let seed_part_path = path.clone();
+    let _ = tokio::task::spawn_blocking(move || seed_accounts_from_existing_participants(&seed_part_path)).await;
+
+    let _ = queue_global_account(&path, seed_puuid);
+
     logger::info(
         "agent.global-aram",
-        &format!("Starting global ARAM collection at {current}/{limit} games"),
+        &format!(
+            "Starting global ARAM collection with {worker_count} concurrent workers at {}/{} games",
+            current, limit
+        ),
     );
 
-    while let Some(account_puuid) = queue.pop_front() {
-        let live_limit = global_game_limit(&path)?;
-        let live_count = global_game_count(&path)?;
-        if live_count >= live_limit {
-            let mut state = runtime.write().await;
-            state.collector_state = format!("global-aram:{live_count}/{live_limit} (paused)");
-            break;
-        }
-        if !visited.insert(account_puuid.clone()) {
-            continue;
-        }
-        mark_global_account(&path, &account_puuid, "fetching")?;
-        let route = format!(
-            "/lol-match-history/v1/products/lol/{account_puuid}/matches?begIndex=0&endIndex=19"
-        );
-        let history = client.get_json::<Value>(&route).await?;
-        let summaries = history
-            .get("games")
-            .and_then(|value| value.get("games"))
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let aram_summaries: Vec<Value> = summaries.into_iter().filter(is_aram_mayhem).collect();
-        logger::debug(
-            "agent.global-aram",
-            &format!(
-                "Account {} yielded {} ARAM: Mayhem summaries",
-                visited.len(),
-                aram_summaries.len()
-            ),
-        );
+    let in_flight_games = Arc::new(tokio::sync::Mutex::new(HashSet::new()));
+    let circuit_breaker = Arc::new(tokio::sync::Mutex::new(CrawlerCircuitBreaker::new()));
+    let mut handles = Vec::new();
 
-        let mut details = FuturesUnordered::new();
-        for summary in aram_summaries {
-            if let Some(game_id) = summary.get("gameId").and_then(Value::as_i64) {
-                details.push(async move {
-                    let result = client
-                        .get_json::<Value>(&format!("/lol-match-history/v1/games/{game_id}"))
-                        .await;
-                    (game_id, result)
-                });
-            }
-        }
-        while let Some((game_id, result)) = details.next().await {
-            match result {
-                Ok(detail) if is_aram_mayhem(&detail) => {
-                    let write_path = path.clone();
-                    let write_source = account_puuid.clone();
-                    let discovered = tokio::task::spawn_blocking(move || {
-                        store_global_detail(&write_path, &write_source, &detail)
-                    })
-                    .await
-                    .map_err(|error| format!("global detail writer failed: {error}"))??;
-                    for puuid in discovered {
-                        if visited.len() + queue.len() < 5000 {
-                            queue.push_back(puuid);
-                        }
-                    }
-                    let count = global_game_count(&path)?;
-                    let live_limit = global_game_limit(&path)?;
-                    {
-                        let mut state = runtime.write().await;
-                        state.collector_state = format!("global-aram:{count}/{live_limit}");
-                        if let Some(operation) = state
-                            .operations
-                            .iter_mut()
-                            .find(|operation| operation.id == "global-database")
-                        {
-                            operation.current = Some(count);
-                            operation.total = Some(live_limit);
-                            operation.message = "Updating global game database".to_string();
-                        }
-                    }
-                    logger::info(
-                        "agent.global-aram",
-                        &format!("Stored game {game_id}; dataset is {count}/{limit}"),
-                    );
-                    if count >= live_limit {
-                        break;
-                    }
-                }
-                Ok(_) => {}
-                Err(error) => logger::warn(
-                    "agent.global-aram",
-                    &format!("Failed fetching game {game_id}: {error}"),
-                ),
-            }
-            if global_game_count(&path)? >= global_game_limit(&path)? {
-                break;
-            }
-        }
-        mark_global_account(&path, &account_puuid, "complete")?;
-        if global_game_count(&path)? >= global_game_limit(&path)? {
-            break;
-        }
+    for worker_id in 0..worker_count {
+        let client = client.clone();
+        let path = path.clone();
+        let runtime = runtime.clone();
+        let in_flight = in_flight_games.clone();
+        let cb = circuit_breaker.clone();
+        handles.push(tokio::spawn(async move {
+            run_global_aram_worker(worker_id, client, path, runtime, in_flight, cb).await;
+        }));
     }
+
+    for handle in handles {
+        let _ = handle.await;
+    }
+
+    let final_count = global_game_count(&path).unwrap_or(current);
     logger::info(
         "agent.global-aram",
         &format!(
             "Global ARAM collection finished at {}/{} games",
-            global_game_count(&path)?,
-            limit
+            final_count, limit
         ),
     );
     runtime
@@ -2227,6 +2629,46 @@ fn set_global_game_limit(path: &PathBuf, limit: usize) -> Result<(), String> {
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
         rusqlite::params![limit.to_string()],
     ).map(|_| ()).map_err(|error| format!("failed storing global ARAM game limit: {error}"))
+}
+
+fn global_worker_count(path: &PathBuf) -> Result<usize, String> {
+    let connection = open_connection(path)
+        .map_err(|error| format!("failed opening global ARAM config: {error}"))?;
+    let val: Option<String> = connection
+        .query_row(
+            "SELECT value FROM config WHERE key = 'worker_count'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| format!("failed reading global ARAM worker count: {error}"))?;
+    let count = val
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(3)
+        .clamp(1, 16);
+    Ok(count)
+}
+
+fn set_global_worker_count(path: &PathBuf, count: usize) -> Result<(), String> {
+    let count = count.clamp(1, 16);
+    let connection = open_connection(path)
+        .map_err(|error| format!("failed opening global ARAM config: {error}"))?;
+    connection
+        .execute(
+            "INSERT INTO config (key, value, updated_at) VALUES ('worker_count', ?1, CURRENT_TIMESTAMP)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
+            rusqlite::params![count.to_string()],
+        )
+        .map(|_| ())
+        .map_err(|error| format!("failed storing global ARAM worker count: {error}"))
+}
+
+async fn request_delay() {
+    let millis = 500 + (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| (d.subsec_nanos() % 501) as u64)
+        .unwrap_or(250));
+    sleep(Duration::from_millis(millis)).await;
 }
 
 fn sync_state_value(path: &PathBuf, key: &str) -> Result<Option<String>, String> {
@@ -2423,7 +2865,7 @@ async fn backfill_match_history(
     Ok(discovered)
 }
 
-async fn collector_loop(path: PathBuf, runtime: Arc<RwLock<RuntimeState>>) {
+pub async fn collector_loop(path: PathBuf, runtime: Arc<RwLock<RuntimeState>>) {
     loop {
         let credentials = crate::services::lcu_client::LcuClient::find_credentials();
         let Some(credentials) = credentials else {
@@ -2583,7 +3025,7 @@ async fn collector_loop(path: PathBuf, runtime: Arc<RwLock<RuntimeState>>) {
     }
 }
 
-async fn websocket_loop(runtime: Arc<RwLock<RuntimeState>>) {
+pub async fn websocket_loop(runtime: Arc<RwLock<RuntimeState>>) {
     loop {
         let Some(credentials) = crate::services::lcu_client::LcuClient::find_credentials() else {
             sleep(Duration::from_secs(5)).await;

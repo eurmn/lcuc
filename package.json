@@ -26,7 +26,7 @@
     "@iconify/tailwind4": "^1.2.3",
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
     "@tailwindcss/vite": "^4.0.0",
-    "@tauri-apps/cli": "^2.0.0",
+    "@tauri-apps/cli": "^2.12.2",
     "flowbite": "^4.0.2",
     "flowbite-svelte": "^1.33.1",
     "svelte-check": "^4.0.0",

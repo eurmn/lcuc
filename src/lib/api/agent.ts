@@ -97,6 +97,7 @@ export function getStatistics(query: ServerStatisticsQuery): Promise<ServerStati
 export interface GlobalAramConfig {
   limit: number;
   games: number;
+  workers?: number;
   database_path: string;
   collector_state: string;
   queued_jobs: number;
@@ -116,6 +117,10 @@ export function getGlobalAramConfig(): Promise<GlobalAramConfig> {
 
 export function setGlobalAramLimit(limit: number): Promise<{ limit: number }> {
   return invoke<{ limit: number }>('api_set_global_aram_limit', { limit });
+}
+
+export function setGlobalAramWorkers(workers: number): Promise<{ workers: number }> {
+  return invoke<{ workers: number }>('api_set_global_aram_workers', { workers });
 }
 
 export function getGlobalAramStatistics(): Promise<AgentBuildStatistics> {

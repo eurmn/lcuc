@@ -35,7 +35,12 @@
   } from "./lib/types/runes";
   import type { ChampionSummary } from "./lib/types/champions";
   import { logger } from "./lib/utils/logger";
-  import { getGlobalAramConfig, setGlobalAramLimit, type AgentOperation } from "./lib/api/agent";
+  import {
+    getGlobalAramConfig,
+    setGlobalAramLimit,
+    setGlobalAramWorkers,
+    type AgentOperation,
+  } from "./lib/api/agent";
 
   let clientPages = $state<ClientRunePageSummary[]>([]);
   let savedRunesets = $state<RuneSetSummary[]>([]);
@@ -49,6 +54,7 @@
   let statisticsScope = $state<"personal" | "compare">("personal");
   let statisticsConfigOpen = $state(false);
   let globalLimit = $state(1000);
+  let globalWorkers = $state(3);
   let globalGames = $state(0);
   let globalCollectorState = $state("unknown");
   let globalQueuedJobs = $state(0);
@@ -82,7 +88,10 @@
     hideLowPickrate = localStorage.getItem("lcu-statistics-hide-low-pickrate") === "true";
     const refreshGlobalStatus = () => getGlobalAramConfig()
       .then((config) => {
-        globalLimit = config.limit;
+        if (!statisticsConfigOpen) {
+          globalLimit = config.limit;
+          globalWorkers = config.workers ?? 3;
+        }
         globalGames = config.games;
         globalCollectorState = config.collector_state;
         globalQueuedJobs = config.queued_jobs;
@@ -117,15 +126,18 @@
   async function saveGlobalStatisticsLimit() {
     savingGlobalLimit = true;
     try {
-      const result = await setGlobalAramLimit(Math.max(1, Math.min(100000, Math.floor(globalLimit))));
-      globalLimit = result.limit;
+      const [limitResult, workersResult] = await Promise.all([
+        setGlobalAramLimit(Math.max(1, Math.min(100000, Math.floor(globalLimit)))),
+        setGlobalAramWorkers(Math.max(1, Math.min(16, Math.floor(globalWorkers)))),
+      ]);
+      globalLimit = limitResult.limit;
+      globalWorkers = workersResult.workers;
       statisticsConfigOpen = false;
     } catch (error) {
-      logger.error("frontend.app", "Failed to save global statistics limit", error);
+      logger.error("frontend.app", "Failed to save global statistics settings", error);
     } finally {
       savingGlobalLimit = false;
     }
-
   }
 
   function handleHideLowPickrateChange(event: Event) {
@@ -498,13 +510,15 @@
                       <div class="absolute right-0 top-9 z-30 w-64 rounded-lg border border-gray-700 bg-gray-900 p-3 shadow-xl">
                         <label class="text-[11px] uppercase tracking-wider text-gray-500" for="global-aram-limit">Global ARAM game limit</label>
                         <input id="global-aram-limit" type="number" min="1" max="100000" bind:value={globalLimit} class="mt-1 w-full rounded border border-gray-700 bg-gray-950 px-2 py-1.5 text-xs text-gray-100" />
-                        <p class="mt-1 text-[10px] text-gray-400">{globalGames}/{globalLimit} games</p>
+                        <label class="mt-2 block text-[11px] uppercase tracking-wider text-gray-500" for="global-aram-workers">Crawler worker agents</label>
+                        <input id="global-aram-workers" type="number" min="1" max="16" bind:value={globalWorkers} class="mt-1 w-full rounded border border-gray-700 bg-gray-950 px-2 py-1.5 text-xs text-gray-100" />
+                        <p class="mt-1 text-[10px] text-gray-400">{globalGames}/{globalLimit} games · {globalWorkers} workers</p>
                         <p class="mt-1 break-words text-[10px] text-cyan-300">Status: {globalCollectorState}{#if globalQueuedJobs > 0} · {globalQueuedJobs} queued{/if}</p>
                         <label class="mt-3 flex items-center gap-2 text-[11px] text-gray-300">
                           <input type="checkbox" checked={hideLowPickrate} onchange={handleHideLowPickrateChange} class="rounded border-gray-700 bg-gray-950 text-purple-600 focus:ring-purple-500" />
                           Hide low pick-rate options (&lt;1%)
                         </label>
-                        <button type="button" class="mt-2 w-full rounded bg-purple-600 px-2 py-1.5 text-xs text-white disabled:opacity-50" disabled={savingGlobalLimit} onclick={saveGlobalStatisticsLimit}>{savingGlobalLimit ? "Saving..." : "Save limit"}</button>
+                        <button type="button" class="mt-2 w-full rounded bg-purple-600 px-2 py-1.5 text-xs text-white disabled:opacity-50" disabled={savingGlobalLimit} onclick={saveGlobalStatisticsLimit}>{savingGlobalLimit ? "Saving..." : "Save settings"}</button>
                       </div>
                     {/if}
                   </div>
