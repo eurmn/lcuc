@@ -487,7 +487,7 @@
             <span class="icon-[heroicons--chart-bar] h-5 w-5"></span>
           </button>
         </nav>
-        <div class="relative min-h-0 min-w-0 flex-1 flex flex-col">
+        <div class="relative min-h-0 min-w-0 flex-1 flex flex-col bg-gray-950">
           <!-- Thin Crawler Topbar Loader when Crawler is Active (position absolute, right of sidebar) -->
           {#if globalCollectorState.startsWith("global-aram:") || globalCollectorState === "collecting" || agentOperations.some((op) => op.id === "global-database")}
             {@const crawlerOp = agentOperations.find((op) => op.id === "global-database")}
@@ -503,9 +503,9 @@
                 ></div>
               </div>
 
-              <!-- 2. Status row underneath the bar: left-aligned counter, percentage, and progress donut with more padding and slightly larger text -->
+              <!-- 2. Status row underneath the bar: left-aligned counter, percentage, and progress donut with more padding and matching bg color -->
               <div class="flex items-center justify-start px-4 pt-2 pb-1 text-xs">
-                <div class="flex items-center gap-2.5 rounded-md bg-gray-950/80 px-2 py-1 backdrop-blur-sm">
+                <div class="flex items-center gap-2.5 rounded-md px-2 py-1">
                   <!-- Progress donut filling with progress -->
                   <svg class="h-4 w-4 -rotate-90 shrink-0" viewBox="0 0 24 24">
                     <circle
@@ -542,7 +542,7 @@
           {/if}
 
           <!-- Content container underneath loader with padding to accommodate the absolute bar -->
-          <div class="min-h-0 min-w-0 flex-1 {globalCollectorState.startsWith('global-aram:') || globalCollectorState === 'collecting' || agentOperations.some((op) => op.id === 'global-database') ? 'pt-8' : ''}">
+          <div class="min-h-0 min-w-0 flex-1 bg-gray-950 {globalCollectorState.startsWith('global-aram:') || globalCollectorState === 'collecting' || agentOperations.some((op) => op.id === 'global-database') ? 'pt-8' : ''}">
             {#if profileTab === "history"}
             <MatchHistoryView />
           {:else}
