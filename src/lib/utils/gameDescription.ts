@@ -201,16 +201,46 @@ export function parseGameDescription(raw?: string | null): string {
     return `<span style="color: ${color}">${content}</span>`;
   });
 
-  // 4. Clean up match runtime tracker lines and parenthetical trackers
-  html = html.replace(/\s*\(@f[0-9]+(\*100)?@%?\)/gi, "");
-  html = html.replace(/\s*\(@f[0-9]+@\)/gi, "");
-  html = html.replace(/<br\s*\/?>\s*<br\s*\/?>\s*(Damage Dealt|Bonus Damage|Healing Done|Shields Generated|Immobilizing Spells Blocked|Hooks Landed|Times Triggered|Takedowns|Damage Redirected|Burn Damage Dealt)[^<]*(@f[0-9]+@|f[0-9]+)[\s\S]*$/gi, "");
-  html = html.replace(/<br\s*\/?>\s*(Damage Dealt|Bonus Damage|Healing Done|Shields Generated|Immobilizing Spells Blocked|Hooks Landed|Times Triggered|Takedowns|Damage Redirected|Burn Damage Dealt)[^<]*(@f[0-9]+@|f[0-9]+)[\s\S]*$/gi, "");
+  // 4. Clean up match runtime tracker blocks and parenthetical trackers
+  html = html.replace(/\s*\(@f[0-9.]+(\*100)?@%?\)/gi, "");
+  html = html.replace(/\s*\(@f[0-9.]+@\)/gi, "");
+
+  // Remove tracker blocks wrapped in <rules>...</rules>
+  html = html.replace(/<rules>[^<]*(Bonus Damage|Damage Dealt|Healing|Shield|Gold Generated|Health Drained|Remnants|Takedowns|Rounds Remaining|Encouragements)[^<]*(@f[0-9.]*@)?[^<]*<\/rules>/gi, "");
+
+  const trackerKeywords = [
+    "Damage Dealt", "Bonus Damage", "Healing Done", "Healing this round", "Healing total",
+    "Total Healing Done", "Total Healing", "Shields Generated", "Shields Generated Total",
+    "Shield Gained", "Bonus Shielding", "Immobilizing Spells Blocked", "Hooks Landed",
+    "Times Triggered", "Takedowns", "Damage Redirected", "Burn Damage Dealt",
+    "On-hit Magic Damage Dealt", "Magic Missile Damage Dealt", "Gold Generated",
+    "Health Drained", "Health Restored", "Remnants Acquired", "Rounds Remaining",
+    "Enemies Rooted", "Seconds Saved", "Stacks Gained", "Total Health Gained",
+    "Units knocked back", "Damage Reduced", "Charges Refunded", "Current Adaptive Force",
+    "Current Conversion", "Encouragements Received", "Max Bounces", "Terrain Damage"
+  ].join("|");
+
+  // Remove tracker lines starting with <br>
+  html = html.replace(new RegExp(`(<br\\s*\\/?>\\s*)+(<[^>]+>\\s*)*(${trackerKeywords})[^<]*(:|total:?)?\\s*(<[^>]+>)*\\s*(@f[0-9.]*@|f[0-9]|\\d+)?.*$`, "gis"), "");
+
+  // Remove any trailing empty labels like "Gold Generated:" left at the end
+  html = html.replace(new RegExp(`(<br\\s*\\/?>\\s*)+(<[^>]+>\\s*)*(${trackerKeywords})\\s*:[^a-zA-Z0-9<]*$`, "gi"), "");
+
+  // Clean any remaining standalone @f[0-9.]@ tokens
+  html = html.replace(/@f[0-9.]+@/gi, "");
+
+  // Clean duplicate consecutive words like "magic damage damage" -> "magic damage"
+  html = html.replace(/\b(magic damage|physical damage|true damage)\s+damage\b/gi, "$1");
+
+  // Clean float32 inaccuracies in raw text (e.g. 0.07999999821186066 -> 0.08)
+  html = html.replace(/\b([0-9]+\.[0-9]{3,})\b/g, (_m, n) => {
+    return String(Math.round(parseFloat(n) * 100) / 100);
+  });
 
   // Remove leftover @Param@ variables cleanly if any weren't substituted
-  html = html.replace(/@([a-zA-Z0-9_]+)(\*100)?@/g, (_m, param) => {
-    if (/^f[0-9]+$/i.test(param)) return "";
-    return `<span class="text-amber-300 font-semibold">${param}</span>`;
+  html = html.replace(/@([a-zA-Z0-9_]+)(?:[*+/-]-?[0-9.]*)?@(%?)/g, (_m, param, trailingPct) => {
+    if (/^f[0-9.]*$/i.test(param)) return "";
+    return `<span class="text-amber-300 font-semibold">${param}</span>${trailingPct}`;
   });
 
   // Clean unresolved {{...}} templates
