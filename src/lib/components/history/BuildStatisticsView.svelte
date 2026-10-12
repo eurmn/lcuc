@@ -75,6 +75,22 @@
     return 0;
   }
 
+  function getAugmentTitleColor(r?: string) {
+    const lower = (r ?? "").toLowerCase();
+    if (lower.includes("prismatic")) return "text-fuchsia-400";
+    if (lower.includes("gold")) return "text-yellow-400";
+    if (lower.includes("silver")) return "text-slate-300";
+    return "text-gray-200";
+  }
+
+  function getAugmentIconBorder(r?: string) {
+    const lower = (r ?? "").toLowerCase();
+    if (lower.includes("prismatic")) return "border-fuchsia-500/80 ring-1 ring-fuchsia-400/40 shadow-fuchsia-500/10";
+    if (lower.includes("gold")) return "border-amber-500/80 ring-1 ring-amber-400/40 shadow-amber-500/10";
+    if (lower.includes("silver")) return "border-slate-500/80 ring-1 ring-slate-400/40";
+    return "border-gray-700";
+  }
+
   function getTopChampions(row: ServerStatisticRow, count = 3): ServerStatisticRow["champions"] {
     if (!row.champions || row.champions.length === 0) return [];
     return row.champions
@@ -208,16 +224,11 @@
                 <div class="flex items-start justify-between gap-2">
                   <div class="flex items-start gap-2.5 min-w-0">
                     {#if selected.icon_url}
-                      <img src={selected.icon_url} alt={selected.name} class="h-10 w-10 rounded-lg border border-gray-700 object-cover shrink-0 shadow-sm" />
+                      <img src={selected.icon_url} alt={selected.name} class="h-10 w-10 rounded-lg border {getAugmentIconBorder(selected.rarity)} object-cover shrink-0 shadow-sm" />
                     {/if}
                     <div class="min-w-0 flex-1">
                       <div class="flex flex-wrap items-center gap-1.5">
-                        <h2 class="font-bold text-sm text-white truncate" title={selected.name}>{selected.name}</h2>
-                        {#if selected.rarity}
-                          <span class="shrink-0 rounded px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider {selected.rarity === 'silver' ? 'bg-slate-700/60 text-slate-300 border border-slate-600/40' : selected.rarity === 'gold' ? 'bg-yellow-950/60 text-yellow-300 border border-yellow-700/40' : 'bg-fuchsia-950/60 text-fuchsia-300 border border-fuchsia-700/40'}">
-                            {selected.rarity}
-                          </span>
-                        {/if}
+                        <h2 class="font-bold text-sm {selected.rarity ? getAugmentTitleColor(selected.rarity) : 'text-white'} truncate" title={selected.name}>{selected.name}</h2>
                       </div>
                       <div class="mt-0.5 flex flex-wrap items-center gap-2 text-[11px]">
                         {#if (selected.price_total ?? 0) > 0}
@@ -307,8 +318,8 @@
                         <div class="min-w-0 flex-1">
                           <p class="truncate font-medium text-xs text-gray-200" title={champion.name}>{champion.name}</p>
                           <p class="flex items-center flex-wrap gap-1 text-[10px] text-gray-400 mt-0.5 leading-none">
-                            <span class="rounded bg-gray-800/90 border border-gray-700/60 px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider text-gray-300 shrink-0">WR</span>
-                            <span class="text-gray-200 font-medium">{Math.round(champion.games * champion.win_rate)}/{champion.games} ({percent(champion.win_rate)})</span>
+                            <span class="rounded bg-gray-800/90 border border-gray-700/60 px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider text-gray-400 shrink-0">WR</span>
+                            <span class="text-gray-400 font-medium">{Math.round(champion.games * champion.win_rate)}/{champion.games} ({percent(champion.win_rate)})</span>
                             {#if champion.wpa !== undefined}
                               <span class="text-gray-600">|</span>
                               <span class="rounded bg-gray-800/90 border border-gray-700/60 px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider text-gray-300 shrink-0">WPA</span>
@@ -340,15 +351,10 @@
                           </div>
                         {/if}
                         <div class="min-w-0 flex-1">
-                          <div class="flex items-center gap-1">
-                            <p class="truncate font-medium text-xs text-gray-200" title={partner.name}>{partner.name}</p>
-                            {#if (partner.price_total ?? 0) > 0}
-                              <span class="text-[9px] text-yellow-500 shrink-0">{(partner.price_total ?? 0).toLocaleString()}g</span>
-                            {/if}
-                          </div>
+                          <p class="truncate font-medium text-xs text-gray-200" title={partner.name}>{partner.name}</p>
                           <p class="flex items-center flex-wrap gap-1 text-[10px] text-gray-400 mt-0.5 leading-none">
-                            <span class="rounded bg-gray-800/90 border border-gray-700/60 px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider text-gray-300 shrink-0">WR</span>
-                            <span class="text-gray-200 font-medium">{Math.round(partner.games * partner.win_rate)}/{partner.games} ({percent(partner.win_rate)})</span>
+                            <span class="rounded bg-gray-800/90 border border-gray-700/60 px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider text-gray-400 shrink-0">WR</span>
+                            <span class="text-gray-400 font-medium">{Math.round(partner.games * partner.win_rate)}/{partner.games} ({percent(partner.win_rate)})</span>
                             {#if partner.wpa !== undefined}
                               <span class="text-gray-600">|</span>
                               <span class="rounded bg-gray-800/90 border border-gray-700/60 px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider text-gray-300 shrink-0">WPA</span>
@@ -382,24 +388,17 @@
                       {@const pDomId = cleanDomId(`aug-${partner.id}`)}
                       <div id={pDomId} class="flex items-center gap-2 p-1 rounded-md hover:bg-gray-800/50 transition-colors cursor-help">
                         {#if partner.icon_url}
-                          <img src={partner.icon_url} alt={partner.name} class="h-7 w-7 shrink-0 rounded-md object-cover border border-gray-700 shadow-sm" />
+                          <img src={partner.icon_url} alt={partner.name} class="h-7 w-7 shrink-0 rounded-md object-cover border {getAugmentIconBorder(partner.rarity)} shadow-sm" />
                         {:else}
-                          <div class="h-7 w-7 shrink-0 rounded-md bg-gray-800 border border-gray-700 flex items-center justify-center text-[10px] font-bold text-gray-300">
+                          <div class="h-7 w-7 shrink-0 rounded-md bg-gray-800 border {getAugmentIconBorder(partner.rarity)} flex items-center justify-center text-[10px] font-bold {getAugmentTitleColor(partner.rarity)}">
                             {partner.name.slice(0, 1)}
                           </div>
                         {/if}
                         <div class="min-w-0 flex-1">
-                          <div class="flex items-center gap-1">
-                            <p class="truncate font-medium text-xs text-gray-200" title={partner.name}>{partner.name}</p>
-                            {#if partner.rarity}
-                              <span class="shrink-0 rounded px-1 text-[8px] font-bold uppercase tracking-wider {partner.rarity === 'silver' ? 'bg-slate-700/60 text-slate-300' : partner.rarity === 'gold' ? 'bg-yellow-950/60 text-yellow-300' : 'bg-fuchsia-950/60 text-fuchsia-300'}">
-                                {partner.rarity.slice(0, 1)}
-                              </span>
-                            {/if}
-                          </div>
+                          <p class="truncate font-medium text-xs {getAugmentTitleColor(partner.rarity)}" title={partner.name}>{partner.name}</p>
                           <p class="flex items-center flex-wrap gap-1 text-[10px] text-gray-400 mt-0.5 leading-none">
-                            <span class="rounded bg-gray-800/90 border border-gray-700/60 px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider text-gray-300 shrink-0">WR</span>
-                            <span class="text-gray-200 font-medium">{Math.round(partner.games * partner.win_rate)}/{partner.games} ({percent(partner.win_rate)})</span>
+                            <span class="rounded bg-gray-800/90 border border-gray-700/60 px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider text-gray-400 shrink-0">WR</span>
+                            <span class="text-gray-400 font-medium">{Math.round(partner.games * partner.win_rate)}/{partner.games} ({percent(partner.win_rate)})</span>
                             {#if partner.wpa !== undefined}
                               <span class="text-gray-600">|</span>
                               <span class="rounded bg-gray-800/90 border border-gray-700/60 px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider text-gray-300 shrink-0">WPA</span>
@@ -558,9 +557,9 @@
               >
                 <td class="flex max-w-[340px] items-center gap-2 px-3 py-2">
                   {#if row.icon_url}
-                    <img src={row.icon_url} alt={row.name} class="h-7 w-7 rounded object-cover shrink-0" />
+                    <img src={row.icon_url} alt={row.name} class="h-7 w-7 rounded object-cover shrink-0 border {kind === 'augment' ? getAugmentIconBorder(row.rarity) : 'border-gray-800'}" />
                   {/if}
-                  <span class="truncate font-medium text-gray-200">{row.name}</span>
+                  <span class="truncate font-medium {kind === 'augment' && row.rarity ? getAugmentTitleColor(row.rarity) : 'text-gray-200'}">{row.name}</span>
                 </td>
                 {#if kind === "augment"}
                   <td class="px-3 py-2">

@@ -118,4 +118,5 @@ This session undertook a major upgrade of the match history statistics and build
   - *Firebrand*: `"Your Attacks also Burn enemies, dealing 0.4% max Health magic damage per second over 5 seconds. This Burn stacks infinitely."`
 - **UI Metrics Alignment**:
   - Main subheader: `WR $games_won/$games_scanned ($wr_pct) $+/-wpa`
-  - Best Matches sublines: `((WR)) $win/$games ($wr_percentage) | ((WPA)) $wpa`
+  - Best Matches sublines: `((WR)) $win/$games ($wr_percentage) | ((WPA)) $wpa` (darkened `text-gray-400` WR text)
+  - Visual hierarchy: Removed redundant gold prices from Items column; replaced tier text badges with tier-themed text colors (`text-slate-300`, `text-yellow-400`, `text-fuchsia-400`) and glowing icon borders.
