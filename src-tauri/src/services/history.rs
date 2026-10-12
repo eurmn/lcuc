@@ -7,6 +7,7 @@ use crate::services::champions::get_all_champions;
 use crate::services::lcu_client::LcuClient;
 use futures_util::future::join_all;
 use lazy_static::lazy_static;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
