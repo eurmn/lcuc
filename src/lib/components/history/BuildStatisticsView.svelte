@@ -306,12 +306,12 @@
                         {/if}
                         <div class="min-w-0 flex-1">
                           <p class="truncate font-medium text-xs text-gray-200" title={champion.name}>{champion.name}</p>
-                          <p class="text-[10px] text-gray-400 truncate mt-0.5">
-                            <span class="text-gray-300 font-medium">{percent(champion.win_rate)}</span>
-                            <span class="text-gray-600 mx-0.5">·</span>
-                            <span>{champion.games}</span>
+                          <p class="flex items-center flex-wrap gap-1 text-[10px] text-gray-400 mt-0.5 leading-none">
+                            <span class="rounded bg-gray-800/90 border border-gray-700/60 px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider text-gray-300 shrink-0">WR</span>
+                            <span class="text-gray-200 font-medium">{Math.round(champion.games * champion.win_rate)}/{champion.games} ({percent(champion.win_rate)})</span>
                             {#if champion.wpa !== undefined}
-                              <span class="text-gray-600 mx-0.5">·</span>
+                              <span class="text-gray-600">|</span>
+                              <span class="rounded bg-gray-800/90 border border-gray-700/60 px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider text-gray-300 shrink-0">WPA</span>
                               <span class="{champion.wpa >= 0 ? 'text-emerald-400' : 'text-red-400'} font-medium">{formatWpa(champion.wpa)}</span>
                             {/if}
                           </p>
@@ -346,12 +346,14 @@
                               <span class="text-[9px] text-yellow-500 shrink-0">{(partner.price_total ?? 0).toLocaleString()}g</span>
                             {/if}
                           </div>
-                          <p class="text-[10px] text-gray-400 truncate mt-0.5">
-                            <span class="text-gray-300 font-medium">{percent(partner.win_rate)}</span>
-                            <span class="text-gray-600 mx-0.5">·</span>
-                            <span>{partner.games}</span>
-                            <span class="text-gray-600 mx-0.5">·</span>
-                            <span class="{partner.wpa >= 0 ? 'text-emerald-400' : 'text-red-400'} font-medium">{formatWpa(partner.wpa)}</span>
+                          <p class="flex items-center flex-wrap gap-1 text-[10px] text-gray-400 mt-0.5 leading-none">
+                            <span class="rounded bg-gray-800/90 border border-gray-700/60 px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider text-gray-300 shrink-0">WR</span>
+                            <span class="text-gray-200 font-medium">{Math.round(partner.games * partner.win_rate)}/{partner.games} ({percent(partner.win_rate)})</span>
+                            {#if partner.wpa !== undefined}
+                              <span class="text-gray-600">|</span>
+                              <span class="rounded bg-gray-800/90 border border-gray-700/60 px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider text-gray-300 shrink-0">WPA</span>
+                              <span class="{partner.wpa >= 0 ? 'text-emerald-400' : 'text-red-400'} font-medium">{formatWpa(partner.wpa)}</span>
+                            {/if}
                           </p>
                         </div>
                       </div>
@@ -395,12 +397,14 @@
                               </span>
                             {/if}
                           </div>
-                          <p class="text-[10px] text-gray-400 truncate mt-0.5">
-                            <span class="text-gray-300 font-medium">{percent(partner.win_rate)}</span>
-                            <span class="text-gray-600 mx-0.5">·</span>
-                            <span>{partner.games}</span>
-                            <span class="text-gray-600 mx-0.5">·</span>
-                            <span class="{partner.wpa >= 0 ? 'text-emerald-400' : 'text-red-400'} font-medium">{formatWpa(partner.wpa)}</span>
+                          <p class="flex items-center flex-wrap gap-1 text-[10px] text-gray-400 mt-0.5 leading-none">
+                            <span class="rounded bg-gray-800/90 border border-gray-700/60 px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider text-gray-300 shrink-0">WR</span>
+                            <span class="text-gray-200 font-medium">{Math.round(partner.games * partner.win_rate)}/{partner.games} ({percent(partner.win_rate)})</span>
+                            {#if partner.wpa !== undefined}
+                              <span class="text-gray-600">|</span>
+                              <span class="rounded bg-gray-800/90 border border-gray-700/60 px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider text-gray-300 shrink-0">WPA</span>
+                              <span class="{partner.wpa >= 0 ? 'text-emerald-400' : 'text-red-400'} font-medium">{formatWpa(partner.wpa)}</span>
+                            {/if}
                           </p>
                         </div>
                       </div>
