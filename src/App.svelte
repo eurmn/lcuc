@@ -503,9 +503,9 @@
                 ></div>
               </div>
 
-              <!-- 2. Status row underneath the bar: left-aligned counter, percentage, and progress donut with more padding and matching bg color -->
+              <!-- 2. Status row underneath the bar: left-aligned counter, percentage, and progress donut aligned with statistics header (px-4) -->
               <div class="flex items-center justify-start px-4 pt-2 pb-1 text-xs">
-                <div class="flex items-center gap-2.5 rounded-md px-2 py-1">
+                <div class="flex items-center gap-2.5 py-1">
                   <!-- Progress donut filling with progress -->
                   <svg class="h-4 w-4 -rotate-90 shrink-0" viewBox="0 0 24 24">
                     <circle
