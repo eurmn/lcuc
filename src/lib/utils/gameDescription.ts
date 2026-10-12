@@ -200,11 +200,20 @@ export function parseGameDescription(raw?: string | null): string {
     return `<span style="color: ${color}">${content}</span>`;
   });
 
-  // 4. Remove leftover @Param@ variables cleanly if any weren't substituted
+  // 4. Clean up match runtime tracker lines and parenthetical trackers
+  html = html.replace(/\s*\(@f[0-9]+(\*100)?@%?\)/gi, "");
+  html = html.replace(/\s*\(@f[0-9]+@\)/gi, "");
+  html = html.replace(/<br\s*\/?>\s*<br\s*\/?>\s*(Damage Dealt|Bonus Damage|Healing Done|Shields Generated|Immobilizing Spells Blocked|Hooks Landed|Times Triggered|Takedowns|Damage Redirected|Burn Damage Dealt)[^<]*(@f[0-9]+@|f[0-9]+)[\s\S]*$/gi, "");
+  html = html.replace(/<br\s*\/?>\s*(Damage Dealt|Bonus Damage|Healing Done|Shields Generated|Immobilizing Spells Blocked|Hooks Landed|Times Triggered|Takedowns|Damage Redirected|Burn Damage Dealt)[^<]*(@f[0-9]+@|f[0-9]+)[\s\S]*$/gi, "");
+
+  // Remove leftover @Param@ variables cleanly if any weren't substituted
   html = html.replace(/@([a-zA-Z0-9_]+)(\*100)?@/g, (_m, param) => {
-    // humanize param name if numbers weren't resolved
+    if (/^f[0-9]+$/i.test(param)) return "";
     return `<span class="text-amber-300 font-semibold">${param}</span>`;
   });
+
+  // Clean unresolved {{...}} templates
+  html = html.replace(/\{\{[^}]*\}\}/g, "");
 
   // 5. Transform all game stat tags in multiple passes to support nesting
   let prevHtml = "";

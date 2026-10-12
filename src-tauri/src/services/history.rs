@@ -116,7 +116,7 @@ fn augment_resolution_cache_path() -> PathBuf {
     history_data_dir()
         .join("cache")
         .join("match-history")
-        .join("augments_v5.json")
+        .join("augments_v6.json")
 }
 
 fn read_augment_resolution_cache() -> HashMap<String, MatchHistoryAugmentInfo> {
