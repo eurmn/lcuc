@@ -196,6 +196,8 @@
     <div class="mt-3 flex min-h-0 flex-1 flex-col gap-3">
       <!-- Horizontal Inspector Grid (On Top of the Table) -->
       {#if selected}
+        {@const pairedItems = filterAndSortPartnersByKind(selected.partners, "item", selected.games)}
+        {@const pairedAugments = filterAndSortPartnersByKind(selected.partners, "augment", selected.games)}
         <section class="rounded-lg border border-gray-800 bg-gray-900/50 p-3 shadow-lg shrink-0 max-h-[300px] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-800">
           <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
             <!-- 1. Identity, Tier/Cost & What It Does -->
@@ -305,7 +307,6 @@
             </div>
 
             <!-- 3. Often Paired Items -->
-            {@const pairedItems = filterAndSortPartnersByKind(selected.partners, "item", selected.games)}
             <div class="flex flex-col rounded-lg border border-gray-800/80 bg-gray-950/60 p-3">
               <h3 class="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-amber-400">
                 <span class="icon-[heroicons--archive-box] h-3.5 w-3.5"></span>
@@ -344,7 +345,6 @@
             </div>
 
             <!-- 4. Often Paired Augments -->
-            {@const pairedAugments = filterAndSortPartnersByKind(selected.partners, "augment", selected.games)}
             <div class="flex flex-col rounded-lg border border-gray-800/80 bg-gray-950/60 p-3">
               <h3 class="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-purple-400">
                 <span class="icon-[heroicons--sparkles] h-3.5 w-3.5"></span>
