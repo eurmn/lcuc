@@ -117,7 +117,7 @@ fn augment_resolution_cache_path() -> PathBuf {
     history_data_dir()
         .join("cache")
         .join("match-history")
-        .join("augments_v2.json")
+        .join("augments_v3.json")
 }
 
 fn read_augment_resolution_cache() -> HashMap<String, MatchHistoryAugmentInfo> {
@@ -178,14 +178,14 @@ fn normalize_augment_icon_url(icon_path: &str) -> String {
         return String::new();
     }
     if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-        return trimmed;
+        return trimmed.to_lowercase();
     }
     let lower = trimmed.to_lowercase();
     if let Some(pos) = lower.find("/assets/") {
-        let relative = &trimmed[pos + "/assets/".len()..];
+        let relative = &lower[pos + "/assets/".len()..];
         return format!("https://raw.communitydragon.org/latest/game/assets/{relative}");
     }
-    let file_name = trimmed.rsplit('/').next().unwrap_or(&trimmed);
+    let file_name = lower.rsplit('/').next().unwrap_or(&lower);
     format!("{CDRAGON_CHERRY_AUGMENT_ICON_BASE}/{file_name}")
 }
 
@@ -193,17 +193,44 @@ fn normalize_augment_icon_url(icon_path: &str) -> String {
 struct AugmentCatalogEntry {
     name: String,
     icon_url: String,
+    rarity: Option<String>,
 }
 
 lazy_static! {
-    static ref ITEMS_CACHE: RwLock<Option<HashMap<i32, (String, String)>>> = RwLock::new(None);
+    static ref ITEMS_CACHE: RwLock<Option<HashMap<i32, (String, String, Option<String>)>>> = RwLock::new(None);
     static ref AUGMENTS_CATALOG_CACHE: RwLock<Option<HashMap<String, AugmentCatalogEntry>>> =
         RwLock::new(None);
     static ref RESOLVED_AUGMENTS_CACHE: RwLock<Option<HashMap<String, MatchHistoryAugmentInfo>>> =
         RwLock::new(None);
 }
 
-async fn get_items_by_id() -> Result<HashMap<i32, (String, String)>, String> {
+fn classify_item(name: &str, price_total: i64, from_count: usize, categories: &[String], desc: &str) -> Option<String> {
+    if categories.iter().any(|c| c.eq_ignore_ascii_case("boots")) {
+        return Some("boot".to_string());
+    }
+    if desc.contains("<rarityLegendary>") || desc.contains("<rarityMythic>") {
+        return Some("legendary".to_string());
+    }
+    if name.contains("Doran")
+        || name.contains("Guardian's")
+        || name.contains("Tear of the Goddess")
+        || (price_total <= 500 && categories.iter().any(|c| c.eq_ignore_ascii_case("lane") || c.eq_ignore_ascii_case("jungle")))
+    {
+        return Some("starter".to_string());
+    }
+    if categories.iter().any(|c| c.eq_ignore_ascii_case("consumable") || c.eq_ignore_ascii_case("trinket")) {
+        return Some("other".to_string());
+    }
+    if from_count > 0 && price_total >= 2200 {
+        return Some("legendary".to_string());
+    }
+    if price_total > 0 {
+        return Some("component".to_string());
+    }
+    None
+}
+
+async fn get_items_by_id() -> Result<HashMap<i32, (String, String, Option<String>)>, String> {
     {
         let cache = ITEMS_CACHE.read().await;
         if let Some(items) = cache.as_ref() {
@@ -245,7 +272,20 @@ async fn get_items_by_id() -> Result<HashMap<i32, (String, String)>, String> {
         } else {
             format!("{CDRAGON_ITEM_ICON_BASE}/{}", icon_name.to_lowercase())
         };
-        items.insert(id, (name, icon_url));
+
+        let price_total = item.get("priceTotal").and_then(Value::as_i64).unwrap_or(0);
+        let from_count = item.get("from").and_then(Value::as_array).map(|a| a.len()).unwrap_or(0);
+        let categories: Vec<String> = item
+            .get("categories")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|c| c.as_str().map(str::to_string))
+            .collect();
+        let desc = item.get("description").and_then(Value::as_str).unwrap_or("");
+        let item_class = classify_item(&name, price_total, from_count, &categories, desc);
+
+        items.insert(id, (name, icon_url, item_class));
     }
 
     let mut cache = ITEMS_CACHE.write().await;
@@ -290,10 +330,18 @@ async fn get_augment_catalog_map() -> Result<HashMap<String, AugmentCatalogEntry
                     .and_then(Value::as_str)
                     .unwrap_or("");
                 let icon_url = normalize_augment_icon_url(icon_path);
+                let raw_rarity = entry.get("rarity").and_then(Value::as_str).unwrap_or("");
+                let rarity = match raw_rarity.to_lowercase().as_str() {
+                    "ksilver" | "silver" => Some("silver".to_string()),
+                    "kgold" | "gold" => Some("gold".to_string()),
+                    "kprismatic" | "prismatic" => Some("prismatic".to_string()),
+                    _ => None,
+                };
 
                 let parsed_entry = AugmentCatalogEntry {
                     name: name.clone(),
                     icon_url,
+                    rarity,
                 };
 
                 // Index by integer ID as string
@@ -349,7 +397,7 @@ fn populate_kiwi_catalog(val: &Value, map: &mut HashMap<String, AugmentCatalogEn
                         .and_then(Value::as_str)
                         .unwrap_or("");
                     let icon_url = normalize_augment_icon_url(icon_path);
-                    let entry = AugmentCatalogEntry { name, icon_url };
+                    let entry = AugmentCatalogEntry { name, icon_url, rarity: None };
                     map.insert(id_str.clone(), entry.clone());
                     map.insert(id_str.to_lowercase(), entry);
                 }
@@ -446,6 +494,7 @@ async fn resolve_augments(raw: Option<&Value>) -> Vec<MatchHistoryAugmentInfo> {
                     id: id.clone(),
                     name: entry.name.clone(),
                     icon_url: entry.icon_url.clone(),
+                    rarity: entry.rarity.clone(),
                 });
             } else {
                 // Fallback: humanize name if possible rather than "ARAM_..."
@@ -460,6 +509,7 @@ async fn resolve_augments(raw: Option<&Value>) -> Vec<MatchHistoryAugmentInfo> {
                     id: id.clone(),
                     name: fallback_name,
                     icon_url: String::new(),
+                    rarity: None,
                 });
             }
         }
@@ -747,7 +797,7 @@ pub async fn get_current_summoner_match_history(
                 for item_id in &item_ids {
                     if *item_id == 0 {
                         items.push(None);
-                    } else if let Some((name, icon_url)) = items_by_id.get(item_id) {
+                    } else if let Some((name, icon_url, _)) = items_by_id.get(item_id) {
                         items.push(Some(MatchHistoryItemInfo {
                             id: *item_id,
                             name: name.clone(),
@@ -807,7 +857,7 @@ pub async fn enrich_global_statistics(mut response: Value) -> Result<Value, Stri
         }
     }
     let item_details = join_all(item_ids.into_iter().filter_map(|id| {
-        let (name, raw_icon_url) = items.get(&(id as i32))?.clone();
+        let (name, raw_icon_url, _) = items.get(&(id as i32))?.clone();
         Some(async move {
             (
                 id,
@@ -927,9 +977,12 @@ pub async fn enrich_statistics_response(mut response: Value) -> Result<Value, St
             .strip_prefix("item:")
             .and_then(|id| id.parse::<i32>().ok())
         {
-            if let Some((name, raw_icon_url)) = items.get(&item_id) {
+            if let Some((name, raw_icon_url, item_class)) = items.get(&item_id) {
                 object.insert("name".to_string(), Value::String(name.clone()));
                 object.insert("icon_url".to_string(), Value::String(raw_icon_url.clone()));
+                if let Some(item_class) = item_class {
+                    object.insert("item_class".to_string(), Value::String(item_class.clone()));
+                }
             }
         } else if let Some(augment_id) = id.strip_prefix("augment:") {
             if let Some(augment) = augment_map.get(augment_id) {
@@ -938,6 +991,9 @@ pub async fn enrich_statistics_response(mut response: Value) -> Result<Value, St
                     "icon_url".to_string(),
                     Value::String(augment.icon_url.clone()),
                 );
+                if let Some(rarity) = &augment.rarity {
+                    object.insert("rarity".to_string(), Value::String(rarity.clone()));
+                }
             }
         }
         if let Some(contexts) = object.get_mut("champions").and_then(Value::as_array_mut) {
@@ -970,10 +1026,13 @@ pub async fn enrich_statistics_response(mut response: Value) -> Result<Value, St
                     .strip_prefix("item:")
                     .and_then(|id| id.parse::<i32>().ok())
                 {
-                    if let Some((name, raw_icon_url)) = items.get(&item_id) {
+                    if let Some((name, raw_icon_url, item_class)) = items.get(&item_id) {
                         context_object.insert("name".to_string(), Value::String(name.clone()));
                         context_object
                             .insert("icon_url".to_string(), Value::String(raw_icon_url.clone()));
+                        if let Some(item_class) = item_class {
+                            context_object.insert("item_class".to_string(), Value::String(item_class.clone()));
+                        }
                     }
                 } else if let Some(augment_id) = partner_id.strip_prefix("augment:") {
                     if let Some(augment) = augment_map.get(augment_id) {
@@ -983,6 +1042,9 @@ pub async fn enrich_statistics_response(mut response: Value) -> Result<Value, St
                             "icon_url".to_string(),
                             Value::String(augment.icon_url.clone()),
                         );
+                        if let Some(rarity) = &augment.rarity {
+                            context_object.insert("rarity".to_string(), Value::String(rarity.clone()));
+                        }
                     }
                 }
             }

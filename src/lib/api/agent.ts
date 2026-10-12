@@ -33,6 +33,8 @@ export interface ServerStatisticContext {
   win_rate: number;
   wpa: number;
   pick_rate: number;
+  rarity?: string;
+  item_class?: string;
 }
 
 export interface ServerStatisticRow {
@@ -40,6 +42,8 @@ export interface ServerStatisticRow {
   name: string;
   icon_url: string;
   kind: StatisticsKind;
+  rarity?: string;
+  item_class?: string;
   games: number;
   wins: number;
   kills: number;

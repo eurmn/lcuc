@@ -13,6 +13,8 @@ pub struct MatchHistoryAugmentInfo {
     pub id: String,
     pub name: String,
     pub icon_url: String,
+    #[serde(default)]
+    pub rarity: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
