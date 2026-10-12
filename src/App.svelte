@@ -457,9 +457,29 @@
           <span class="text-[10px] text-cyan-400/80 tabular-nums">
             ({progressPct}%)
           </span>
-          <svg class="h-3 w-3 animate-spin text-cyan-400 shrink-0" viewBox="0 0 24 24" fill="none">
-            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+          <!-- Progress donut filling with progress -->
+          <svg class="h-3.5 w-3.5 -rotate-90 shrink-0" viewBox="0 0 24 24">
+            <circle
+              class="text-cyan-950/80"
+              stroke="currentColor"
+              stroke-width="3"
+              fill="transparent"
+              cx="12"
+              cy="12"
+              r="9"
+            />
+            <circle
+              class="text-cyan-400 transition-[stroke-dashoffset] duration-300 ease-out"
+              stroke="currentColor"
+              stroke-width="3"
+              stroke-linecap="round"
+              fill="transparent"
+              cx="12"
+              cy="12"
+              r="9"
+              stroke-dasharray="56.548"
+              stroke-dashoffset={56.548 - (progressPct / 100) * 56.548}
+            />
           </svg>
         </div>
       </div>
