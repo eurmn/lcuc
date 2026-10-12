@@ -2,8 +2,9 @@ use crate::logger;
 use crate::models::{
     ChampionSummary, MatchHistoryAugmentInfo, MatchHistoryItem, MatchHistoryItemInfo,
 };
+use crate::services::asset_cache::get_cached_asset_data_uri;
 use crate::services::champions::get_all_champions;
-use crate::services::{asset_cache::get_cached_asset_data_uri, lcu_client::LcuClient};
+use crate::services::lcu_client::LcuClient;
 use futures_util::future::join_all;
 use lazy_static::lazy_static;
 use serde_json::{json, Value};
@@ -19,7 +20,9 @@ const CDRAGON_ITEM_ICON_BASE: &str =
     "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/assets/items/icons2d";
 const CDRAGON_GAME_ITEM_ICON_BASE: &str =
     "https://raw.communitydragon.org/latest/game/assets/items/icons2d";
-const CDRAGON_AUGMENTS_URL: &str =
+const CDRAGON_CHERRY_AUGMENTS_URL: &str =
+    "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/cherry-augments.json";
+const CDRAGON_KIWI_AUGMENTS_URL: &str =
     "https://raw.communitydragon.org/latest/game/maps/modespecificdata/kiwi.bin.json";
 const CDRAGON_AUGMENT_ICON_BASE: &str =
     "https://raw.communitydragon.org/latest/game/assets/ux/kiwi/augments/icons";
@@ -114,7 +117,7 @@ fn augment_resolution_cache_path() -> PathBuf {
     history_data_dir()
         .join("cache")
         .join("match-history")
-        .join("augments.json")
+        .join("augments_v2.json")
 }
 
 fn read_augment_resolution_cache() -> HashMap<String, MatchHistoryAugmentInfo> {
@@ -169,19 +172,33 @@ async fn fetch_game_detail(client: &LcuClient, game_id: u64) -> Option<Value> {
     }
 }
 
-async fn get_cached_augment_icon(file_name: &str) -> String {
-    let kiwi_url = format!("{CDRAGON_AUGMENT_ICON_BASE}/{file_name}");
-    let kiwi_icon = get_cached_asset_data_uri(&kiwi_url).await;
-    if kiwi_icon != kiwi_url {
-        return kiwi_icon;
+fn normalize_augment_icon_url(icon_path: &str) -> String {
+    let trimmed = icon_path.trim().replace(".tex", ".png");
+    if trimmed.is_empty() {
+        return String::new();
     }
-    let cherry_url = format!("{CDRAGON_CHERRY_AUGMENT_ICON_BASE}/{file_name}");
-    get_cached_asset_data_uri(&cherry_url).await
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        return trimmed;
+    }
+    let lower = trimmed.to_lowercase();
+    if let Some(pos) = lower.find("/assets/") {
+        let relative = &trimmed[pos + "/assets/".len()..];
+        return format!("https://raw.communitydragon.org/latest/game/assets/{relative}");
+    }
+    let file_name = trimmed.rsplit('/').next().unwrap_or(&trimmed);
+    format!("{CDRAGON_CHERRY_AUGMENT_ICON_BASE}/{file_name}")
+}
+
+#[derive(Clone, Debug)]
+struct AugmentCatalogEntry {
+    name: String,
+    icon_url: String,
 }
 
 lazy_static! {
     static ref ITEMS_CACHE: RwLock<Option<HashMap<i32, (String, String)>>> = RwLock::new(None);
-    static ref AUGMENTS_CACHE: RwLock<Option<Value>> = RwLock::new(None);
+    static ref AUGMENTS_CATALOG_CACHE: RwLock<Option<HashMap<String, AugmentCatalogEntry>>> =
+        RwLock::new(None);
     static ref RESOLVED_AUGMENTS_CACHE: RwLock<Option<HashMap<String, MatchHistoryAugmentInfo>>> =
         RwLock::new(None);
 }
@@ -236,41 +253,117 @@ async fn get_items_by_id() -> Result<HashMap<i32, (String, String)>, String> {
     Ok(items)
 }
 
-async fn get_augment_catalog() -> Result<Value, String> {
+async fn get_augment_catalog_map() -> Result<HashMap<String, AugmentCatalogEntry>, String> {
     {
-        let cache = AUGMENTS_CACHE.read().await;
+        let cache = AUGMENTS_CATALOG_CACHE.read().await;
         if let Some(catalog) = cache.as_ref() {
             return Ok(catalog.clone());
         }
     }
-    let catalog: Value = reqwest::Client::new()
-        .get(CDRAGON_AUGMENTS_URL)
-        .send()
-        .await
-        .map_err(|error| format!("Failed fetching augment catalog: {error}"))?
-        .json()
-        .await
-        .map_err(|error| format!("Failed parsing augment catalog: {error}"))?;
-    let mut cache = AUGMENTS_CACHE.write().await;
-    *cache = Some(catalog.clone());
-    Ok(catalog)
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let mut catalog_map: HashMap<String, AugmentCatalogEntry> = HashMap::new();
+
+    // 1. Primary: cherry-augments.json (Contains official localized names and paths for Arena and ARAM Mayhem)
+    if let Ok(resp) = client.get(CDRAGON_CHERRY_AUGMENTS_URL).send().await {
+        if let Ok(entries) = resp.json::<Vec<Value>>().await {
+            for entry in entries {
+                let name = entry
+                    .get("nameTRA")
+                    .or_else(|| entry.get("name"))
+                    .or_else(|| entry.get("simpleNameTRA"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if name.is_empty() {
+                    continue;
+                }
+
+                let icon_path = entry
+                    .get("augmentSmallIconPath")
+                    .or_else(|| entry.get("augmentLargeIconPath"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let icon_url = normalize_augment_icon_url(icon_path);
+
+                let parsed_entry = AugmentCatalogEntry {
+                    name: name.clone(),
+                    icon_url,
+                };
+
+                // Index by integer ID as string
+                if let Some(id) = entry.get("id").and_then(Value::as_i64) {
+                    catalog_map.insert(id.to_string(), parsed_entry.clone());
+                }
+
+                // Index by augmentNameId (e.g. "ARAM_Zealot", "Zealot")
+                if let Some(name_id) = entry.get("augmentNameId").and_then(Value::as_str) {
+                    catalog_map.insert(name_id.to_string(), parsed_entry.clone());
+                    catalog_map.insert(name_id.to_lowercase(), parsed_entry.clone());
+                    if let Some(stripped) = name_id.strip_prefix("ARAM_") {
+                        catalog_map.insert(stripped.to_string(), parsed_entry.clone());
+                        catalog_map.insert(stripped.to_lowercase(), parsed_entry.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Secondary fallback: kiwi.bin.json for any legacy mode-specific augments
+    if let Ok(resp) = client.get(CDRAGON_KIWI_AUGMENTS_URL).send().await {
+        if let Ok(kiwi_val) = resp.json::<Value>().await {
+            populate_kiwi_catalog(&kiwi_val, &mut catalog_map);
+        }
+    }
+
+    let mut cache = AUGMENTS_CATALOG_CACHE.write().await;
+    *cache = Some(catalog_map.clone());
+    Ok(catalog_map)
 }
 
-fn find_augment<'a>(value: &'a Value, id: &str) -> Option<&'a Value> {
-    match value {
-        Value::Object(object) => {
-            let matches_id = ["id", "mName", "AugmentNameId", "AugmentPlatformId"]
-                .iter()
-                .filter_map(|key| object.get(*key))
-                .filter_map(value_to_id)
-                .any(|candidate| candidate == id);
-            if matches_id {
-                return Some(value);
+fn populate_kiwi_catalog(val: &Value, map: &mut HashMap<String, AugmentCatalogEntry>) {
+    match val {
+        Value::Object(obj) => {
+            let has_id = obj
+                .get("id")
+                .or_else(|| obj.get("mName"))
+                .or_else(|| obj.get("AugmentNameId"));
+            if let Some(id_val) = has_id {
+                let id_str = value_to_id(id_val).unwrap_or_default();
+                if !id_str.is_empty() && !map.contains_key(&id_str) {
+                    let name = obj
+                        .get("name")
+                        .or_else(|| obj.get("mName"))
+                        .or_else(|| obj.get("AugmentNameId"))
+                        .and_then(Value::as_str)
+                        .unwrap_or(&id_str)
+                        .to_string();
+                    let icon_path = obj
+                        .get("AugmentSmallIconPath")
+                        .or_else(|| obj.get("AugmentLargeIconPath"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let icon_url = normalize_augment_icon_url(icon_path);
+                    let entry = AugmentCatalogEntry { name, icon_url };
+                    map.insert(id_str.clone(), entry.clone());
+                    map.insert(id_str.to_lowercase(), entry);
+                }
             }
-            object.values().find_map(|child| find_augment(child, id))
+            for child in obj.values() {
+                populate_kiwi_catalog(child, map);
+            }
         }
-        Value::Array(values) => values.iter().find_map(|child| find_augment(child, id)),
-        _ => None,
+        Value::Array(arr) => {
+            for child in arr {
+                populate_kiwi_catalog(child, map);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -328,42 +421,52 @@ async fn resolve_augments(raw: Option<&Value>) -> Vec<MatchHistoryAugmentInfo> {
     }
 
     if !unresolved_ids.is_empty() {
-        let Ok(catalog) = get_augment_catalog().await else {
+        let Ok(catalog) = get_augment_catalog_map().await else {
             logger::warn("tauri.history", "Augment catalog unavailable");
             return resolved;
         };
-        let new_augments = join_all(unresolved_ids.into_iter().map(|id| async {
-            let augment = find_augment(&catalog, &id)?;
-            let name = augment
-                .get("name")
-                .or_else(|| augment.get("mName"))
-                .or_else(|| augment.get("AugmentNameId"))
-                .and_then(Value::as_str)
-                .unwrap_or(&id)
-                .to_string();
-            let icon_path = augment
-                .get("AugmentSmallIconPath")
-                .or_else(|| augment.get("AugmentLargeIconPath"))
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .replace(".tex", ".png");
-            if icon_path.is_empty() {
-                return None;
+
+        let mut newly_resolved = Vec::new();
+        for id in unresolved_ids {
+            let matched = catalog
+                .get(&id)
+                .or_else(|| catalog.get(&id.to_lowercase()))
+                .or_else(|| {
+                    if let Some(stripped) = id.strip_prefix("ARAM_") {
+                        catalog
+                            .get(stripped)
+                            .or_else(|| catalog.get(&stripped.to_lowercase()))
+                    } else {
+                        None
+                    }
+                });
+
+            if let Some(entry) = matched {
+                newly_resolved.push(MatchHistoryAugmentInfo {
+                    id: id.clone(),
+                    name: entry.name.clone(),
+                    icon_url: entry.icon_url.clone(),
+                });
+            } else {
+                // Fallback: humanize name if possible rather than "ARAM_..."
+                let fallback_name = if let Some(stripped) = id.strip_prefix("ARAM_") {
+                    stripped.to_string()
+                } else if id.chars().all(|c| c.is_ascii_digit()) {
+                    format!("Augment #{id}")
+                } else {
+                    id.clone()
+                };
+                newly_resolved.push(MatchHistoryAugmentInfo {
+                    id: id.clone(),
+                    name: fallback_name,
+                    icon_url: String::new(),
+                });
             }
-            Some(MatchHistoryAugmentInfo {
-                id,
-                name,
-                icon_url: get_cached_augment_icon(
-                    icon_path.rsplit('/').next().unwrap_or(&icon_path),
-                )
-                .await,
-            })
-        }))
-        .await;
+        }
 
         let mut cache = RESOLVED_AUGMENTS_CACHE.write().await;
         let cache = cache.get_or_insert_with(HashMap::new);
-        for augment in new_augments.into_iter().flatten() {
+        for augment in newly_resolved {
             cache.insert(augment.id.clone(), augment.clone());
             resolved.push(augment);
         }
@@ -640,22 +743,18 @@ pub async fn get_current_summoner_match_history(
                             .unwrap_or(0) as i32
                     })
                     .collect();
-                let item_requests = item_ids.iter().map(|item_id| async {
-                    let Some((name, icon_url)) = items_by_id.get(item_id) else {
-                        return None;
-                    };
-                    Some(MatchHistoryItemInfo {
-                        id: *item_id,
-                        name: name.clone(),
-                        icon_url: get_cached_asset_data_uri(icon_url).await,
-                    })
-                });
-                let mut items = Vec::new();
-                for (item_id, item) in item_ids.iter().zip(join_all(item_requests).await) {
+                let mut items = Vec::with_capacity(item_ids.len());
+                for item_id in &item_ids {
                     if *item_id == 0 {
                         items.push(None);
+                    } else if let Some((name, icon_url)) = items_by_id.get(item_id) {
+                        items.push(Some(MatchHistoryItemInfo {
+                            id: *item_id,
+                            name: name.clone(),
+                            icon_url: icon_url.clone(),
+                        }));
                     } else {
-                        items.push(item);
+                        items.push(None);
                     }
                 }
 
@@ -830,10 +929,7 @@ pub async fn enrich_statistics_response(mut response: Value) -> Result<Value, St
         {
             if let Some((name, raw_icon_url)) = items.get(&item_id) {
                 object.insert("name".to_string(), Value::String(name.clone()));
-                object.insert(
-                    "icon_url".to_string(),
-                    Value::String(get_cached_asset_data_uri(raw_icon_url).await),
-                );
+                object.insert("icon_url".to_string(), Value::String(raw_icon_url.clone()));
             }
         } else if let Some(augment_id) = id.strip_prefix("augment:") {
             if let Some(augment) = augment_map.get(augment_id) {
@@ -876,10 +972,8 @@ pub async fn enrich_statistics_response(mut response: Value) -> Result<Value, St
                 {
                     if let Some((name, raw_icon_url)) = items.get(&item_id) {
                         context_object.insert("name".to_string(), Value::String(name.clone()));
-                        context_object.insert(
-                            "icon_url".to_string(),
-                            Value::String(get_cached_asset_data_uri(raw_icon_url).await),
-                        );
+                        context_object
+                            .insert("icon_url".to_string(), Value::String(raw_icon_url.clone()));
                     }
                 } else if let Some(augment_id) = partner_id.strip_prefix("augment:") {
                     if let Some(augment) = augment_map.get(augment_id) {

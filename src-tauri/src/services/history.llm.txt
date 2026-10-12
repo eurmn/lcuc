@@ -1,0 +1,27 @@
+# History Service (`history.rs`)
+
+## Overview
+`history.rs` handles match history retrieval from the League Client Update (LCU), CommunityDragon catalog enrichment, caching, and augment resolution for Arena and ARAM Mayhem game modes.
+
+## Primary Responsibilities
+1. **Match History Retrieval**:
+   - `get_current_summoner_match_history`: Fetches recent match history from LCU `/lol-match-history/v1/products/lol/{puuid}/matches` and enriches items, champions, and augments.
+2. **CommunityDragon Catalog Enrichment**:
+   - Items catalog fetched from CommunityDragon `items.json` and cached in-memory (`ITEMS_CACHE`).
+   - Champion metadata enriched from `champions.rs`.
+   - Augments catalog fetched from CommunityDragon `cherry-augments.json` (with `kiwi.bin.json` fallback) and cached in `AUGMENTS_CATALOG_CACHE`.
+3. **Augment Resolution (`resolve_augments`)**:
+   - Resolves numeric IDs (e.g. `1316`) and internal strings (e.g. `ARAM_Zealot`) to localized titles (e.g. "Zealot") and CDN icon URLs.
+   - Caches resolved augments in `%LOCALAPPDATA%\lcu-companion\cache\match-history\augments_v2.json`.
+4. **Statistics Response Enrichment (`enrich_statistics_response`)**:
+   - Injects localized item/augment/champion names and CDN image URLs into server-generated statistics projection rows before sending to frontend.
+
+## Key Functions & Structs
+- `get_items_by_id()`: Fetches/returns cached item dictionary `(name, icon_url)`.
+- `get_augment_catalog_map()`: Builds unified dictionary mapping augment IDs and names to `AugmentCatalogEntry`.
+- `resolve_augments(raw)`: Maps raw game augment arrays to `Vec<MatchHistoryAugmentInfo>`.
+- `enrich_statistics_response(response)`: Adds names and CDN icons to `rows`, `champions`, and `partners`.
+
+## Usage & Consumers
+- Used by `src-tauri/src/commands/history.rs` (`get_current_summoner_match_history`).
+- Used by `src-tauri/src/commands/agent.rs` (`api_statistics`) to enrich raw statistics facts from `agent.db` and `global-aram.db`.

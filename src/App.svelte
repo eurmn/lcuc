@@ -86,8 +86,14 @@
       statisticsScope = savedStatisticsScope;
     }
     hideLowPickrate = localStorage.getItem("lcu-statistics-hide-low-pickrate") === "true";
-    const refreshGlobalStatus = () => getGlobalAramConfig()
-      .then((config) => {
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+    let destroyed = false;
+
+    const refreshGlobalStatus = async () => {
+      if (destroyed) return;
+      let hasActiveWork = false;
+      try {
+        const config = await getGlobalAramConfig();
         if (!statisticsConfigOpen) {
           globalLimit = config.limit;
           globalWorkers = config.workers ?? 3;
@@ -96,11 +102,29 @@
         globalCollectorState = config.collector_state;
         globalQueuedJobs = config.queued_jobs;
         agentOperations = config.operations ?? [];
-      })
-      .catch((error) => logger.warn("frontend.app", "Global statistics config unavailable", error));
+
+        hasActiveWork =
+          agentOperations.length > 0 ||
+          (globalCollectorState !== "live" &&
+            globalCollectorState !== "sleeping" &&
+            globalCollectorState !== "unknown" &&
+            !globalCollectorState.includes("paused"));
+      } catch (error) {
+        logger.warn("frontend.app", "Global statistics config unavailable", error);
+      }
+
+      if (!destroyed) {
+        // Poll quickly (1s) only when tasks/crawlers are running, otherwise chill at 6s
+        const nextDelay = hasActiveWork ? 1000 : 6000;
+        pollTimer = setTimeout(() => void refreshGlobalStatus(), nextDelay);
+      }
+    };
+
     void refreshGlobalStatus();
-    const timer = setInterval(refreshGlobalStatus, 1000);
-    return () => clearInterval(timer);
+    return () => {
+      destroyed = true;
+      if (pollTimer) clearTimeout(pollTimer);
+    };
   });
 
   function handleTabChange(tab: "builds" | "profile") {

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, untrack } from "svelte";
+  import { untrack } from "svelte";
   import { getCachedStatistics, requestStatistics, type StatisticsKind, type StatisticsScope } from "../../utils/statistics-data";
   import type { ServerStatisticRow } from "../../api/agent";
 
@@ -8,6 +8,8 @@
   let rows = $state<ServerStatisticRow[]>([]);
   let selectedId = $state<string | null>(null);
   let search = $state("");
+  let debouncedSearch = $state("");
+  let searchTimer: ReturnType<typeof setTimeout> | null = null;
   type SortKey = "name" | "games" | "pickRate" | "winRate" | "personalWinRate" | "globalWinRate" | "wpa" | "personalWpa" | "globalWpa" | "kda";
   let sortKey = $state<SortKey>("wpa");
   let sortDescending = $state(true);
@@ -18,21 +20,31 @@
   let baseline = $state(0);
   let requestVersion = 0;
 
+  function handleSearchInput(e: Event) {
+    const value = (e.currentTarget as HTMLInputElement).value;
+    search = value;
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      debouncedSearch = value;
+    }, 200);
+  }
+
   function query() {
     const effectiveSortKey = scope === "compare"
       ? sortKey === "winRate" ? "personalWinRate" : sortKey === "wpa" ? "personalWpa" : sortKey
       : sortKey === "personalWinRate" || sortKey === "globalWinRate" ? "winRate" : sortKey === "personalWpa" || sortKey === "globalWpa" ? "wpa" : sortKey;
-    return { scope: scope ?? "personal", kind, search, hide_low_pickrate: hideLowPickrate, sort_key: effectiveSortKey, descending: sortDescending, limit: 100 };
+    return { scope: scope ?? "personal", kind, search: debouncedSearch, hide_low_pickrate: hideLowPickrate, sort_key: effectiveSortKey, descending: sortDescending, limit: 100 };
   }
 
   async function load(force = false) {
     const version = ++requestVersion;
-    const cached = getCachedStatistics(query());
+    const currentQuery = query();
+    const cached = getCachedStatistics(currentQuery);
     if (cached && !force) {
       rows = cached.rows; sampleCount = cached.sample_count; baseline = cached.baseline;  loading = false;
     } else if (rows.length) refreshing = true;
     try {
-      const response = await requestStatistics(query(), { force });
+      const response = await requestStatistics(currentQuery, { force });
       if (version !== requestVersion) return;
       rows = response.rows; sampleCount = response.sample_count; baseline = response.baseline;  error = null;
     } catch (err) {
@@ -48,7 +60,7 @@
   function setSort(key: typeof sortKey) {
     if (sortKey === key) sortDescending = !sortDescending;
     else { sortKey = key; sortDescending = key !== "name"; }
-    void load(true);
+    void load();
   }
   function percent(value: number) { return `${Math.round(value * 100)}%`; }
   function formatWpa(value: number) { return `${value >= 0 ? "+" : ""}${(value * 100).toFixed(1)}`; }
@@ -64,15 +76,31 @@
     return row.kind === "augment" ? "Often paired with this" : "Often paired with this augment";
   }
 
+  function filterAndSortPartners(partners: ServerStatisticRow["partners"], parentGames: number, kind: string) {
+    const list = partners.filter((partner) => kind !== "item" || String(partner.id).startsWith("augment:"));
+    const minGames = parentGames >= 4 ? 2 : 1;
+    let filtered = list.filter((p) => p.games >= minGames);
+    if (filtered.length === 0) {
+      filtered = list;
+    }
+    return filtered
+      .slice()
+      .sort((a, b) => {
+        if (b.wpa !== a.wpa) return b.wpa - a.wpa;
+        return b.games - a.games;
+      })
+      .slice(0, 8);
+  }
+
   $effect(() => {
     void scope;
     void kind;
-    void search;
+    void debouncedSearch;
     void hideLowPickrate;
-    const timer = setTimeout(() => void untrack(() => load()), 180);
-    return () => clearTimeout(timer);
+    untrack(() => {
+      void load();
+    });
   });
-  onMount(() => void load());
 </script>
 
 <div class="flex h-full min-h-0 flex-col overflow-hidden bg-gray-950 p-4 text-gray-200">
@@ -87,7 +115,7 @@
       <section class="min-h-0 overflow-auto rounded-lg border border-gray-800 bg-black/40 scrollbar-thin scrollbar-thumb-gray-800">
         <div class="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-2 border-b border-gray-800 bg-gray-900 px-3 py-2">
           <div><h2 class="text-sm font-semibold text-white">Build performance</h2><p class="text-[11px] text-gray-500">{scope === "compare" ? "Compare your performance with the database" : `WPA = win-rate delta · baseline ${percent(baseline)}`} · {sampleCount} games {#if refreshing}· refreshing{/if}</p></div>
-          <div class="flex flex-wrap items-center gap-2"><input bind:value={search} type="search" placeholder="Search builds..." class="w-36 rounded-md border border-gray-700 bg-gray-950 px-2 py-1.5 text-[11px] text-gray-100 outline-none placeholder:text-gray-600 focus:border-purple-500" /><div class="flex rounded-lg border border-gray-700 bg-gray-950 p-0.5 text-[11px]">{#each [["item", "Items"], ["augment", "Augments"], ["combo", "Combos"]] as option}<button type="button" class="rounded-md px-2 py-1 {kind === option[0] ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-white'}" onclick={() => { kind = option[0] as StatisticsKind; selectedId = null; }}>{option[1]}</button>{/each}</div></div>
+          <div class="flex flex-wrap items-center gap-2"><input value={search} oninput={handleSearchInput} type="search" placeholder="Search builds..." class="w-36 rounded-md border border-gray-700 bg-gray-950 px-2 py-1.5 text-[11px] text-gray-100 outline-none placeholder:text-gray-600 focus:border-purple-500" /><div class="flex rounded-lg border border-gray-700 bg-gray-950 p-0.5 text-[11px]">{#each [["item", "Items"], ["augment", "Augments"], ["combo", "Combos"]] as option}<button type="button" class="rounded-md px-2 py-1 {kind === option[0] ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-white'}" onclick={() => { kind = option[0] as StatisticsKind; selectedId = null; }}>{option[1]}</button>{/each}</div></div>
         </div>
         <table class="w-full text-left text-xs"><thead class="sticky top-[57px] bg-gray-900 text-[10px] uppercase tracking-wider text-gray-500"><tr>
           <th class="cursor-pointer px-3 py-2" onclick={() => setSort("name")}>Build {sortIndicator("name")}</th><th class="cursor-pointer px-3 py-2 text-right" onclick={() => setSort("games")}>Games {sortIndicator("games")}</th><th class="cursor-pointer px-3 py-2 text-right" onclick={() => setSort("pickRate")}>Pick rate {sortIndicator("pickRate")}</th><th class="cursor-pointer px-3 py-2 text-right" onclick={() => setSort(scope === "compare" ? "personalWinRate" : "winRate")}>{scope === "compare" ? "Mine WR" : "WR"} {sortIndicator(scope === "compare" ? "personalWinRate" : "winRate")}</th>{#if scope === "compare"}<th class="cursor-pointer px-3 py-2 text-right" onclick={() => setSort("globalWinRate")}>Global WR {sortIndicator("globalWinRate")}</th>{/if}<th class="cursor-pointer px-3 py-2 text-right" onclick={() => setSort(scope === "compare" ? "personalWpa" : "wpa")}>{scope === "compare" ? "Mine WPA" : "WPA"} {sortIndicator(scope === "compare" ? "personalWpa" : "wpa")}</th>{#if scope === "compare"}<th class="cursor-pointer px-3 py-2 text-right" onclick={() => setSort("globalWpa")}>Global WPA {sortIndicator("globalWpa")}</th>{/if}<th class="cursor-pointer px-3 py-2 text-right" onclick={() => setSort("kda")}>KDA {sortIndicator("kda")}</th>
@@ -98,12 +126,30 @@
           <dl class="grid grid-cols-2 gap-2 border-b border-gray-800 py-3 text-xs"><div><dt class="text-gray-500">KDA</dt><dd>{averageKda(selected).toFixed(2)}</dd></div><div><dt class="text-gray-500">Avg damage</dt><dd>{Math.round(selected.damage / Math.max(1, selected.games)).toLocaleString()}</dd></div><div><dt class="text-gray-500">Avg gold</dt><dd>{Math.round(selected.gold / Math.max(1, selected.games)).toLocaleString()}</dd></div><div><dt class="text-gray-500">{scope === "compare" ? "Mine WPA" : "WPA"}</dt><dd class={scope === "compare" ? (selected.personal_wpa ?? 0) >= 0 ? "text-emerald-300" : "text-red-300" : selected.wpa >= 0 ? "text-emerald-300" : "text-red-300"}>{formatWpaPoints(scope === "compare" ? (selected.personal_wpa ?? 0) : selected.wpa)}</dd></div>{#if scope === "compare"}<div><dt class="text-gray-500">Global WPA</dt><dd class={(selected.global_wpa ?? 0) >= 0 ? "text-emerald-300" : "text-red-300"}>{selected.global_observed ? formatWpaPoints(selected.global_wpa ?? 0) : "—"}</dd></div>{/if}</dl>
           <h3 class="mb-1.5 mt-3 text-xs font-semibold uppercase tracking-wider text-gray-500">Champions used with this build</h3>
           <div class="space-y-1.5">{#each selected.champions.slice(0, 8) as champion (champion.id)}
-            <div class="flex items-center justify-between gap-2 text-xs"><span class="truncate">{champion.name}</span><span class="shrink-0 text-right text-gray-400">{champion.games} games · {percent(champion.win_rate)} WR · <span class={champion.wpa >= 0 ? "text-emerald-300" : "text-red-300"}>{formatWpa(champion.wpa)} WPA</span></span></div>
+            <div class="flex items-center justify-between gap-2 text-xs">
+              <div class="flex min-w-0 items-center gap-1.5">
+                {#if champion.icon_url}
+                  <img src={champion.icon_url} alt={champion.name} class="h-5 w-5 shrink-0 rounded-full object-cover" />
+                {/if}
+                <span class="truncate" title={champion.name}>{champion.name}</span>
+              </div>
+              <span class="shrink-0 text-right text-gray-400">{champion.games} games · {percent(champion.win_rate)} WR · <span class={champion.wpa >= 0 ? "text-emerald-300" : "text-red-300"}>{formatWpa(champion.wpa)} WPA</span></span>
+            </div>
           {/each}</div>
           <h3 class="mb-1.5 mt-3 text-xs font-semibold uppercase tracking-wider text-gray-500">{partnerLabel(selected)}</h3>
-          <div class="space-y-1.5">{#each selected.partners.filter((partner) => selected.kind !== "item" || String(partner.id).startsWith("augment:")).slice(0, 8) as partner (partner.id)}
-            <div class="flex items-center justify-between gap-2 text-xs"><span class="truncate">{partner.name}</span><span class="shrink-0 text-right text-gray-400">{partner.games} games · {percent(partner.win_rate)} WR · <span class={partner.wpa >= 0 ? "text-emerald-300" : "text-red-300"}>{formatWpa(partner.wpa)} WPA</span></span></div>
-          {/each}</div>
+          <div class="space-y-1.5">
+            {#each filterAndSortPartners(selected.partners, selected.games, selected.kind) as partner (partner.id)}
+              <div class="flex items-center justify-between gap-2 text-xs">
+                <div class="flex min-w-0 items-center gap-1.5">
+                  {#if partner.icon_url}
+                    <img src={partner.icon_url} alt={partner.name} class="h-5 w-5 shrink-0 rounded object-cover" />
+                  {/if}
+                  <span class="truncate" title={partner.name}>{partner.name}</span>
+                </div>
+                <span class="shrink-0 text-right text-gray-400">{partner.games} games · {percent(partner.win_rate)} WR · <span class={partner.wpa >= 0 ? "text-emerald-300" : "text-red-300"}>{formatWpa(partner.wpa)} WPA</span></span>
+              </div>
+            {/each}
+          </div>
         {:else}<div class="flex h-full items-center justify-center text-center text-sm text-gray-500">Select a build to inspect its context.</div>{/if}
       </aside>
     </div>

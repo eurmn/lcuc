@@ -1,18 +1,18 @@
 <script lang="ts">
-  import { onMount, untrack } from "svelte";
+  import { untrack } from "svelte";
   import { getCachedStatistics, requestStatistics, type StatisticsScope } from "../../utils/statistics-data";
   import type { ServerStatisticRow } from "../../api/agent";
 
   let { showHeader = true, scope = "personal", hideLowPickrate = false }: { showHeader?: boolean; scope?: StatisticsScope; hideLowPickrate?: boolean } = $props();
 
   type SortKey = "name" | "games" | "pickRate" | "winRate" | "personalWinRate" | "globalWinRate" | "wpa" | "personalWpa" | "globalWpa" | "kda" | "damagePerMinute";
+  let selectedId = $state<string | null>(null);
   let rows = $state<ServerStatisticRow[]>([]);
   let sortKey = $state<SortKey>("wpa");
-  $effect(() => {
-    sortKey = scope === "compare" ? "personalWpa" : "wpa";
-  });
   let sortDescending = $state(true);
   let search = $state("");
+  let debouncedSearch = $state("");
+  let searchTimer: ReturnType<typeof setTimeout> | null = null;
   let loading = $state(true);
   let refreshing = $state(false);
   let error = $state<string | null>(null);
@@ -20,16 +20,30 @@
   let total = $state(0);
   let requestVersion = 0;
 
+  $effect(() => {
+    sortKey = scope === "compare" ? "personalWpa" : "wpa";
+  });
+
+  function handleSearchInput(e: Event) {
+    const value = (e.currentTarget as HTMLInputElement).value;
+    search = value;
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      debouncedSearch = value;
+    }, 200);
+  }
+
   function query() {
     const effectiveSortKey = scope === "compare"
       ? sortKey === "winRate" ? "personalWinRate" : sortKey === "wpa" ? "personalWpa" : sortKey
       : sortKey === "personalWinRate" || sortKey === "globalWinRate" ? "winRate" : sortKey === "personalWpa" || sortKey === "globalWpa" ? "wpa" : sortKey;
-    return { scope: scope ?? "personal", kind: "champion" as const, search, hide_low_pickrate: hideLowPickrate, sort_key: effectiveSortKey, descending: sortDescending, limit: 100 };
+    return { scope: scope ?? "personal", kind: "champion" as const, search: debouncedSearch, hide_low_pickrate: hideLowPickrate, sort_key: effectiveSortKey, descending: sortDescending, limit: 100 };
   }
 
   async function load(force = false) {
     const version = ++requestVersion;
-    const cached = getCachedStatistics(query());
+    const currentQuery = query();
+    const cached = getCachedStatistics(currentQuery);
     if (cached && !force) {
       rows = cached.rows;
       sampleCount = cached.sample_count;
@@ -39,7 +53,7 @@
       refreshing = true;
     }
     try {
-      const response = await requestStatistics(query(), { force });
+      const response = await requestStatistics(currentQuery, { force });
       if (version !== requestVersion) return;
       rows = response.rows;
       sampleCount = response.sample_count;
@@ -56,7 +70,6 @@
   }
 
   const visibleRows = $derived(rows);
-
   const selected = $derived(rows.find((row) => row.id === selectedId) ?? visibleRows[0] ?? null);
 
   function setSort(key: SortKey) {
@@ -65,7 +78,7 @@
       sortKey = key;
       sortDescending = key !== "name";
     }
-    void load(true);
+    void load();
   }
 
   function percent(value: number) { return `${Math.round(value * 100)}%`; }
@@ -79,15 +92,31 @@
     return activeKey === key ? (sortDescending ? "↓" : "↑") : "";
   }
 
+  function filterAndSortPartners(partners: ServerStatisticRow["partners"], prefix: string, parentGames: number) {
+    const list = partners.filter((p) => String(p.id).startsWith(prefix));
+    // Determine a minimum games threshold to exclude 1-game low-frequency high-WPA outliers
+    const minGames = parentGames >= 4 ? 2 : 1;
+    let filtered = list.filter((p) => p.games >= minGames);
+    if (filtered.length === 0) {
+      filtered = list;
+    }
+    return filtered
+      .slice()
+      .sort((a, b) => {
+        if (b.wpa !== a.wpa) return b.wpa - a.wpa;
+        return b.games - a.games;
+      })
+      .slice(0, 8);
+  }
+
   $effect(() => {
     void scope;
-    void search;
+    void debouncedSearch;
     void hideLowPickrate;
-    const timer = setTimeout(() => void untrack(() => load()), 180);
-    return () => clearTimeout(timer);
+    untrack(() => {
+      void load();
+    });
   });
-
-  onMount(() => void load());
 </script>
 
 <div class="flex h-full min-h-0 flex-col overflow-hidden bg-gray-950 p-4 text-gray-200">
@@ -107,7 +136,7 @@
     <div class="mt-3 grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_minmax(280px,360px)] gap-3">
       <section class="min-h-0 overflow-auto rounded-lg border border-gray-800 bg-black/40 scrollbar-thin scrollbar-thumb-gray-800">
         <div class="sticky top-0 z-10 flex justify-end border-b border-gray-800 bg-gray-900 px-3 py-2">
-          <input bind:value={search} type="search" placeholder="Search champions..." class="w-40 rounded-md border border-gray-700 bg-gray-950 px-2 py-1.5 text-[11px] text-gray-100 outline-none placeholder:text-gray-600 focus:border-purple-500" />
+          <input value={search} oninput={handleSearchInput} type="search" placeholder="Search champions..." class="w-40 rounded-md border border-gray-700 bg-gray-950 px-2 py-1.5 text-[11px] text-gray-100 outline-none placeholder:text-gray-600 focus:border-purple-500" />
         </div>
         <table class="w-full text-left text-xs">
           <thead class="sticky top-[41px] bg-gray-900 text-xs uppercase tracking-wider text-gray-400"><tr>
@@ -141,13 +170,33 @@
             <div><dt class="text-gray-500">Avg gold</dt><dd>{Math.round(selected.gold / Math.max(1, selected.games)).toLocaleString()}</dd></div><div><dt class="text-gray-500">{scope === "compare" ? "Mine WPA" : "WPA"}</dt><dd class={((scope === "compare" ? selected.personal_wpa ?? 0 : selected.wpa) >= 0) ? "text-emerald-300" : "text-red-300"}>{formatWpaPoints(scope === "compare" ? (selected.personal_wpa ?? 0) : selected.wpa)}</dd></div>{#if scope === "compare"}<div><dt class="text-gray-500">Global WPA</dt><dd class={(selected.global_wpa ?? 0) >= 0 ? "text-emerald-300" : "text-red-300"}>{selected.global_observed ? formatWpaPoints(selected.global_wpa ?? 0) : "—"}</dd></div>{/if}
           </dl>
           <h3 class="mb-1.5 mt-3 text-xs font-semibold uppercase tracking-wider text-gray-500">Associated items</h3>
-          <div class="space-y-1.5">{#each selected.partners.filter((partner) => String(partner.id).startsWith("item:")).slice(0, 6) as partner (partner.id)}
-            <div class="flex items-center justify-between gap-2 text-xs"><span class="truncate">{partner.name}</span><span class="shrink-0 text-right text-gray-400">{partner.games} games · {percent(partner.win_rate)} WR · <span class={partner.wpa >= 0 ? "text-emerald-300" : "text-red-300"}>{formatWpa(partner.wpa)} WPA</span></span></div>
-          {/each}</div>
+          <div class="space-y-1.5">
+            {#each filterAndSortPartners(selected.partners, "item:", selected.games) as partner (partner.id)}
+              <div class="flex items-center justify-between gap-2 text-xs">
+                <div class="flex min-w-0 items-center gap-1.5">
+                  {#if partner.icon_url}
+                    <img src={partner.icon_url} alt={partner.name} class="h-5 w-5 shrink-0 rounded object-cover" />
+                  {/if}
+                  <span class="truncate" title={partner.name}>{partner.name}</span>
+                </div>
+                <span class="shrink-0 text-right text-gray-400">{partner.games} games · {percent(partner.win_rate)} WR · <span class={partner.wpa >= 0 ? "text-emerald-300" : "text-red-300"}>{formatWpa(partner.wpa)} WPA</span></span>
+              </div>
+            {/each}
+          </div>
           <h3 class="mb-1.5 mt-3 text-xs font-semibold uppercase tracking-wider text-gray-500">Associated augments</h3>
-          <div class="space-y-1.5">{#each selected.partners.filter((partner) => String(partner.id).startsWith("augment:")).slice(0, 6) as partner (partner.id)}
-            <div class="flex items-center justify-between gap-2 text-xs"><span class="truncate">{partner.name}</span><span class="shrink-0 text-right text-gray-400">{partner.games} games · {percent(partner.win_rate)} WR · <span class={partner.wpa >= 0 ? "text-emerald-300" : "text-red-300"}>{formatWpa(partner.wpa)} WPA</span></span></div>
-          {/each}</div>
+          <div class="space-y-1.5">
+            {#each filterAndSortPartners(selected.partners, "augment:", selected.games) as partner (partner.id)}
+              <div class="flex items-center justify-between gap-2 text-xs">
+                <div class="flex min-w-0 items-center gap-1.5">
+                  {#if partner.icon_url}
+                    <img src={partner.icon_url} alt={partner.name} class="h-5 w-5 shrink-0 rounded object-cover" />
+                  {/if}
+                  <span class="truncate" title={partner.name}>{partner.name}</span>
+                </div>
+                <span class="shrink-0 text-right text-gray-400">{partner.games} games · {percent(partner.win_rate)} WR · <span class={partner.wpa >= 0 ? "text-emerald-300" : "text-red-300"}>{formatWpa(partner.wpa)} WPA</span></span>
+              </div>
+            {/each}
+          </div>
         {:else}<div class="flex h-full items-center justify-center text-center text-sm text-gray-500">Select a champion to inspect its statistics.</div>{/if}
       </aside>
     </div>

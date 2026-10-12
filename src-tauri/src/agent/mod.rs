@@ -325,23 +325,36 @@ fn statistic_row(
             })
         })
         .collect::<Vec<_>>();
-    let partner_rows = aggregate
+    let mut partner_rows = aggregate
         .partners
         .iter()
         .map(|(id, context)| {
             let games = context.games.max(1) as f64;
+            let win_rate = context.wins as f64 / games;
             json!({
                 "id": id,
                 "name": id,
                 "icon_url": "",
                 "games": context.games,
                 "wins": context.wins,
-                "win_rate": context.wins as f64 / games,
-                "wpa": context.wins as f64 / games - baseline,
+                "win_rate": win_rate,
+                "wpa": win_rate - baseline,
                 "pick_rate": context.games as f64 / (population_count.max(1) as f64),
             })
         })
         .collect::<Vec<_>>();
+    partner_rows.sort_by(|a, b| {
+        let wpa_b = b.get("wpa").and_then(Value::as_f64).unwrap_or(0.0);
+        let wpa_a = a.get("wpa").and_then(Value::as_f64).unwrap_or(0.0);
+        wpa_b
+            .partial_cmp(&wpa_a)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let effective_baseline = if kind == "champion" {
+        baseline
+    } else {
+        champion_baseline
+    };
     json!({
         "id": id,
         "name": name,
@@ -356,7 +369,7 @@ fn statistic_row(
         "gold": aggregate.gold,
         "duration": aggregate.duration,
         "win_rate": aggregate.wins as f64 / games,
-        "wpa": aggregate.wins as f64 / games - champion_baseline,
+        "wpa": aggregate.wins as f64 / games - effective_baseline,
         "pick_rate": aggregate.games as f64 / (population_count.max(1) as f64),
         "damage_per_minute": aggregate.damage as f64 / (duration / 60.0),
         "champions": champion_rows,
@@ -451,11 +464,7 @@ fn render_statistics_response(
                 .to_ascii_lowercase()
                 .contains(&search);
         let matches_pick_rate = !hide_low_pickrate
-            || row
-                .get("pick_rate")
-                .and_then(Value::as_f64)
-                .unwrap_or(0.0)
-                >= 0.01;
+            || row.get("pick_rate").and_then(Value::as_f64).unwrap_or(0.0) >= 0.01;
         matches_search && matches_pick_rate
     });
     rows.sort_by(|left, right| {
@@ -618,10 +627,7 @@ fn build_statistics_response(
                     0.0
                 };
                 if let Some(object) = row.as_object_mut() {
-                    object.insert(
-                        "global_observed".into(),
-                        Value::from(global_observed),
-                    );
+                    object.insert("global_observed".into(), Value::from(global_observed));
                     object.insert("personal_games".into(), Value::from(personal_games));
                     object.insert("personal_win_rate".into(), Value::from(personal_win_rate));
                     object.insert("personal_wpa".into(), Value::from(personal_wpa));
@@ -645,11 +651,7 @@ fn build_statistics_response(
                     .to_ascii_lowercase()
                     .contains(&search);
             let matches_pick_rate = !hide_low_pickrate
-                || row
-                    .get("pick_rate")
-                    .and_then(Value::as_f64)
-                    .unwrap_or(0.0)
-                    >= 0.01;
+                || row.get("pick_rate").and_then(Value::as_f64).unwrap_or(0.0) >= 0.01;
             matches_search && matches_pick_rate
         });
         rows.sort_by(|left, right| {
@@ -659,10 +661,7 @@ fn build_statistics_response(
                     .or_else(|| row.get("games"))
                     .and_then(Value::as_f64)
                     .unwrap_or(0.0),
-                "pickRate" => row
-                    .get("pick_rate")
-                    .and_then(Value::as_f64)
-                    .unwrap_or(0.0),
+                "pickRate" => row.get("pick_rate").and_then(Value::as_f64).unwrap_or(0.0),
                 "winRate" => row
                     .get("global_win_rate")
                     .or_else(|| row.get("win_rate"))
@@ -686,10 +685,7 @@ fn build_statistics_response(
                     .get("personal_wpa")
                     .and_then(Value::as_f64)
                     .unwrap_or(0.0),
-                "globalWpa" => row
-                    .get("global_wpa")
-                    .and_then(Value::as_f64)
-                    .unwrap_or(0.0),
+                "globalWpa" => row.get("global_wpa").and_then(Value::as_f64).unwrap_or(0.0),
                 _ => row
                     .get("global_wpa")
                     .or_else(|| row.get("wpa"))
@@ -737,7 +733,7 @@ fn build_statistics_response(
     let cache_key = cache_args.to_string();
     if let Ok(mut cache) = STATISTICS_QUERY_CACHE.lock() {
         if let Some((created_at, cached)) = cache.get(&cache_key) {
-            if created_at.elapsed() < Duration::from_secs(5) {
+            if created_at.elapsed() < Duration::from_secs(30) {
                 let cached_rows = cached
                     .get("rows")
                     .and_then(Value::as_array)
@@ -762,15 +758,14 @@ fn build_statistics_response(
                 }));
             }
         }
-        cache.retain(|_, (created_at, _)| created_at.elapsed() < Duration::from_secs(30));
+        cache.retain(|_, (created_at, _)| created_at.elapsed() < Duration::from_secs(120));
     }
     let projection_path = if scope == "global" {
         global_database
     } else {
         database
     };
-    if let Some((sample_count, baseline, rows)) =
-        load_statistics_projection(projection_path, kind)?
+    if let Some((sample_count, baseline, rows)) = load_statistics_projection(projection_path, kind)?
     {
         return Ok(render_statistics_response(
             args,
@@ -910,14 +905,7 @@ fn build_statistics_response(
     let mut rows = aggregates
         .into_iter()
         .filter_map(|(id, (name, aggregate))| {
-            let row = statistic_row(
-                id,
-                name,
-                kind,
-                &aggregate,
-                baseline,
-                population_count,
-            );
+            let row = statistic_row(id, name, kind, &aggregate, baseline, population_count);
             if search.is_empty()
                 || row
                     .get("name")
@@ -970,7 +958,11 @@ fn build_statistics_response(
     });
     if search.is_empty() && !hide_low_pickrate && sort_key == "name" {
         store_statistics_projection(
-            if scope == "global" { global_database } else { database },
+            if scope == "global" {
+                global_database
+            } else {
+                database
+            },
             kind,
             sample_count,
             baseline,
@@ -1075,6 +1067,8 @@ fn initialize_global_aram_database(path: &PathBuf) -> Result<(), String> {
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS idx_aram_participants_puuid ON aram_participants(puuid);
+        CREATE INDEX IF NOT EXISTS idx_aram_participants_champion ON aram_participants(champion_id);
+        CREATE INDEX IF NOT EXISTS idx_aram_participants_game ON aram_participants(game_id);
         CREATE INDEX IF NOT EXISTS idx_discovered_accounts_status ON discovered_accounts(status);
         INSERT OR IGNORE INTO config (key, value) VALUES ('game_limit', '1000');
         INSERT OR IGNORE INTO config (key, value) VALUES ('worker_count', '3');
@@ -1103,6 +1097,29 @@ fn initialize_global_aram_database(path: &PathBuf) -> Result<(), String> {
             )
             .map_err(|error| format!("failed recording Poro-Snax cleanup state: {error}"))?;
     }
+    let connection = open_connection(path)
+        .map_err(|error| format!("failed opening global database for wpa migration: {error}"))?;
+    let wpa_fix_needed = connection
+        .query_row(
+            "SELECT value FROM config WHERE key = 'champion_wpa_fixed_v1'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| format!("failed reading global WPA fix state: {error}"))?
+        .is_none();
+    if wpa_fix_needed {
+        let _ = connection.execute("DELETE FROM statistics_projections", []);
+        let _ = connection.execute(
+            "INSERT INTO config (key, value, updated_at) VALUES ('champion_wpa_fixed_v1', '1', CURRENT_TIMESTAMP)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
+            [],
+        );
+        if let Ok(mut cache) = STATISTICS_QUERY_CACHE.lock() {
+            cache.clear();
+        }
+    }
+    drop(connection);
     repair_global_augment_ids(path)?;
     Ok(())
 }
@@ -1128,10 +1145,7 @@ fn repair_global_augment_ids(path: &PathBuf) -> Result<(), String> {
         .map_err(|error| format!("failed preparing augment repair: {error}"))?;
     let rows = statement
         .query_map([], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-            ))
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
         })
         .map_err(|error| format!("failed reading games for augment repair: {error}"))?;
     let details = rows
@@ -1146,9 +1160,7 @@ fn repair_global_augment_ids(path: &PathBuf) -> Result<(), String> {
         let detail = serde_json::from_str::<Value>(&detail_json).unwrap_or(Value::Null);
         if let Some(participants) = detail.get("participants").and_then(Value::as_array) {
             for participant in participants {
-                let participant_id = participant
-                    .get("participantId")
-                    .and_then(Value::as_i64);
+                let participant_id = participant.get("participantId").and_then(Value::as_i64);
                 let augment_ids = participant_augment_ids(participant);
                 if let (Some(participant_id), false) = (participant_id, augment_ids.is_empty()) {
                     transaction
@@ -1257,6 +1269,10 @@ pub fn initialize_database(path: &PathBuf) -> Result<(), String> {
                 PRIMARY KEY (game_id, participant_id)
             );
 
+            CREATE INDEX IF NOT EXISTS idx_game_build_facts_champion ON game_build_facts(champion_id);
+            CREATE INDEX IF NOT EXISTS idx_game_build_facts_game ON game_build_facts(game_id);
+            CREATE INDEX IF NOT EXISTS idx_game_build_facts_puuid ON game_build_facts(puuid);
+
             CREATE TABLE IF NOT EXISTS statistics_projections (
                 kind TEXT PRIMARY KEY,
                 sample_count INTEGER NOT NULL,
@@ -1319,6 +1335,26 @@ pub fn initialize_database(path: &PathBuf) -> Result<(), String> {
         .optional()
         .map_err(|error| format!("failed reading Poro-Snax cleanup state: {error}"))?
         .is_none();
+    let wpa_fix_needed = connection
+        .query_row(
+            "SELECT value FROM sync_state WHERE key = 'champion_wpa_fixed_v1'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| format!("failed reading champion WPA fix state: {error}"))?
+        .is_none();
+    if wpa_fix_needed {
+        let _ = connection.execute("DELETE FROM statistics_projections", []);
+        let _ = connection.execute(
+            "INSERT INTO sync_state (key, value, updated_at) VALUES ('champion_wpa_fixed_v1', '1', CURRENT_TIMESTAMP)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
+            [],
+        );
+        if let Ok(mut cache) = STATISTICS_QUERY_CACHE.lock() {
+            cache.clear();
+        }
+    }
     drop(connection);
     if cleanup_needed {
         remove_poro_snax_from_database(path, "game_build_facts")?;
@@ -1573,7 +1609,9 @@ pub async fn handle_command(
             let (limit, games, queued_accounts, workers) = match config {
                 Ok(Ok(values)) => values,
                 Ok(Err(error)) => return response_error(error),
-                Err(error) => return response_error(format!("global config worker failed: {error}")),
+                Err(error) => {
+                    return response_error(format!("global config worker failed: {error}"))
+                }
             };
             let state = runtime.read().await;
             response_ok(json!({
@@ -1596,10 +1634,7 @@ pub async fn handle_command(
             if let Err(error) = initialize_global_aram_database(&global_path) {
                 return response_error(error);
             }
-            let limit = args
-                .get("limit")
-                .and_then(Value::as_u64)
-                .unwrap_or(1000) as usize;
+            let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(1000) as usize;
             match set_global_game_limit(&global_path, limit) {
                 Ok(()) => {
                     let games = global_game_count(&global_path).unwrap_or(0);
@@ -1619,10 +1654,7 @@ pub async fn handle_command(
             if let Err(error) = initialize_global_aram_database(&global_path) {
                 return response_error(error);
             }
-            let workers = args
-                .get("workers")
-                .and_then(Value::as_u64)
-                .unwrap_or(3) as usize;
+            let workers = args.get("workers").and_then(Value::as_u64).unwrap_or(3) as usize;
             match set_global_worker_count(&global_path, workers) {
                 Ok(()) => response_ok(json!({ "workers": workers.clamp(1, 16) })),
                 Err(error) => response_error(error),
@@ -1690,7 +1722,9 @@ pub async fn dispatch_command(
     if response.ok {
         Ok(response.data)
     } else {
-        Err(response.error.unwrap_or_else(|| "agent request failed".to_string()))
+        Err(response
+            .error
+            .unwrap_or_else(|| "agent request failed".to_string()))
     }
 }
 
@@ -1698,7 +1732,7 @@ fn store_recent_games(
     path: &PathBuf,
     raw_history: &Value,
     puuid: Option<&str>,
-) -> Result<usize, String> {
+) -> Result<(usize, bool), String> {
     let games = raw_history
         .get("games")
         .and_then(|value| value.get("games"))
@@ -1833,7 +1867,7 @@ fn store_recent_games(
     if new_game_discovered {
         invalidate_statistics_projections(&connection)?;
     }
-    Ok(games.len())
+    Ok((games.len(), new_game_discovered))
 }
 
 fn is_aram_mayhem(game: &Value) -> bool {
@@ -1919,7 +1953,9 @@ fn load_queued_global_accounts(path: &PathBuf, limit: usize) -> Result<Vec<Strin
         )
         .map_err(|error| format!("failed preparing queued accounts query: {error}"))?;
     let rows = statement
-        .query_map(rusqlite::params![limit as i64], |row| row.get::<_, String>(0))
+        .query_map(rusqlite::params![limit as i64], |row| {
+            row.get::<_, String>(0)
+        })
         .map_err(|error| format!("failed querying queued accounts: {error}"))?;
     let mut accounts = Vec::new();
     for row in rows {
@@ -2228,45 +2264,57 @@ async fn run_global_aram_worker(
         }
 
         let claim_path = path.clone();
-        let account_puuid = match tokio::task::spawn_blocking(move || claim_next_queued_account(&claim_path)).await {
-            Ok(Ok(Some(puuid))) => {
-                empty_streak = 0;
-                puuid
-            }
-            Ok(Ok(None)) => {
-                empty_streak += 1;
-                if empty_streak <= 5 {
-                    let seed_path = path.clone();
-                    let _ = tokio::task::spawn_blocking(move || seed_accounts_from_existing_participants(&seed_path)).await;
-                    tokio::time::sleep(Duration::from_millis(1000)).await;
-                    continue;
-                } else {
-                    let check_path = path.clone();
-                    let fetching_count = tokio::task::spawn_blocking(move || global_fetching_account_count(&check_path))
+        let account_puuid =
+            match tokio::task::spawn_blocking(move || claim_next_queued_account(&claim_path)).await
+            {
+                Ok(Ok(Some(puuid))) => {
+                    empty_streak = 0;
+                    puuid
+                }
+                Ok(Ok(None)) => {
+                    empty_streak += 1;
+                    if empty_streak <= 5 {
+                        let seed_path = path.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            seed_accounts_from_existing_participants(&seed_path)
+                        })
+                        .await;
+                        tokio::time::sleep(Duration::from_millis(1000)).await;
+                        continue;
+                    } else {
+                        let check_path = path.clone();
+                        let fetching_count = tokio::task::spawn_blocking(move || {
+                            global_fetching_account_count(&check_path)
+                        })
                         .await
                         .unwrap_or(Ok(0))
                         .unwrap_or(0);
-                    if fetching_count > 0 {
-                        tokio::time::sleep(Duration::from_millis(1500)).await;
-                        continue;
+                        if fetching_count > 0 {
+                            tokio::time::sleep(Duration::from_millis(1500)).await;
+                            continue;
+                        }
+                        logger::info(
+                            "agent.global-aram",
+                            &format!(
+                            "Worker #{worker_id}: queue exhausted and no active fetches; stopping"
+                        ),
+                        );
+                        break;
                     }
-                    logger::info(
-                        "agent.global-aram",
-                        &format!("Worker #{worker_id}: queue exhausted and no active fetches; stopping"),
-                    );
-                    break;
                 }
-            }
-            Ok(Err(err)) => {
-                logger::error("agent.global-aram", &format!("Worker #{worker_id} claim error: {err}"));
-                tokio::time::sleep(Duration::from_millis(1000)).await;
-                continue;
-            }
-            Err(_) => {
-                tokio::time::sleep(Duration::from_millis(1000)).await;
-                continue;
-            }
-        };
+                Ok(Err(err)) => {
+                    logger::error(
+                        "agent.global-aram",
+                        &format!("Worker #{worker_id} claim error: {err}"),
+                    );
+                    tokio::time::sleep(Duration::from_millis(1000)).await;
+                    continue;
+                }
+                Err(_) => {
+                    tokio::time::sleep(Duration::from_millis(1000)).await;
+                    continue;
+                }
+            };
 
         // 0.5 - 1.0 second delay between requests
         request_delay().await;
@@ -2303,7 +2351,8 @@ async fn run_global_aram_worker(
                     cb.consecutive_errors += 1;
                     if cb.consecutive_errors >= 4 {
                         let cooldown = cb.current_backoff_secs;
-                        cb.cooldown_until = Some(std::time::Instant::now() + Duration::from_secs(cooldown));
+                        cb.cooldown_until =
+                            Some(std::time::Instant::now() + Duration::from_secs(cooldown));
                         let next_backoff = (cb.current_backoff_secs * 2).min(1800);
                         cb.current_backoff_secs = next_backoff;
                         Some((cb.consecutive_errors, cooldown, next_backoff))
@@ -2326,10 +2375,16 @@ async fn run_global_aram_worker(
                         state.collector_state = format!("global-aram:paused (backoff {mins}m)");
                     }
                     // Re-queue this account so it is not permanently lost due to the LCU outage
-                    let _ = tokio::task::spawn_blocking(move || mark_global_account(&mark_path, &mark_puuid, "queued")).await;
+                    let _ = tokio::task::spawn_blocking(move || {
+                        mark_global_account(&mark_path, &mark_puuid, "queued")
+                    })
+                    .await;
                     tokio::time::sleep(Duration::from_secs(cooldown_secs)).await;
                 } else {
-                    let _ = tokio::task::spawn_blocking(move || mark_global_account(&mark_path, &mark_puuid, "failed")).await;
+                    let _ = tokio::task::spawn_blocking(move || {
+                        mark_global_account(&mark_path, &mark_puuid, "failed")
+                    })
+                    .await;
                 }
                 continue;
             }
@@ -2394,7 +2449,9 @@ async fn run_global_aram_worker(
                     })
                     .await;
                     if let Ok(Ok(_)) = store_result {
-                        if let (Ok(count), Ok(live_limit)) = (global_game_count(&path), global_game_limit(&path)) {
+                        if let (Ok(count), Ok(live_limit)) =
+                            (global_game_count(&path), global_game_limit(&path))
+                        {
                             let mut state = runtime.write().await;
                             state.collector_state = format!("global-aram:{count}/{live_limit}");
                             if let Some(operation) = state
@@ -2430,7 +2487,10 @@ async fn run_global_aram_worker(
 
         let mark_path = path.clone();
         let mark_puuid = account_puuid.clone();
-        let _ = tokio::task::spawn_blocking(move || mark_global_account(&mark_path, &mark_puuid, "complete")).await;
+        let _ = tokio::task::spawn_blocking(move || {
+            mark_global_account(&mark_path, &mark_puuid, "complete")
+        })
+        .await;
     }
 
     logger::info(
@@ -2454,7 +2514,9 @@ async fn collect_global_aram(
     let worker_count = global_worker_count(&path).unwrap_or(3);
     {
         let mut state = runtime.write().await;
-        state.operations.retain(|operation| operation.id != "global-database");
+        state
+            .operations
+            .retain(|operation| operation.id != "global-database");
         state.operations.push(ProgressOperation {
             id: "global-database".to_string(),
             message: "Updating global game database".to_string(),
@@ -2475,7 +2537,10 @@ async fn collect_global_aram(
     let _ = tokio::task::spawn_blocking(move || reset_fetching_global_accounts(&reset_path)).await;
 
     let seed_part_path = path.clone();
-    let _ = tokio::task::spawn_blocking(move || seed_accounts_from_existing_participants(&seed_part_path)).await;
+    let _ = tokio::task::spawn_blocking(move || {
+        seed_accounts_from_existing_participants(&seed_part_path)
+    })
+    .await;
 
     let _ = queue_global_account(&path, seed_puuid);
 
@@ -2549,10 +2614,7 @@ async fn refresh_statistics_projections(
         ];
     }
 
-    for (scope, source_path) in [
-        ("personal", database),
-        ("global", global_database),
-    ] {
+    for (scope, source_path) in [("personal", database), ("global", global_database)] {
         for (index, kind) in ["champion", "item", "augment", "combo"].iter().enumerate() {
             let args = json!({
                 "scope": scope,
@@ -2588,10 +2650,7 @@ async fn refresh_statistics_projections(
                 .find(|operation| operation.id == format!("{scope}-statistics"))
             {
                 operation.current = Some(index + 1);
-                operation.message = format!(
-                    "Updating {scope} {} statistics",
-                    kind
-                );
+                operation.message = format!("Updating {scope} {} statistics", kind);
             }
         }
     }
@@ -2664,10 +2723,11 @@ fn set_global_worker_count(path: &PathBuf, count: usize) -> Result<(), String> {
 }
 
 async fn request_delay() {
-    let millis = 500 + (std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| (d.subsec_nanos() % 501) as u64)
-        .unwrap_or(250));
+    let millis = 500
+        + (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| (d.subsec_nanos() % 501) as u64)
+            .unwrap_or(250));
     sleep(Duration::from_millis(millis)).await;
 }
 
@@ -2819,7 +2879,7 @@ async fn backfill_match_history(
             break;
         }
 
-        let page_count = store_recent_games(path, &history, puuid)?;
+        let (page_count, _) = store_recent_games(path, &history, puuid)?;
         discovered += page_count;
         cache_page_details(client, page_games, runtime, discovered).await;
         let new_game_ids = page_games
@@ -2918,20 +2978,24 @@ pub async fn collector_loop(path: PathBuf, runtime: Arc<RwLock<RuntimeState>>) {
             .as_deref()
             == puuid.as_deref();
 
-        logger::info(
-            "agent.collector",
-            &format!(
-                "Collector account scan status: puuid_present={}, backfill_complete={backfill_complete}",
-                puuid.is_some()
-            ),
-        );
+        let mut new_personal_games_found = false;
         if !backfill_complete {
+            logger::info(
+                "agent.collector",
+                &format!(
+                    "Collector account scan status: puuid_present={}, backfill_complete=false",
+                    puuid.is_some()
+                ),
+            );
             match backfill_match_history(&client, &path, puuid.as_deref(), &runtime).await {
                 Ok(count) => {
                     logger::info(
                         "agent.collector",
                         &format!("History backfill complete: {count} records discovered"),
                     );
+                    if count > 0 {
+                        new_personal_games_found = true;
+                    }
                     if let Some(puuid) = puuid.as_deref() {
                         if let Err(error) = set_sync_state_value(&path, backfill_key, puuid) {
                             logger::error(
@@ -2955,10 +3019,20 @@ pub async fn collector_loop(path: PathBuf, runtime: Arc<RwLock<RuntimeState>>) {
             };
             match client.get_json::<Value>(&route).await {
                 Ok(history) => match store_recent_games(&path, &history, puuid.as_deref()) {
-                    Ok(count) => logger::debug(
-                        "agent.collector",
-                        &format!("Reconciled {count} recent games"),
-                    ),
+                    Ok((count, has_new)) => {
+                        if has_new {
+                            new_personal_games_found = true;
+                            logger::info(
+                                "agent.collector",
+                                &format!("Reconciled {count} recent games (new games discovered)"),
+                            );
+                        } else {
+                            logger::debug(
+                                "agent.collector",
+                                &format!("Reconciled {count} recent games (no new games)"),
+                            );
+                        }
+                    }
                     Err(error) => logger::error(
                         "agent.collector",
                         &format!("Failed storing recent games: {error}"),
@@ -3005,7 +3079,7 @@ pub async fn collector_loop(path: PathBuf, runtime: Arc<RwLock<RuntimeState>>) {
                     )
                     .await;
                 });
-            } else {
+            } else if new_personal_games_found {
                 let should_refresh = !runtime.read().await.projection_running;
                 if should_refresh {
                     tokio::spawn(refresh_statistics_projections(

@@ -39,7 +39,10 @@ impl AgentSupervisor {
 
         crate::logger::info(
             "tauri.agent.supervisor",
-            &format!("In-process companion agent started with database {:?}", path),
+            &format!(
+                "In-process companion agent started with database {:?}",
+                path
+            ),
         );
 
         Ok(Self { path, runtime })
