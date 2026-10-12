@@ -6,6 +6,10 @@ pub struct MatchHistoryItemInfo {
     pub id: i32,
     pub name: String,
     pub icon_url: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub price_total: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -15,6 +19,8 @@ pub struct MatchHistoryAugmentInfo {
     pub icon_url: String,
     #[serde(default)]
     pub rarity: Option<String>,
+    #[serde(default)]
+    pub tooltip: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -3,6 +3,7 @@
   import { getMatchHistory } from "../../api/history";
   import type { MatchHistoryItem } from "../../types/history";
   import { logger } from "../../utils/logger";
+  import GameEntityPopover from "../common/GameEntityPopover.svelte";
 
   let matches = $state<MatchHistoryItem[]>([]);
   let loading = $state(true);
@@ -233,7 +234,21 @@
             <div class="flex h-8 justify-end gap-0.5" aria-label="Items">
               {#each match.items as item, itemIndex (item?.id ?? `empty-${match.game_id}-${itemIndex}`)}
                 {#if item}
-                  <img src={item.icon_url} alt={item.name} title={item.name} class="h-8 w-8 rounded-sm border border-gray-700 object-cover" />
+                  {@const itemDomId = `mh-${match.game_id}-item-${itemIndex}-${item.id}`}
+                  <img
+                    id={itemDomId}
+                    src={item.icon_url}
+                    alt={item.name}
+                    class="h-8 w-8 rounded-sm border border-gray-700 object-cover cursor-help"
+                  />
+                  <GameEntityPopover
+                    targetId={itemDomId}
+                    name={item.name}
+                    iconUrl={item.icon_url}
+                    description={item.description}
+                    priceTotal={item.price_total}
+                    placement="top"
+                  />
                 {:else}
                   <span class="h-8 w-8 rounded-sm border border-gray-800 bg-gray-950/80"></span>
                 {/if}
@@ -257,8 +272,22 @@
               <div class="mt-0.5">{formatDuration(match.game_duration_secs)} <span class="mx-1 text-gray-600">•</span> {formatDate(match.game_creation_date)}</div>
               {#if match.augments?.length}
                 <div class="mt-1.5 flex items-center justify-center gap-1.5" title="Augments">
-                  {#each match.augments as augment (augment.id)}
-                    <img src={augment.icon_url} alt={augment.name} title={augment.name} class="h-8 w-8 rounded-sm border border-purple-500/60 object-cover" />
+                  {#each match.augments as augment, augIndex (augment.id)}
+                    {@const augDomId = `mh-${match.game_id}-aug-${augIndex}-${augment.id.replace(/[^a-zA-Z0-9_-]/g, '_')}`}
+                    <img
+                      id={augDomId}
+                      src={augment.icon_url}
+                      alt={augment.name}
+                      class="h-8 w-8 rounded-sm border border-purple-500/60 object-cover cursor-help"
+                    />
+                    <GameEntityPopover
+                      targetId={augDomId}
+                      name={augment.name}
+                      iconUrl={augment.icon_url}
+                      description={augment.tooltip}
+                      rarity={augment.rarity}
+                      placement="top"
+                    />
                   {/each}
                 </div>
               {:else}

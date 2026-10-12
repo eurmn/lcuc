@@ -115,7 +115,7 @@ fn augment_resolution_cache_path() -> PathBuf {
     history_data_dir()
         .join("cache")
         .join("match-history")
-        .join("augments_v4.json")
+        .join("augments_v5.json")
 }
 
 fn read_augment_resolution_cache() -> HashMap<String, MatchHistoryAugmentInfo> {
@@ -197,16 +197,28 @@ fn normalize_augment_icon_url(icon_path: &str) -> String {
 
     format!("https://raw.communitydragon.org/latest/game/assets/{path}")
 }
+const BUNDLED_AUGMENT_TOOLTIPS_JSON: &str = include_str!("../data/augment_tooltips.json");
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CachedItemInfo {
+    pub name: String,
+    pub icon_url: String,
+    pub item_class: Option<String>,
+    pub description: Option<String>,
+    pub price_total: i64,
+    pub categories: Vec<String>,
+}
 
 #[derive(Clone, Debug)]
 struct AugmentCatalogEntry {
     name: String,
     icon_url: String,
     rarity: Option<String>,
+    tooltip: Option<String>,
 }
 
 lazy_static! {
-    static ref ITEMS_CACHE: RwLock<Option<HashMap<i32, (String, String, Option<String>)>>> = RwLock::new(None);
+    static ref ITEMS_CACHE: RwLock<Option<HashMap<i32, CachedItemInfo>>> = RwLock::new(None);
     static ref AUGMENTS_CATALOG_CACHE: RwLock<Option<HashMap<String, AugmentCatalogEntry>>> =
         RwLock::new(None);
     static ref RESOLVED_AUGMENTS_CACHE: RwLock<Option<HashMap<String, MatchHistoryAugmentInfo>>> =
@@ -239,7 +251,7 @@ fn classify_item(name: &str, price_total: i64, from_count: usize, categories: &[
     None
 }
 
-async fn get_items_by_id() -> Result<HashMap<i32, (String, String, Option<String>)>, String> {
+async fn get_items_by_id() -> Result<HashMap<i32, CachedItemInfo>, String> {
     {
         let cache = ITEMS_CACHE.read().await;
         if let Some(items) = cache.as_ref() {
@@ -291,10 +303,25 @@ async fn get_items_by_id() -> Result<HashMap<i32, (String, String, Option<String
             .flatten()
             .filter_map(|c| c.as_str().map(str::to_string))
             .collect();
-        let desc = item.get("description").and_then(Value::as_str).unwrap_or("");
-        let item_class = classify_item(&name, price_total, from_count, &categories, desc);
+        let raw_desc = item.get("description").and_then(Value::as_str).unwrap_or("");
+        let item_class = classify_item(&name, price_total, from_count, &categories, raw_desc);
+        let description = if raw_desc.is_empty() {
+            None
+        } else {
+            Some(raw_desc.to_string())
+        };
 
-        items.insert(id, (name, icon_url, item_class));
+        items.insert(
+            id,
+            CachedItemInfo {
+                name,
+                icon_url,
+                item_class,
+                description,
+                price_total,
+                categories,
+            },
+        );
     }
 
     let mut cache = ITEMS_CACHE.write().await;
@@ -310,12 +337,32 @@ async fn get_augment_catalog_map() -> Result<HashMap<String, AugmentCatalogEntry
         }
     }
 
+    let tooltips_map: HashMap<String, Value> =
+        serde_json::from_str(BUNDLED_AUGMENT_TOOLTIPS_JSON).unwrap_or_default();
+
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| e.to_string())?;
 
     let mut catalog_map: HashMap<String, AugmentCatalogEntry> = HashMap::new();
+
+    let get_tooltip = |id: Option<&str>, name_id: Option<&str>| -> Option<String> {
+        id.and_then(|i| tooltips_map.get(i))
+            .or_else(|| name_id.and_then(|n| tooltips_map.get(n)))
+            .or_else(|| name_id.and_then(|n| tooltips_map.get(&n.to_lowercase())))
+            .or_else(|| {
+                name_id.and_then(|n| n.strip_prefix("ARAM_")).and_then(|s| {
+                    tooltips_map
+                        .get(s)
+                        .or_else(|| tooltips_map.get(&s.to_lowercase()))
+                })
+            })
+            .and_then(|v| v.get("tooltip"))
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
 
     // 1. Primary: cherry-augments.json (Contains official localized names and paths for Arena and ARAM Mayhem)
     if let Ok(resp) = client.get(CDRAGON_CHERRY_AUGMENTS_URL).send().await {
@@ -347,10 +394,18 @@ async fn get_augment_catalog_map() -> Result<HashMap<String, AugmentCatalogEntry
                     _ => None,
                 };
 
+                let id_str = entry
+                    .get("id")
+                    .and_then(Value::as_i64)
+                    .map(|id| id.to_string());
+                let name_id_str = entry.get("augmentNameId").and_then(Value::as_str);
+                let tooltip = get_tooltip(id_str.as_deref(), name_id_str);
+
                 let parsed_entry = AugmentCatalogEntry {
                     name: name.clone(),
                     icon_url,
                     rarity,
+                    tooltip,
                 };
 
                 // Index by integer ID as string
@@ -374,7 +429,7 @@ async fn get_augment_catalog_map() -> Result<HashMap<String, AugmentCatalogEntry
     // 2. Secondary fallback: kiwi.bin.json for any legacy mode-specific augments
     if let Ok(resp) = client.get(CDRAGON_KIWI_AUGMENTS_URL).send().await {
         if let Ok(kiwi_val) = resp.json::<Value>().await {
-            populate_kiwi_catalog(&kiwi_val, &mut catalog_map);
+            populate_kiwi_catalog(&kiwi_val, &mut catalog_map, &tooltips_map);
         }
     }
 
@@ -383,7 +438,11 @@ async fn get_augment_catalog_map() -> Result<HashMap<String, AugmentCatalogEntry
     Ok(catalog_map)
 }
 
-fn populate_kiwi_catalog(val: &Value, map: &mut HashMap<String, AugmentCatalogEntry>) {
+fn populate_kiwi_catalog(
+    val: &Value,
+    map: &mut HashMap<String, AugmentCatalogEntry>,
+    tooltips_map: &HashMap<String, Value>,
+) {
     match val {
         Value::Object(obj) => {
             let has_id = obj
@@ -406,18 +465,30 @@ fn populate_kiwi_catalog(val: &Value, map: &mut HashMap<String, AugmentCatalogEn
                         .and_then(Value::as_str)
                         .unwrap_or("");
                     let icon_url = normalize_augment_icon_url(icon_path);
-                    let entry = AugmentCatalogEntry { name, icon_url, rarity: None };
+                    let tooltip = tooltips_map
+                        .get(&id_str)
+                        .or_else(|| tooltips_map.get(&id_str.to_lowercase()))
+                        .and_then(|v| v.get("tooltip"))
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string);
+                    let entry = AugmentCatalogEntry {
+                        name,
+                        icon_url,
+                        rarity: None,
+                        tooltip,
+                    };
                     map.insert(id_str.clone(), entry.clone());
                     map.insert(id_str.to_lowercase(), entry);
                 }
             }
             for child in obj.values() {
-                populate_kiwi_catalog(child, map);
+                populate_kiwi_catalog(child, map, tooltips_map);
             }
         }
         Value::Array(arr) => {
             for child in arr {
-                populate_kiwi_catalog(child, map);
+                populate_kiwi_catalog(child, map, tooltips_map);
             }
         }
         _ => {}
@@ -504,6 +575,7 @@ async fn resolve_augments(raw: Option<&Value>) -> Vec<MatchHistoryAugmentInfo> {
                     name: entry.name.clone(),
                     icon_url: entry.icon_url.clone(),
                     rarity: entry.rarity.clone(),
+                    tooltip: entry.tooltip.clone(),
                 });
             } else {
                 // Fallback: humanize name if possible rather than "ARAM_..."
@@ -519,6 +591,7 @@ async fn resolve_augments(raw: Option<&Value>) -> Vec<MatchHistoryAugmentInfo> {
                     name: fallback_name,
                     icon_url: String::new(),
                     rarity: None,
+                    tooltip: None,
                 });
             }
         }
@@ -806,11 +879,13 @@ pub async fn get_current_summoner_match_history(
                 for item_id in &item_ids {
                     if *item_id == 0 {
                         items.push(None);
-                    } else if let Some((name, icon_url, _)) = items_by_id.get(item_id) {
+                    } else if let Some(item_info) = items_by_id.get(item_id) {
                         items.push(Some(MatchHistoryItemInfo {
                             id: *item_id,
-                            name: name.clone(),
-                            icon_url: icon_url.clone(),
+                            name: item_info.name.clone(),
+                            icon_url: item_info.icon_url.clone(),
+                            description: item_info.description.clone(),
+                            price_total: Some(item_info.price_total),
                         }));
                     } else {
                         items.push(None);
@@ -866,14 +941,17 @@ pub async fn enrich_global_statistics(mut response: Value) -> Result<Value, Stri
         }
     }
     let item_details = join_all(item_ids.into_iter().filter_map(|id| {
-        let (name, raw_icon_url, _) = items.get(&(id as i32))?.clone();
+        let item_info = items.get(&(id as i32))?.clone();
         Some(async move {
             (
                 id,
                 json!({
                     "id": id,
-                    "name": name,
-                    "icon_url": get_cached_asset_data_uri(&raw_icon_url).await,
+                    "name": item_info.name,
+                    "icon_url": get_cached_asset_data_uri(&item_info.icon_url).await,
+                    "description": item_info.description,
+                    "price_total": item_info.price_total,
+                    "item_class": item_info.item_class,
                 }),
             )
         })
@@ -986,12 +1064,20 @@ pub async fn enrich_statistics_response(mut response: Value) -> Result<Value, St
             .strip_prefix("item:")
             .and_then(|id| id.parse::<i32>().ok())
         {
-            if let Some((name, raw_icon_url, item_class)) = items.get(&item_id) {
-                object.insert("name".to_string(), Value::String(name.clone()));
-                object.insert("icon_url".to_string(), Value::String(raw_icon_url.clone()));
-                if let Some(item_class) = item_class {
+            if let Some(item_info) = items.get(&item_id) {
+                object.insert("name".to_string(), Value::String(item_info.name.clone()));
+                object.insert("icon_url".to_string(), Value::String(item_info.icon_url.clone()));
+                if let Some(item_class) = &item_info.item_class {
                     object.insert("item_class".to_string(), Value::String(item_class.clone()));
                 }
+                if let Some(desc) = &item_info.description {
+                    object.insert("description".to_string(), Value::String(desc.clone()));
+                }
+                object.insert("price_total".to_string(), Value::Number(item_info.price_total.into()));
+                object.insert(
+                    "categories".to_string(),
+                    serde_json::to_value(&item_info.categories).unwrap_or_else(|_| json!([])),
+                );
             }
         } else if let Some(augment_id) = id.strip_prefix("augment:") {
             if let Some(augment) = augment_map.get(augment_id) {
@@ -1002,6 +1088,9 @@ pub async fn enrich_statistics_response(mut response: Value) -> Result<Value, St
                 );
                 if let Some(rarity) = &augment.rarity {
                     object.insert("rarity".to_string(), Value::String(rarity.clone()));
+                }
+                if let Some(tooltip) = &augment.tooltip {
+                    object.insert("description".to_string(), Value::String(tooltip.clone()));
                 }
             }
         }
@@ -1035,13 +1124,17 @@ pub async fn enrich_statistics_response(mut response: Value) -> Result<Value, St
                     .strip_prefix("item:")
                     .and_then(|id| id.parse::<i32>().ok())
                 {
-                    if let Some((name, raw_icon_url, item_class)) = items.get(&item_id) {
-                        context_object.insert("name".to_string(), Value::String(name.clone()));
+                    if let Some(item_info) = items.get(&item_id) {
+                        context_object.insert("name".to_string(), Value::String(item_info.name.clone()));
                         context_object
-                            .insert("icon_url".to_string(), Value::String(raw_icon_url.clone()));
-                        if let Some(item_class) = item_class {
+                            .insert("icon_url".to_string(), Value::String(item_info.icon_url.clone()));
+                        if let Some(item_class) = &item_info.item_class {
                             context_object.insert("item_class".to_string(), Value::String(item_class.clone()));
                         }
+                        if let Some(desc) = &item_info.description {
+                            context_object.insert("description".to_string(), Value::String(desc.clone()));
+                        }
+                        context_object.insert("price_total".to_string(), Value::Number(item_info.price_total.into()));
                     }
                 } else if let Some(augment_id) = partner_id.strip_prefix("augment:") {
                     if let Some(augment) = augment_map.get(augment_id) {
@@ -1053,6 +1146,9 @@ pub async fn enrich_statistics_response(mut response: Value) -> Result<Value, St
                         );
                         if let Some(rarity) = &augment.rarity {
                             context_object.insert("rarity".to_string(), Value::String(rarity.clone()));
+                        }
+                        if let Some(tooltip) = &augment.tooltip {
+                            context_object.insert("description".to_string(), Value::String(tooltip.clone()));
                         }
                     }
                 }

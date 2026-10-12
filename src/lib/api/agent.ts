@@ -35,6 +35,8 @@ export interface ServerStatisticContext {
   pick_rate: number;
   rarity?: string;
   item_class?: string;
+  description?: string;
+  price_total?: number;
 }
 
 export interface ServerStatisticRow {
@@ -44,6 +46,9 @@ export interface ServerStatisticRow {
   kind: StatisticsKind;
   rarity?: string;
   item_class?: string;
+  description?: string;
+  price_total?: number;
+  categories?: string[];
   games: number;
   wins: number;
   kills: number;

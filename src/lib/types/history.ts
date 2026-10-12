@@ -4,12 +4,16 @@ export interface MatchHistoryItemInfo {
   id: number;
   name: string;
   icon_url: string;
+  description?: string;
+  price_total?: number;
 }
 
 export interface MatchHistoryAugmentInfo {
   id: string;
   name: string;
   icon_url: string;
+  rarity?: string;
+  tooltip?: string;
 }
 
 export interface MatchHistoryItem {
