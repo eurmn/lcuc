@@ -433,59 +433,6 @@
     onToggleFavoriteChampion={handleToggleFavorite}
   />
 
-  <!-- Thin Crawler Topbar Loader when Crawler is Active -->
-  {#if globalCollectorState.startsWith("global-aram:") || globalCollectorState === "collecting" || agentOperations.some((op) => op.id === "global-database")}
-    {@const crawlerOp = agentOperations.find((op) => op.id === "global-database")}
-    {@const currentCount = crawlerOp?.current ?? globalGames}
-    {@const totalLimit = crawlerOp?.total ?? globalLimit}
-    {@const progressPct = Math.min(100, Math.max(0, Math.round((currentCount / Math.max(1, totalLimit)) * 100)))}
-    <div class="relative z-20 shrink-0 select-none">
-      <!-- 1. Pure, thin, vivid progress bar line (no text inside, strong color) -->
-      <div class="h-[3px] w-full bg-cyan-950/60 overflow-hidden">
-        <div
-          class="h-full bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.8)] transition-[width] duration-300 ease-out"
-          style={`width: ${progressPct}%`}
-        ></div>
-      </div>
-
-      <!-- 2. Status row underneath the bar: right-aligned counter, percentage, and spinner -->
-      <div class="flex items-center justify-end bg-gray-950/90 px-3 py-1 text-[11px]">
-        <div class="flex items-center gap-2">
-          <span class="tabular-nums font-semibold tracking-wider text-cyan-200">
-            {currentCount.toLocaleString()} / {totalLimit.toLocaleString()}
-          </span>
-          <span class="text-[10px] text-cyan-400/80 tabular-nums">
-            ({progressPct}%)
-          </span>
-          <!-- Progress donut filling with progress -->
-          <svg class="h-3.5 w-3.5 -rotate-90 shrink-0" viewBox="0 0 24 24">
-            <circle
-              class="text-cyan-950/80"
-              stroke="currentColor"
-              stroke-width="3"
-              fill="transparent"
-              cx="12"
-              cy="12"
-              r="9"
-            />
-            <circle
-              class="text-cyan-400 transition-[stroke-dashoffset] duration-300 ease-out"
-              stroke="currentColor"
-              stroke-width="3"
-              stroke-linecap="round"
-              fill="transparent"
-              cx="12"
-              cy="12"
-              r="9"
-              stroke-dasharray="56.548"
-              stroke-dashoffset={56.548 - (progressPct / 100) * 56.548}
-            />
-          </svg>
-        </div>
-      </div>
-    </div>
-  {/if}
-
   <!-- Main App Shell -->
   <div
     id="app-shell"
@@ -540,8 +487,62 @@
             <span class="icon-[heroicons--chart-bar] h-5 w-5"></span>
           </button>
         </nav>
-        <div class="min-h-0 min-w-0 flex-1">
-          {#if profileTab === "history"}
+        <div class="min-h-0 min-w-0 flex-1 flex flex-col">
+          <!-- Thin Crawler Topbar Loader when Crawler is Active (right of sidebar) -->
+          {#if globalCollectorState.startsWith("global-aram:") || globalCollectorState === "collecting" || agentOperations.some((op) => op.id === "global-database")}
+            {@const crawlerOp = agentOperations.find((op) => op.id === "global-database")}
+            {@const currentCount = crawlerOp?.current ?? globalGames}
+            {@const totalLimit = crawlerOp?.total ?? globalLimit}
+            {@const progressPct = Math.min(100, Math.max(0, Math.round((currentCount / Math.max(1, totalLimit)) * 100)))}
+            <div class="relative z-20 shrink-0 select-none">
+              <!-- 1. Pure, thin, vivid progress bar line (no text inside, strong color) -->
+              <div class="h-[3px] w-full bg-cyan-950/60 overflow-hidden">
+                <div
+                  class="h-full bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.8)] transition-[width] duration-300 ease-out"
+                  style={`width: ${progressPct}%`}
+                ></div>
+              </div>
+
+              <!-- 2. Status row underneath the bar: right-aligned counter, percentage, and progress donut -->
+              <div class="flex items-center justify-end bg-gray-950/90 px-3 py-1 text-[11px]">
+                <div class="flex items-center gap-2">
+                  <span class="tabular-nums font-semibold tracking-wider text-cyan-200">
+                    {currentCount.toLocaleString()} / {totalLimit.toLocaleString()}
+                  </span>
+                  <span class="text-[10px] text-cyan-400/80 tabular-nums">
+                    ({progressPct}%)
+                  </span>
+                  <!-- Progress donut filling with progress -->
+                  <svg class="h-3.5 w-3.5 -rotate-90 shrink-0" viewBox="0 0 24 24">
+                    <circle
+                      class="text-cyan-950/80"
+                      stroke="currentColor"
+                      stroke-width="3"
+                      fill="transparent"
+                      cx="12"
+                      cy="12"
+                      r="9"
+                    />
+                    <circle
+                      class="text-cyan-400 transition-[stroke-dashoffset] duration-300 ease-out"
+                      stroke="currentColor"
+                      stroke-width="3"
+                      stroke-linecap="round"
+                      fill="transparent"
+                      cx="12"
+                      cy="12"
+                      r="9"
+                      stroke-dasharray="56.548"
+                      stroke-dashoffset={56.548 - (progressPct / 100) * 56.548}
+                    />
+                  </svg>
+                </div>
+              </div>
+            </div>
+          {/if}
+
+          <div class="min-h-0 min-w-0 flex-1">
+            {#if profileTab === "history"}
             <MatchHistoryView />
           {:else}
             <div class="flex h-full min-h-0 flex-col">
@@ -636,6 +637,7 @@
           {/if}
         </div>
       </div>
-    {/if}
-  </div>
+    </div>
+  {/if}
+</div>
 </div>
