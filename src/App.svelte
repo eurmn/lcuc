@@ -61,6 +61,8 @@
   let agentOperations = $state<AgentOperation[]>([]);
   let savingGlobalLimit = $state(false);
   let hideLowPickrate = $state(false);
+  let crawlerGps = $state(0);
+  let countHistory: Array<{ count: number; time: number }> = [];
 
   let currentTree = $state<RuneTreePayload | null>(null);
   let sidebarLoading = $state(true);
@@ -109,6 +111,30 @@
             globalCollectorState !== "sleeping" &&
             globalCollectorState !== "unknown" &&
             !globalCollectorState.includes("paused"));
+
+        const crawlerOp = agentOperations.find((op) => op.id === "global-database");
+        const currentCount = crawlerOp?.current ?? globalGames;
+        const now = Date.now();
+
+        if (hasActiveWork && currentCount > 0) {
+          countHistory.push({ count: currentCount, time: now });
+          // Retain samples over the last 5 seconds for moving average calculation
+          const cutoff = now - 5000;
+          countHistory = countHistory.filter((item) => item.time >= cutoff);
+
+          if (countHistory.length >= 2) {
+            const oldest = countHistory[0];
+            const newest = countHistory[countHistory.length - 1];
+            const timeDeltaSec = (newest.time - oldest.time) / 1000;
+            const countDelta = newest.count - oldest.count;
+            if (timeDeltaSec >= 0.8 && countDelta >= 0) {
+              crawlerGps = (countDelta / timeDeltaSec) * 60;
+            }
+          }
+        } else {
+          countHistory = [];
+          crawlerGps = 0;
+        }
       } catch (error) {
         logger.warn("frontend.app", "Global statistics config unavailable", error);
       }
@@ -535,6 +561,9 @@
                   </span>
                   <span class="text-[11px] font-medium text-cyan-400/90 tabular-nums">
                     ({progressPct}%)
+                  </span>
+                  <span class="text-[11px] font-medium text-cyan-300/80 tabular-nums">
+                    · {crawlerGps.toFixed(1)} match/minute
                   </span>
                 </div>
               </div>

@@ -12,6 +12,7 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@floating-ui/dom": "^1.8.0",
     "@fontsource-variable/nunito-sans": "^5.3.0",
     "@humanspeak/svelte-motion": "^0.9.3",
     "@iconify-json/flowbite": "^1.2.7",

@@ -4,6 +4,7 @@
   import type { MatchHistoryItem } from "../../types/history";
   import { logger } from "../../utils/logger";
   import GameEntityPopover from "../common/GameEntityPopover.svelte";
+  import AugmentIcon from "../common/AugmentIcon.svelte";
 
   let matches = $state<MatchHistoryItem[]>([]);
   let loading = $state(true);
@@ -274,11 +275,13 @@
                 <div class="mt-1.5 flex items-center justify-center gap-1.5" title="Augments">
                   {#each match.augments as augment, augIndex (augment.id)}
                     {@const augDomId = `mh-${match.game_id}-aug-${augIndex}-${augment.id.replace(/[^a-zA-Z0-9_-]/g, '_')}`}
-                    <img
+                    <AugmentIcon
                       id={augDomId}
                       src={augment.icon_url}
-                      alt={augment.name}
-                      class="h-8 w-8 rounded-sm border border-purple-500/60 object-cover cursor-help"
+                      name={augment.name}
+                      rarity={augment.rarity}
+                      class="h-8 w-8 cursor-help"
+                      roundedClass="rounded-sm"
                     />
                     <GameEntityPopover
                       targetId={augDomId}

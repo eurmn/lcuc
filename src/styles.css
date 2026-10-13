@@ -15,6 +15,10 @@
   --color-brand-800: var(--color-purple-800);
   --color-brand-900: var(--color-purple-900);
   --color-brand-950: var(--color-purple-950);
+
+  --color-augment-silver: #a3b9bd;
+  --color-augment-gold: #e3c49f;
+  --color-augment-prismatic: #f2c2ff;
 }
 
 @layer base {

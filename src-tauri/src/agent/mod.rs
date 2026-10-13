@@ -326,11 +326,15 @@ fn statistic_row(
         })
         .collect::<Vec<_>>();
     champion_rows.sort_by(|a, b| {
-        let wpa_b = b.get("wpa").and_then(Value::as_f64).unwrap_or(0.0);
-        let wpa_a = a.get("wpa").and_then(Value::as_f64).unwrap_or(0.0);
-        wpa_b
-            .partial_cmp(&wpa_a)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        let pr_b = b.get("pick_rate").and_then(Value::as_f64).unwrap_or(0.0);
+        let pr_a = a.get("pick_rate").and_then(Value::as_f64).unwrap_or(0.0);
+        if (pr_b - pr_a).abs() > f64::EPSILON {
+            pr_b.partial_cmp(&pr_a).unwrap_or(std::cmp::Ordering::Equal)
+        } else {
+            let games_b = b.get("games").and_then(Value::as_i64).unwrap_or(0);
+            let games_a = a.get("games").and_then(Value::as_i64).unwrap_or(0);
+            games_b.cmp(&games_a)
+        }
     });
     let mut partner_rows = aggregate
         .partners
@@ -351,11 +355,15 @@ fn statistic_row(
         })
         .collect::<Vec<_>>();
     partner_rows.sort_by(|a, b| {
-        let wpa_b = b.get("wpa").and_then(Value::as_f64).unwrap_or(0.0);
-        let wpa_a = a.get("wpa").and_then(Value::as_f64).unwrap_or(0.0);
-        wpa_b
-            .partial_cmp(&wpa_a)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        let pr_b = b.get("pick_rate").and_then(Value::as_f64).unwrap_or(0.0);
+        let pr_a = a.get("pick_rate").and_then(Value::as_f64).unwrap_or(0.0);
+        if (pr_b - pr_a).abs() > f64::EPSILON {
+            pr_b.partial_cmp(&pr_a).unwrap_or(std::cmp::Ordering::Equal)
+        } else {
+            let games_b = b.get("games").and_then(Value::as_i64).unwrap_or(0);
+            let games_a = a.get("games").and_then(Value::as_i64).unwrap_or(0);
+            games_b.cmp(&games_a)
+        }
     });
     let effective_baseline = if kind == "champion" {
         baseline
@@ -2197,6 +2205,44 @@ fn store_global_detail(
     Ok(discovered)
 }
 
+/// Manages request pacing for crawler and collector workers.
+///
+/// Enforces a maximum rate (e.g. 100 requests/minute = 600ms interval)
+/// ensuring requests are evenly spaced out while not being bottlenecked when a single request takes too long.
+#[derive(Debug)]
+pub struct WorkerRatePacer {
+    interval: Duration,
+    last_request_start: Option<std::time::Instant>,
+}
+
+impl WorkerRatePacer {
+    pub fn new(max_per_minute: u32) -> Self {
+        let millis = if max_per_minute > 0 {
+            (60_000 + max_per_minute as u64 - 1) / max_per_minute as u64
+        } else {
+            600
+        };
+        Self {
+            interval: Duration::from_millis(millis),
+            last_request_start: None,
+        }
+    }
+
+    /// Delays execution until at least `interval` has elapsed since the start of the previous request.
+    /// If the previous request took longer than `interval`, it does not delay, allowing immediate execution
+    /// without accumulating artificial lag. It then records the new request start time so subsequent requests
+    /// maintain the safe spacing interval (preventing request bursts/spam).
+    pub async fn pace_next(&mut self) {
+        if let Some(prev_start) = self.last_request_start {
+            let elapsed = prev_start.elapsed();
+            if elapsed < self.interval {
+                tokio::time::sleep(self.interval - elapsed).await;
+            }
+        }
+        self.last_request_start = Some(std::time::Instant::now());
+    }
+}
+
 struct CrawlerCircuitBreaker {
     consecutive_errors: u32,
     cooldown_until: Option<std::time::Instant>,
@@ -2209,6 +2255,45 @@ impl CrawlerCircuitBreaker {
             consecutive_errors: 0,
             cooldown_until: None,
             current_backoff_secs: 120, // 2 minutes initial backoff
+        }
+    }
+
+    fn is_in_cooldown(&self) -> Option<Duration> {
+        if let Some(until) = self.cooldown_until {
+            let now = std::time::Instant::now();
+            if until > now {
+                return Some(until - now);
+            }
+        }
+        None
+    }
+
+    fn record_rate_limit(&mut self, cooldown_secs: u64) -> u64 {
+        self.consecutive_errors += 1;
+        let cooldown = cooldown_secs.max(self.current_backoff_secs);
+        self.cooldown_until = Some(std::time::Instant::now() + Duration::from_secs(cooldown));
+        self.current_backoff_secs = (cooldown * 2).min(1800);
+        cooldown
+    }
+
+    fn record_error(&mut self) -> Option<(u32, u64, u64)> {
+        self.consecutive_errors += 1;
+        if self.consecutive_errors >= 4 {
+            let cooldown = self.current_backoff_secs;
+            self.cooldown_until = Some(std::time::Instant::now() + Duration::from_secs(cooldown));
+            let next_backoff = (self.current_backoff_secs * 2).min(1800);
+            self.current_backoff_secs = next_backoff;
+            Some((self.consecutive_errors, cooldown, next_backoff))
+        } else {
+            None
+        }
+    }
+
+    fn record_success(&mut self) {
+        if self.consecutive_errors > 0 {
+            self.consecutive_errors = 0;
+            self.current_backoff_secs = 120;
+            self.cooldown_until = None;
         }
     }
 }
@@ -2226,21 +2311,13 @@ async fn run_global_aram_worker(
         &format!("Global ARAM worker #{worker_id} started"),
     );
     let mut empty_streak = 0;
+    let mut pacer = WorkerRatePacer::new(100);
 
     loop {
         // If the circuit breaker is active, pause until cooldown expires
         let wait_dur = {
             let cb = circuit_breaker.lock().await;
-            if let Some(until) = cb.cooldown_until {
-                let now = std::time::Instant::now();
-                if until > now {
-                    Some(until - now)
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
+            cb.is_in_cooldown()
         };
         if let Some(dur) = wait_dur {
             tokio::time::sleep(dur).await;
@@ -2311,26 +2388,15 @@ async fn run_global_aram_worker(
                 }
             };
 
-        // 0.5 - 1.0 second delay between requests
-        request_delay().await;
+        // Pace: max 100 requests/minute per worker, evenly spaced, non-bottlenecked
+        pacer.pace_next().await;
 
         let route = format!(
             "/lol-match-history/v1/products/lol/{account_puuid}/matches?begIndex=0&endIndex=19"
         );
         let history = match client.get_json::<Value>(&route).await {
             Ok(history) => {
-                {
-                    let mut cb = circuit_breaker.lock().await;
-                    if cb.consecutive_errors > 0 {
-                        logger::info(
-                            "agent.global-aram",
-                            &format!("Worker #{worker_id}: Match history recovered successfully; resetting backoff streak"),
-                        );
-                        cb.consecutive_errors = 0;
-                        cb.current_backoff_secs = 120;
-                        cb.cooldown_until = None;
-                    }
-                }
+                circuit_breaker.lock().await.record_success();
                 history
             }
             Err(error) => {
@@ -2341,28 +2407,25 @@ async fn run_global_aram_worker(
                 let mark_path = path.clone();
                 let mark_puuid = account_puuid.clone();
 
+                let is_rate_limited = error.contains("429");
                 let cooldown_action = {
                     let mut cb = circuit_breaker.lock().await;
-                    cb.consecutive_errors += 1;
-                    if cb.consecutive_errors >= 4 {
-                        let cooldown = cb.current_backoff_secs;
-                        cb.cooldown_until =
-                            Some(std::time::Instant::now() + Duration::from_secs(cooldown));
-                        let next_backoff = (cb.current_backoff_secs * 2).min(1800);
-                        cb.current_backoff_secs = next_backoff;
-                        Some((cb.consecutive_errors, cooldown, next_backoff))
+                    if is_rate_limited {
+                        let cooldown = cb.record_rate_limit(60);
+                        Some((cb.consecutive_errors, cooldown, cb.current_backoff_secs))
                     } else {
-                        None
+                        cb.record_error()
                     }
                 };
 
                 if let Some((streak, cooldown_secs, next_backoff)) = cooldown_action {
                     let mins = (cooldown_secs + 59) / 60;
                     let next_mins = (next_backoff + 59) / 60;
+                    let reason = if is_rate_limited { "HTTP 429 Rate Limit" } else { "unavailable consecutively" };
                     logger::warn(
                         "agent.global-aram",
                         &format!(
-                            "Match history unavailable {streak} times consecutively. Backing off all workers for {mins} minute(s) before retrying (next backoff: {next_mins}m)..."
+                            "Match history {reason} ({streak} errors). Backing off all workers for {cooldown_secs}s before retrying (next backoff: {next_mins}m)..."
                         ),
                     );
                     {
@@ -2419,6 +2482,17 @@ async fn run_global_aram_worker(
         }
 
         for game_id in games_to_fetch {
+            // Check if the circuit breaker cooldown is active before starting each game request
+            let wait_dur = {
+                let cb = circuit_breaker.lock().await;
+                cb.is_in_cooldown()
+            };
+            if let Some(dur) = wait_dur {
+                in_flight_games.lock().await.remove(&game_id);
+                tokio::time::sleep(dur).await;
+                break;
+            }
+
             if let Ok(count) = global_game_count(&path) {
                 if let Ok(limit) = global_game_limit(&path) {
                     if count >= limit {
@@ -2428,8 +2502,8 @@ async fn run_global_aram_worker(
                 }
             }
 
-            // 0.5 - 1.0 second delay between requests
-            request_delay().await;
+            // Enforce max 100 games/minute limit per worker, evenly spaced, non-bottlenecked
+            pacer.pace_next().await;
 
             let result = client
                 .get_json::<Value>(&format!("/lol-match-history/v1/games/{game_id}"))
@@ -2437,6 +2511,7 @@ async fn run_global_aram_worker(
 
             match result {
                 Ok(detail) if is_aram_mayhem(&detail) => {
+                    circuit_breaker.lock().await.record_success();
                     let write_path = path.clone();
                     let write_source = account_puuid.clone();
                     let store_result = tokio::task::spawn_blocking(move || {
@@ -2469,12 +2544,46 @@ async fn run_global_aram_worker(
                         }
                     }
                 }
-                Ok(_) => {}
+                Ok(_) => {
+                    circuit_breaker.lock().await.record_success();
+                }
                 Err(error) => {
                     logger::warn(
                         "agent.global-aram",
                         &format!("Worker #{worker_id} failed fetching game {game_id}: {error}"),
                     );
+
+                    let is_rate_limited = error.contains("429");
+                    let cooldown_action = {
+                        let mut cb = circuit_breaker.lock().await;
+                        if is_rate_limited {
+                            let cooldown = cb.record_rate_limit(60);
+                            Some((cb.consecutive_errors, cooldown, cb.current_backoff_secs))
+                        } else if error.contains("timed out") || error.contains("503") || error.contains("504") {
+                            cb.record_error()
+                        } else {
+                            None
+                        }
+                    };
+
+                    if let Some((streak, cooldown_secs, next_backoff)) = cooldown_action {
+                        let mins = (cooldown_secs + 59) / 60;
+                        let next_mins = (next_backoff + 59) / 60;
+                        let reason = if is_rate_limited { "HTTP 429 Rate Limit" } else { "consecutive timeouts/errors" };
+                        logger::warn(
+                            "agent.global-aram",
+                            &format!(
+                                "Game fetch {reason} ({streak} errors). Backing off all workers for {cooldown_secs}s before retrying (next backoff: {next_mins}m)..."
+                            ),
+                        );
+                        {
+                            let mut state = runtime.write().await;
+                            state.collector_state = format!("global-aram:paused (backoff {mins}m)");
+                        }
+                        in_flight_games.lock().await.remove(&game_id);
+                        tokio::time::sleep(Duration::from_secs(cooldown_secs)).await;
+                        break;
+                    }
                 }
             }
             in_flight_games.lock().await.remove(&game_id);
@@ -2780,6 +2889,7 @@ async fn cache_page_details(
     page_games: &[Value],
     runtime: &Arc<RwLock<RuntimeState>>,
     discovered: usize,
+    pacer: &mut WorkerRatePacer,
 ) {
     let mut fetched = 0;
     let mut skipped = 0;
@@ -2797,6 +2907,7 @@ async fn cache_page_details(
             let mut state = runtime.write().await;
             state.collector_state = format!("backfilling-details:{discovered}");
         }
+        pacer.pace_next().await;
         match client.get_json::<Value>(&route).await {
             Ok(detail) => {
                 if let Err(error) = cache_game_detail(game_id, &detail) {
@@ -2837,6 +2948,7 @@ async fn backfill_match_history(
     let mut discovered = 0;
     let mut pages = 0;
     let mut seen_game_ids = std::collections::HashSet::new();
+    let mut pacer = WorkerRatePacer::new(100);
 
     logger::info(
         "agent.collector",
@@ -2857,6 +2969,7 @@ async fn backfill_match_history(
             "agent.collector",
             &format!("Fetching match-history page {begin}..{end}"),
         );
+        pacer.pace_next().await;
         let history = client.get_json::<Value>(&route).await?;
         let page_games = history
             .get("games")
@@ -2876,7 +2989,7 @@ async fn backfill_match_history(
 
         let (page_count, _) = store_recent_games(path, &history, puuid)?;
         discovered += page_count;
-        cache_page_details(client, page_games, runtime, discovered).await;
+        cache_page_details(client, page_games, runtime, discovered, &mut pacer).await;
         let new_game_ids = page_games
             .iter()
             .filter_map(|game| game.get("gameId").and_then(Value::as_i64))
@@ -2921,6 +3034,7 @@ async fn backfill_match_history(
 }
 
 pub async fn collector_loop(path: PathBuf, runtime: Arc<RwLock<RuntimeState>>) {
+    let mut last_reconciled_puuid: Option<String> = None;
     loop {
         let credentials = crate::services::lcu_client::LcuClient::find_credentials();
         let Some(credentials) = credentials else {
@@ -2950,7 +3064,9 @@ pub async fn collector_loop(path: PathBuf, runtime: Arc<RwLock<RuntimeState>>) {
 
         {
             let mut state = runtime.write().await;
-            state.collector_state = "collecting".to_string();
+            if state.collector_state != "event_pending" {
+                state.collector_state = "collecting".to_string();
+            }
             state.league_client_connected = true;
         }
 
@@ -2972,6 +3088,18 @@ pub async fn collector_loop(path: PathBuf, runtime: Arc<RwLock<RuntimeState>>) {
             .flatten()
             .as_deref()
             == puuid.as_deref();
+
+        // Track whether summoner identity changed or event was queued
+        let puuid_changed = puuid.is_some() && puuid != last_reconciled_puuid;
+        let needs_reconciliation = {
+            let mut state = runtime.write().await;
+            if state.collector_state == "event_pending" || puuid_changed {
+                state.collector_state = "collecting".to_string();
+                true
+            } else {
+                false
+            }
+        };
 
         let mut new_personal_games_found = false;
         if !backfill_complete {
@@ -2999,13 +3127,14 @@ pub async fn collector_loop(path: PathBuf, runtime: Arc<RwLock<RuntimeState>>) {
                             );
                         }
                     }
+                    last_reconciled_puuid = puuid.clone();
                 }
                 Err(error) => logger::error(
                     "agent.collector",
                     &format!("History backfill failed: {error}"),
                 ),
             }
-        } else {
+        } else if needs_reconciliation {
             let route = if let Some(puuid) = puuid.as_deref() {
                 format!("/lol-match-history/v1/products/lol/{puuid}/matches?begIndex=0&endIndex=19")
             } else {
@@ -3015,6 +3144,7 @@ pub async fn collector_loop(path: PathBuf, runtime: Arc<RwLock<RuntimeState>>) {
             match client.get_json::<Value>(&route).await {
                 Ok(history) => match store_recent_games(&path, &history, puuid.as_deref()) {
                     Ok((count, has_new)) => {
+                        last_reconciled_puuid = puuid.clone();
                         if has_new {
                             new_personal_games_found = true;
                             logger::info(
@@ -3088,7 +3218,9 @@ pub async fn collector_loop(path: PathBuf, runtime: Arc<RwLock<RuntimeState>>) {
 
         {
             let mut state = runtime.write().await;
-            state.collector_state = "live".to_string();
+            if state.collector_state != "event_pending" {
+                state.collector_state = "live".to_string();
+            }
         }
         sleep(Duration::from_secs(15)).await;
     }
@@ -3264,4 +3396,119 @@ pub fn run_process_from_main() -> Result<(), String> {
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|error| format!("failed creating agent runtime: {error}"))?;
     runtime.block_on(run_process())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pacer_initialization() {
+        let pacer_100 = WorkerRatePacer::new(100);
+        assert_eq!(pacer_100.interval, Duration::from_millis(600));
+
+        let pacer_60 = WorkerRatePacer::new(60);
+        assert_eq!(pacer_60.interval, Duration::from_millis(1000));
+    }
+
+    #[tokio::test]
+    async fn test_pacer_spacing_fast_requests() {
+        let mut pacer = WorkerRatePacer {
+            interval: Duration::from_millis(40),
+            last_request_start: None,
+        };
+
+        let t0 = std::time::Instant::now();
+        pacer.pace_next().await;
+        // Simulate very fast request (e.g. 5ms)
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        pacer.pace_next().await;
+        let elapsed = t0.elapsed();
+
+        // Total time should be at least 35ms (accounting for timer granularity)
+        assert!(
+            elapsed >= Duration::from_millis(35),
+            "Expected at least 35ms, got {:?}",
+            elapsed
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pacer_slow_request_not_bottlenecked() {
+        let mut pacer = WorkerRatePacer {
+            interval: Duration::from_millis(40),
+            last_request_start: None,
+        };
+
+        pacer.pace_next().await;
+        // Simulate a slow request that exceeds the interval (60ms > 40ms)
+        tokio::time::sleep(Duration::from_millis(60)).await;
+
+        let before = std::time::Instant::now();
+        // Should return almost immediately without sleeping another 40ms
+        pacer.pace_next().await;
+        let wait_time = before.elapsed();
+
+        assert!(
+            wait_time < Duration::from_millis(15),
+            "Expected immediate release after slow request, but waited {:?}",
+            wait_time
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pacer_anti_bursting_after_slow_request() {
+        let mut pacer = WorkerRatePacer {
+            interval: Duration::from_millis(40),
+            last_request_start: None,
+        };
+
+        pacer.pace_next().await;
+        // Request 1 takes 60ms (slow)
+        tokio::time::sleep(Duration::from_millis(60)).await;
+
+        // Request 2 released immediately
+        pacer.pace_next().await;
+
+        // Request 2 takes 5ms (fast)
+        tokio::time::sleep(Duration::from_millis(5)).await;
+
+        let before_r3 = std::time::Instant::now();
+        // Request 3 MUST be spaced from Request 2's start by 40ms
+        pacer.pace_next().await;
+        let r3_wait = before_r3.elapsed();
+
+        assert!(
+            r3_wait >= Duration::from_millis(25),
+            "Expected Request 3 to be spaced from Request 2 start, but waited only {:?}",
+            r3_wait
+        );
+    }
+
+    #[test]
+    fn test_circuit_breaker_rate_limit_and_error() {
+        let mut cb = CrawlerCircuitBreaker::new();
+        assert!(cb.is_in_cooldown().is_none());
+
+        // Normal errors don't trigger backoff until 4 consecutive
+        assert!(cb.record_error().is_none());
+        assert!(cb.record_error().is_none());
+        assert!(cb.record_error().is_none());
+        assert!(cb.is_in_cooldown().is_none());
+
+        // 4th error triggers cooldown
+        let action = cb.record_error();
+        assert!(action.is_some());
+        assert!(cb.is_in_cooldown().is_some());
+
+        // Success resets streak
+        cb.record_success();
+        assert!(cb.is_in_cooldown().is_none());
+        assert_eq!(cb.consecutive_errors, 0);
+
+        // HTTP 429 triggers immediately on first error
+        let cooldown = cb.record_rate_limit(60);
+        assert_eq!(cooldown, 120); // max of 60 and initial backoff 120
+        assert!(cb.is_in_cooldown().is_some());
+    }
 }

@@ -4,6 +4,7 @@
   import type { ServerStatisticRow } from "../../api/agent";
   import { parseGameDescription } from "../../utils/gameDescription";
   import GameEntityPopover from "../common/GameEntityPopover.svelte";
+  import AugmentIcon from "../common/AugmentIcon.svelte";
 
   let { scope = "personal", hideLowPickrate = false }: { scope?: StatisticsScope; hideLowPickrate?: boolean } = $props();
   let kind = $state<StatisticsKind>("item");
@@ -77,17 +78,17 @@
 
   function getAugmentTitleColor(r?: string) {
     const lower = (r ?? "").toLowerCase();
-    if (lower.includes("prismatic")) return "text-fuchsia-400";
-    if (lower.includes("gold")) return "text-yellow-400";
-    if (lower.includes("silver")) return "text-slate-300";
+    if (lower.includes("prismatic")) return "text-[#f2c2ff]";
+    if (lower.includes("gold")) return "text-[#e3c49f]";
+    if (lower.includes("silver")) return "text-[#a3b9bd]";
     return "text-gray-200";
   }
 
   function getAugmentIconBorder(r?: string) {
     const lower = (r ?? "").toLowerCase();
-    if (lower.includes("prismatic")) return "border-fuchsia-500/80 ring-1 ring-fuchsia-400/40 shadow-fuchsia-500/10";
-    if (lower.includes("gold")) return "border-amber-500/80 ring-1 ring-amber-400/40 shadow-amber-500/10";
-    if (lower.includes("silver")) return "border-slate-500/80 ring-1 ring-slate-400/40";
+    if (lower.includes("prismatic")) return "border-[#e78fff]/80 ring-1 ring-[#e78fff]/40";
+    if (lower.includes("gold")) return "border-[#e3c49f]";
+    if (lower.includes("silver")) return "border-[#a3b9bd]";
     return "border-gray-700";
   }
 
@@ -182,10 +183,24 @@
     return filtered
       .slice()
       .sort((a, b) => {
-        if (b.wpa !== a.wpa) return b.wpa - a.wpa;
-        return b.games - a.games;
+        if (b.pick_rate !== a.pick_rate) return b.pick_rate - a.pick_rate;
+        if (b.games !== a.games) return b.games - a.games;
+        return b.wpa - a.wpa;
       })
       .slice(0, 6);
+  }
+
+  function sortBestMatchChampions(
+    champions: ServerStatisticRow["champions"],
+  ): ServerStatisticRow["champions"] {
+    if (!champions || champions.length === 0) return [];
+    return champions
+      .slice()
+      .sort((a, b) => {
+        if (b.pick_rate !== a.pick_rate) return b.pick_rate - a.pick_rate;
+        if (b.games !== a.games) return b.games - a.games;
+        return b.wpa - a.wpa;
+      });
   }
 
   function cleanDomId(id: string | number): string {
@@ -214,46 +229,41 @@
     <div class="mt-3 flex min-h-0 flex-1 flex-col gap-3">
       <!-- Horizontal Inspector Grid (On Top of the Table) -->
       {#if selected}
+        {@const pairedChampions = sortBestMatchChampions(selected.champions)}
         {@const pairedItems = filterAndSortPartnersByKind(selected.partners, "item", selected.games)}
         {@const pairedAugments = filterAndSortPartnersByKind(selected.partners, "augment", selected.games)}
         <section class="rounded-lg border border-gray-800 bg-gray-900/50 p-3 shadow-lg shrink-0 max-h-[300px] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-800">
-          <div class="grid grid-cols-1 lg:grid-cols-12 gap-3">
-            <!-- 1. Selected Build Details & Description (No separate What It Does box, reduced width) -->
-            <div class="lg:col-span-4 flex flex-col justify-between rounded-lg border border-gray-800/80 bg-gray-950/60 p-2.5">
+          <div class="flex flex-col lg:flex-row gap-3">
+            <!-- 1. Selected Build Details & Description (Reduced width by 4rem) -->
+            <div class="w-full lg:w-[calc(33.333%-4rem)] shrink-0 flex flex-col justify-between rounded-lg border border-gray-800/80 bg-gray-950/60 p-2.5">
               <div>
-                <div class="flex items-start justify-between gap-2">
-                  <div class="flex items-start gap-2.5 min-w-0">
-                    {#if selected.icon_url}
-                      <img src={selected.icon_url} alt={selected.name} class="h-10 w-10 rounded-lg border {getAugmentIconBorder(selected.rarity)} object-cover shrink-0 shadow-sm" />
+                <div class="flex items-start gap-2.5 min-w-0">
+                  {#if selected.icon_url}
+                    {#if kind === "augment" || selected.rarity}
+                      <AugmentIcon src={selected.icon_url} name={selected.name} rarity={selected.rarity} class="h-10 w-10" roundedClass="rounded-lg" />
+                    {:else}
+                      <img src={selected.icon_url} alt={selected.name} class="h-10 w-10 rounded-lg border border-gray-700 object-cover shrink-0 shadow-sm" />
                     {/if}
-                    <div class="min-w-0 flex-1">
-                      <div class="flex flex-wrap items-center gap-1.5">
-                        <h2 class="font-bold text-sm {selected.rarity ? getAugmentTitleColor(selected.rarity) : 'text-white'} truncate" title={selected.name}>{selected.name}</h2>
-                      </div>
-                      <div class="mt-0.5 flex flex-wrap items-center gap-2 text-[11px]">
-                        {#if (selected.price_total ?? 0) > 0}
-                          <span class="inline-flex items-center gap-1 font-semibold text-yellow-400">
-                            <img src="https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/assets/ux/fonts/texticons/lol/gameplay/goldcoins.png" alt="gold" class="h-3 w-3 object-contain inline" />
-                            {(selected.price_total ?? 0).toLocaleString()}g
-                          </span>
-                        {/if}
-                        {#if selected.item_class}
-                          <span class="capitalize text-gray-400 font-medium">{selected.item_class}</span>
-                        {/if}
-                        {#if selected.categories?.length}
-                          <span class="text-gray-500 truncate max-w-[120px]" title={selected.categories.join(", ")}>{selected.categories.slice(0, 2).join(", ")}</span>
-                        {/if}
-                      </div>
+                  {/if}
+                  <div class="min-w-0 flex-1">
+                    <div class="flex flex-wrap items-center gap-1.5">
+                      <h2 class="font-bold text-sm {selected.rarity ? getAugmentTitleColor(selected.rarity) : 'text-white'} truncate" title={selected.name}>{selected.name}</h2>
+                    </div>
+                    <div class="mt-0.5 flex flex-wrap items-center gap-2 text-[11px]">
+                      {#if (selected.price_total ?? 0) > 0}
+                        <span class="inline-flex items-center gap-1 font-semibold text-yellow-400">
+                          <img src="https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/assets/ux/fonts/texticons/lol/gameplay/goldcoins.png" alt="gold" class="h-3 w-3 object-contain inline" />
+                          {(selected.price_total ?? 0).toLocaleString()}g
+                        </span>
+                      {/if}
+                      {#if selected.item_class}
+                        <span class="capitalize text-gray-400 font-medium">{selected.item_class}</span>
+                      {/if}
+                      {#if selected.categories?.length}
+                        <span class="text-gray-500 truncate max-w-[120px]" title={selected.categories.join(", ")}>{selected.categories.slice(0, 2).join(", ")}</span>
+                      {/if}
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    class="rounded p-1 text-gray-500 hover:bg-gray-800 hover:text-gray-300 transition-colors"
-                    onclick={() => (selectedId = null)}
-                    title="Close inspector"
-                  >
-                    <span class="icon-[heroicons--x-mark] h-4 w-4"></span>
-                  </button>
                 </div>
 
                 <!-- Description directly inside the card (no nested box/container) -->
@@ -290,23 +300,23 @@
             </div>
 
             <!-- 2. "Best Matches" Combined Card (Champions, Items, Augments - Expanded, no gap between columns) -->
-            <div class="lg:col-span-8 flex flex-col rounded-lg border border-gray-800/80 bg-gray-950/60 p-3">
+            <div class="w-full lg:flex-1 min-w-0 flex flex-col rounded-lg border border-gray-800/80 bg-gray-950/60 p-3">
               <div class="flex items-center justify-between pb-2 border-b border-gray-800/80">
                 <div class="flex items-center gap-1.5">
                   <span class="icon-[heroicons--sparkles] h-4 w-4 text-purple-400"></span>
                   <h3 class="text-xs font-bold uppercase tracking-wider text-white">Best Matches</h3>
                 </div>
-                <span class="text-[10px] text-gray-500">Highest synergy & win rates</span>
+                <span class="text-[10px] text-gray-500">Most commonly picked</span>
               </div>
 
               <div class="grid grid-cols-1 sm:grid-cols-3 gap-0 pt-2 flex-1 min-h-0 divide-y sm:divide-y-0 sm:divide-x divide-gray-800/60">
                 <!-- Champions Column -->
-                <div class="flex flex-col min-h-0 sm:px-2.5 first:pl-0">
+                <div class="flex flex-col min-h-0 sm:pl-0 sm:pr-0">
                   <h4 class="text-[10px] font-semibold uppercase tracking-wider text-cyan-400 mb-1.5 flex items-center gap-1">
                     <span class="icon-[heroicons--user] h-3 w-3"></span> Champions
                   </h4>
-                  <div class="space-y-1.5 overflow-y-auto max-h-[180px] scrollbar-thin scrollbar-thumb-gray-800 pr-1 flex-1">
-                    {#each selected.champions.slice(0, 5) as champion (champion.id)}
+                  <div class="space-y-1.5 overflow-y-auto max-h-[180px] scrollbar-thin scrollbar-thumb-gray-800 pr-0 flex-1">
+                    {#each pairedChampions.slice(0, 5) as champion (champion.id)}
                       <div class="flex items-center gap-2 p-1 rounded-md hover:bg-gray-800/50 transition-colors">
                         {#if champion.icon_url}
                           <img src={champion.icon_url} alt={champion.name} class="h-7 w-7 shrink-0 rounded-full object-cover border border-gray-700 shadow-sm" />
@@ -335,11 +345,11 @@
                 </div>
 
                 <!-- Items Column -->
-                <div class="flex flex-col min-h-0 sm:px-2.5">
+                <div class="flex flex-col min-h-0 sm:pl-1.5 sm:pr-0">
                   <h4 class="text-[10px] font-semibold uppercase tracking-wider text-amber-400 mb-1.5 flex items-center gap-1">
                     <span class="icon-[heroicons--archive-box] h-3 w-3"></span> Items
                   </h4>
-                  <div class="space-y-1.5 overflow-y-auto max-h-[180px] scrollbar-thin scrollbar-thumb-gray-800 pr-1 flex-1">
+                  <div class="space-y-1.5 overflow-y-auto max-h-[180px] scrollbar-thin scrollbar-thumb-gray-800 pr-0 flex-1">
                     {#each pairedItems.slice(0, 5) as partner (partner.id)}
                       {@const pDomId = cleanDomId(`item-${partner.id}`)}
                       <div id={pDomId} class="flex items-center gap-2 p-1 rounded-md hover:bg-gray-800/50 transition-colors cursor-help">
@@ -379,21 +389,15 @@
                 </div>
 
                 <!-- Augments Column -->
-                <div class="flex flex-col min-h-0 sm:px-2.5 last:pr-0">
+                <div class="flex flex-col min-h-0 sm:pl-1.5 sm:pr-0">
                   <h4 class="text-[10px] font-semibold uppercase tracking-wider text-purple-400 mb-1.5 flex items-center gap-1">
                     <span class="icon-[heroicons--sparkles] h-3 w-3"></span> Augments
                   </h4>
-                  <div class="space-y-1.5 overflow-y-auto max-h-[180px] scrollbar-thin scrollbar-thumb-gray-800 pr-1 flex-1">
+                  <div class="space-y-1.5 overflow-y-auto max-h-[180px] scrollbar-thin scrollbar-thumb-gray-800 pr-0 flex-1">
                     {#each pairedAugments.slice(0, 5) as partner (partner.id)}
                       {@const pDomId = cleanDomId(`aug-${partner.id}`)}
                       <div id={pDomId} class="flex items-center gap-2 p-1 rounded-md hover:bg-gray-800/50 transition-colors cursor-help">
-                        {#if partner.icon_url}
-                          <img src={partner.icon_url} alt={partner.name} class="h-7 w-7 shrink-0 rounded-md object-cover border {getAugmentIconBorder(partner.rarity)} shadow-sm" />
-                        {:else}
-                          <div class="h-7 w-7 shrink-0 rounded-md bg-gray-800 border {getAugmentIconBorder(partner.rarity)} flex items-center justify-center text-[10px] font-bold {getAugmentTitleColor(partner.rarity)}">
-                            {partner.name.slice(0, 1)}
-                          </div>
-                        {/if}
+                        <AugmentIcon src={partner.icon_url} name={partner.name} rarity={partner.rarity} class="h-7 w-7" />
                         <div class="min-w-0 flex-1">
                           <p class="truncate font-medium text-xs {getAugmentTitleColor(partner.rarity)}" title={partner.name}>{partner.name}</p>
                           <p class="flex items-center flex-wrap gap-1 text-[10px] text-gray-400 mt-0.5 leading-none">
@@ -486,21 +490,21 @@
                 </button>
                 <button
                   type="button"
-                  class="rounded px-2 py-1 transition-colors {augmentTier === 'silver' ? 'bg-slate-300 text-gray-900 font-semibold shadow-sm' : 'text-slate-400 hover:text-slate-200'}"
+                  class="rounded px-2 py-1 transition-colors {augmentTier === 'silver' ? 'bg-[#a3b9bd] text-gray-950 font-semibold shadow-sm' : 'text-[#a3b9bd]/70 hover:text-[#a3b9bd]'}"
                   onclick={() => (augmentTier = 'silver')}
                 >
                   Silver
                 </button>
                 <button
                   type="button"
-                  class="rounded px-2 py-1 transition-colors {augmentTier === 'gold' ? 'bg-yellow-500 text-gray-950 font-semibold shadow-sm' : 'text-yellow-400 hover:text-yellow-200'}"
+                  class="rounded px-2 py-1 transition-colors {augmentTier === 'gold' ? 'bg-[#e3c49f] text-gray-950 font-semibold shadow-sm' : 'text-[#e3c49f]/70 hover:text-[#e3c49f]'}"
                   onclick={() => (augmentTier = 'gold')}
                 >
                   Gold
                 </button>
                 <button
                   type="button"
-                  class="rounded px-2 py-1 transition-colors {augmentTier === 'prismatic' ? 'bg-gradient-to-r from-fuchsia-500 to-cyan-400 text-white font-semibold shadow-sm' : 'text-fuchsia-400 hover:text-fuchsia-200'}"
+                  class="rounded px-2 py-1 transition-colors {augmentTier === 'prismatic' ? 'bg-[linear-gradient(180deg,#e78fff,#70008f)] text-white font-semibold shadow-sm' : 'text-[#f2c2ff]/70 hover:text-[#f2c2ff]'}"
                   onclick={() => (augmentTier = 'prismatic')}
                 >
                   Prismatic
@@ -555,16 +559,19 @@
                 class="cursor-pointer hover:bg-gray-800/60 {selected?.id === row.id ? 'bg-purple-950/40' : ''}"
                 onclick={() => (selectedId = selectedId === row.id ? null : row.id)}
               >
-                <td class="flex max-w-[340px] items-center gap-2 px-3 py-2">
-                  {#if row.icon_url}
-                    <img src={row.icon_url} alt={row.name} class="h-7 w-7 rounded object-cover shrink-0 border {kind === 'augment' ? getAugmentIconBorder(row.rarity) : 'border-gray-800'}" />
+                <td id={`${domId}-cell`} class="flex max-w-[340px] items-center gap-2 px-3 py-2">
+                  {#if kind === "augment" || row.rarity}
+                    <AugmentIcon src={row.icon_url} name={row.name} rarity={row.rarity} class="h-7 w-7" />
+                  {:else if row.icon_url}
+                    <img src={row.icon_url} alt={row.name} class="h-7 w-7 rounded object-cover shrink-0 border border-gray-800" />
                   {/if}
                   <span class="truncate font-medium {kind === 'augment' && row.rarity ? getAugmentTitleColor(row.rarity) : 'text-gray-200'}">{row.name}</span>
                 </td>
                 {#if kind === "augment"}
                   <td class="px-3 py-2">
                     {#if row.rarity}
-                      <span class="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider {row.rarity === 'silver' ? 'bg-slate-700/60 text-slate-300 border border-slate-600/40' : row.rarity === 'gold' ? 'bg-yellow-950/60 text-yellow-300 border border-yellow-700/40' : 'bg-fuchsia-950/60 text-fuchsia-300 border border-fuchsia-700/40'}">
+                      {@const lowerRarity = row.rarity.toLowerCase()}
+                      <span class="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider {lowerRarity === 'silver' ? 'bg-[#a3b9bd]/15 text-[#a3b9bd] border border-[#a3b9bd]/40' : lowerRarity === 'gold' ? 'bg-[#e3c49f]/15 text-[#e3c49f] border border-[#e3c49f]/40' : 'bg-[#70008f]/30 text-[#f2c2ff] border border-[#e78fff]/50'}">
                         {row.rarity}
                       </span>
                     {:else}
@@ -621,6 +628,7 @@
               </tr>
               <GameEntityPopover
                 targetId={domId}
+                reference={`#${domId}-cell`}
                 name={row.name}
                 iconUrl={row.icon_url}
                 description={row.description}

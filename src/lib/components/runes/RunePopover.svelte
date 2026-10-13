@@ -1,37 +1,47 @@
 <script lang="ts">
   import { Popover } from "flowbite-svelte";
   import { parseRuneDescription } from "../../utils/runeDescription";
-    import { slide } from "svelte/transition";
+  import { createPopoverMiddlewares } from "../../utils/popoverPlacement";
+  import { slide } from "svelte/transition";
 
   let {
     targetId,
+    reference,
     name,
     iconUrl = "",
     description = "",
     isEditing = false,
+    placement = "top",
+    offset = 20,
   }: {
     targetId: string;
+    reference?: string;
     name: string;
     iconUrl?: string;
     description?: string;
     isEditing?: boolean;
+    placement?: "top" | "bottom" | "left" | "right";
+    offset?: number;
   } = $props();
 
   const formattedDescription = $derived(parseRuneDescription(description));
   const delay = $derived(isEditing ? 1000 : 500);
+  const middlewares = $derived(createPopoverMiddlewares(placement, offset, 12));
 </script>
 
 {#if description && targetId}
   <Popover
     triggeredBy={`#${targetId}`}
+    reference={reference ? reference : undefined}
     trigger="hover"
     triggerDelay={delay}
     transition={slide}
-    offset={20}
+    offset={0}
+    {middlewares}
     transitionParams={{ duration: 200 }}
-    placement="top"
+    {placement}
     arrow
-    class="z-50 w-72 sm:w-80 rounded-xl border border-gray-700 bg-gray-900/95 backdrop-blur-md p-1 text-gray-200 text-xs font-sans left-0"
+    class="z-50 w-72 sm:w-80 rounded-xl border border-gray-700 bg-gray-900/95 backdrop-blur-md p-1 text-gray-200 text-xs font-sans"
     defaultClass=""
   >
     <!-- 1. Header: Rune Icon + Name -->

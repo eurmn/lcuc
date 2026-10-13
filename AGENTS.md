@@ -1,8 +1,9 @@
 # LCU Companion Agent Guide
 
-> **Current agent handoff:** Read
-> [`@llm/docs/context/SESSION_HANDOFF_2026-10-11.md`](./@llm/docs/context/SESSION_HANDOFF_2026-10-11.md)
-> before making changes to the standalone agent or collection pipeline.
+> **Current agent handoffs:** Read
+> [`@llm/docs/context/conversation/20261012_BUILD_STATISTICS_TOOLTIPS_AND_BEST_MATCHES.md`](./@llm/docs/context/conversation/20261012_BUILD_STATISTICS_TOOLTIPS_AND_BEST_MATCHES.md)
+> and [`@llm/docs/context/SESSION_HANDOFF_2026-10-11.md`](./@llm/docs/context/SESSION_HANDOFF_2026-10-11.md)
+> before making changes to the UI, standalone agent, or collection pipeline.
 
 ## Mission and architecture
 
@@ -26,10 +27,14 @@ match history, and statistics aggregation run in the background agent tasks.
 ```text
 src/                         Svelte 5 + TypeScript frontend
 src/lib/api/                 Typed Tauri/agent request wrappers (agent.ts, profile.ts, runes.ts)
-src/lib/components/          Presentation components (runes/, history/, sidebar/)
+src/lib/components/          Presentation components (common/, runes/, history/, sidebar/)
+src/lib/components/common/   Shared components (AugmentIcon.svelte, GameEntityPopover.svelte)
+src/lib/utils/gameDescription.ts
+                             Game description & math expression parser with tracker cleanup
 src-tauri/src/agent/         Standalone agent process, crawler, projection store, and collector
 src-tauri/src/commands/      Tauri command facades
 src-tauri/src/services/      Existing LCU, cache, profile, and rune services
+src-tauri/src/data/          Static bundled game data (augment_tooltips.json)
 src-tauri/src/agent_supervisor.rs
                              Agent lifecycle and authenticated loopback IPC
 @llm/PLAN.md                 Architecture migration plan
@@ -203,6 +208,30 @@ The application's design language and UI primitives (buttons, modals, input grou
 ### F. Heroicons Icon System
 All icons across frontend Svelte components must use `@iconify-json/heroicons` (or `@iconify-json/flowbite` where specified) icon classes (e.g. `<span class="icon-[heroicons--...]"></span>` or `<span class="icon-[flowbite--...]"></span>`) rather than raw inline `<svg>` elements.
 
+### G. ARAM Mayhem Augments & Build Statistics Subsystem
+1. **Tier Identification & Official Color Palette**:
+   - **Silver**: `#a3b9bd`
+   - **Gold**: `#e3c49f`
+   - **Prismatic**: `#f2c2ff`
+   - **Prismatic Border Gradient**: `linear-gradient(180deg, #e78fff, #70008f)`
+2. **Dedicated Augment Icon (`AugmentIcon.svelte`)**:
+   - Preserves original image asset presentation (`object-cover`).
+   - Applies the official tier borders (Silver `#a3b9bd`, Gold `#e3c49f`, Prismatic `linear-gradient(180deg, #e78fff, #70008f)`).
+   - Graceful fallback with initial letter glyph when an icon asset is missing.
+3. **Rich Entity Popovers (`GameEntityPopover.svelte`)**:
+   - Universal hovercard popovers across items, augments, and champions.
+   - Dynamic tier glow/border, gold pricing, item classifications, and rich HTML descriptions.
+4. **Horizontal Inspector & "Best Matches" Synergy**:
+   - Split top horizontal inspector in [`BuildStatisticsView.svelte`](/src/lib/components/history/BuildStatisticsView.svelte):
+     - Selected Build Details card (title, tier/price, native in-game description, performance metrics bar).
+     - Unified 3-column "Best Matches" card (Champions, Items, Augments) with `((WR))` and `((WPA))` micro-badges.
+   - Overlapping card deck hand preview for top 3 synergizing champions in the main table with WPA-based sorting (`champWpa`).
+5. **CommunityDragon Description & Tooltip Parser (`gameDescription.ts`)**:
+   - Formula evaluators resolving `mDisplayAsPercent` ratio calculations.
+   - Dynamic math expression evaluator handling custom scaling (e.g. `@Var*20@%`, `@Var*1000@`, `@Var/2@`).
+   - Live match tracker scrubbing removing scoreboard metrics (`Damage Dealt:`, `Bonus Damage: @f1.0@`, `<rules>` containers) to keep tooltips clean.
+   - Float32 precision sanitization preventing IEEE-754 decimal artifacts (e.g. `0.0799999982` -> `0.08`).
+
 ---
 
 ## 5. Comprehensive Documentation Index (`@llm/docs/`)
@@ -210,6 +239,7 @@ All icons across frontend Svelte components must use `@iconify-json/heroicons` (
 For detailed specifications and domain knowledge, consult the specialized documents in [`@llm/docs/`](/@llm/docs/):
 
 * **Context & Live State**:
+  * [`20261012_BUILD_STATISTICS_TOOLTIPS_AND_BEST_MATCHES.md`](/@llm/docs/context/conversation/20261012_BUILD_STATISTICS_TOOLTIPS_AND_BEST_MATCHES.md) — Augment tooltips, build statistics inspector, Best Matches, math parser, and tier palette handoff.
   * [`CONTEXT.md`](/@llm/docs/context/CONTEXT.md) — System overview, data flows, and module responsibilities.
   * [`CURRENT_STATE.md`](/@llm/docs/context/CURRENT_STATE.md) — Live snapshot of registered commands, services, and test status.
   * [`HTMX_TO_SVELTE.md`](/@llm/docs/context/HTMX_TO_SVELTE.md) — Svelte 5 + TypeScript migration plan and architecture reference.
