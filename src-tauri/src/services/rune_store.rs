@@ -36,8 +36,17 @@ impl RuneStore {
 
     /// Opens a connection to the SQLite database.
     fn connect(&self) -> Result<Connection, String> {
-        Connection::open(&self.db_path)
-            .map_err(|e| format!("Failed connecting to SQLite at {:?}: {}", self.db_path, e))
+        let conn = Connection::open(&self.db_path)
+            .map_err(|e| format!("Failed connecting to SQLite at {:?}: {}", self.db_path, e))?;
+        let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
+        let _ = conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = NORMAL;
+             PRAGMA temp_store = MEMORY;
+             PRAGMA mmap_size = 268435456;
+             PRAGMA cache_size = -64000;",
+        );
+        Ok(conn)
     }
 
     /// Initializes the `runesets` and `favorite_champions` table schema if it does not already exist.

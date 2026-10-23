@@ -37,10 +37,16 @@
   import { logger } from "./lib/utils/logger";
   import {
     getGlobalAramConfig,
+    resetGlobalAramDatabase,
     setGlobalAramLimit,
     setGlobalAramWorkers,
     type AgentOperation,
+    type GlobalAramPatchBreakdown,
   } from "./lib/api/agent";
+  import {
+    clearStatisticsCache,
+    syncStatisticsCachePatch,
+  } from "./lib/utils/statistics-data";
 
   let clientPages = $state<ClientRunePageSummary[]>([]);
   let savedRunesets = $state<RuneSetSummary[]>([]);
@@ -58,10 +64,18 @@
   let globalGames = $state(0);
   let globalCollectorState = $state("unknown");
   let globalQueuedJobs = $state(0);
+  let globalCurrentPatch = $state<string | null>(null);
+  let globalPatches = $state<GlobalAramPatchBreakdown[]>([]);
+  let globalOutdatedGames = $state(0);
+  let globalHasPatchMismatch = $state(false);
+  let confirmingGlobalReset = $state(false);
+  let resettingGlobalDb = $state(false);
+  let statisticsRefreshKey = $state(0);
   let agentOperations = $state<AgentOperation[]>([]);
   let savingGlobalLimit = $state(false);
   let hideLowPickrate = $state(false);
-  let crawlerGps = $state(0);
+  let crawlerMpm = $state(0);
+  let crawlerRateText = $state("0.0 match/min");
   let countHistory: Array<{ count: number; time: number }> = [];
 
   let currentTree = $state<RuneTreePayload | null>(null);
@@ -103,7 +117,14 @@
         globalGames = config.games;
         globalCollectorState = config.collector_state;
         globalQueuedJobs = config.queued_jobs;
+        globalCurrentPatch = config.current_patch ?? null;
+        globalPatches = config.patches ?? [];
+        globalOutdatedGames = config.outdated_games ?? 0;
+        globalHasPatchMismatch = Boolean(config.has_patch_mismatch);
         agentOperations = config.operations ?? [];
+        if (syncStatisticsCachePatch(globalCurrentPatch)) {
+          statisticsRefreshKey += 1;
+        }
 
         hasActiveWork =
           agentOperations.length > 0 ||
@@ -118,8 +139,11 @@
 
         if (hasActiveWork && currentCount > 0) {
           countHistory.push({ count: currentCount, time: now });
-          // Retain samples over the last 5 seconds for moving average calculation
-          const cutoff = now - 5000;
+          // Dynamic cutoff window adapting to processing rate:
+          // Low rate (<1 match/min) -> wider window up to 300s to avoid zero-step noise
+          // Normal/fast rate (>10 match/min) -> 60s responsive window
+          const dynamicWindowMs = crawlerMpm < 1 ? 300_000 : crawlerMpm < 10 ? 120_000 : 60_000;
+          const cutoff = now - dynamicWindowMs;
           countHistory = countHistory.filter((item) => item.time >= cutoff);
 
           if (countHistory.length >= 2) {
@@ -127,13 +151,25 @@
             const newest = countHistory[countHistory.length - 1];
             const timeDeltaSec = (newest.time - oldest.time) / 1000;
             const countDelta = newest.count - oldest.count;
-            if (timeDeltaSec >= 0.8 && countDelta >= 0) {
-              crawlerGps = (countDelta / timeDeltaSec) * 60;
+            if (timeDeltaSec >= 2.0 && countDelta >= 0) {
+              const ratePerSec = countDelta / timeDeltaSec;
+              crawlerMpm = ratePerSec * 60;
+
+              // Auto-scale unit based on rate: matches/sec, matches/min, matches/hr
+              if (ratePerSec >= 1.0) {
+                crawlerRateText = `${ratePerSec.toFixed(1)} match/s`;
+              } else if (crawlerMpm >= 1.0) {
+                crawlerRateText = `${crawlerMpm.toFixed(1)} match/min`;
+              } else {
+                const perHour = crawlerMpm * 60;
+                crawlerRateText = `${perHour.toFixed(0)} match/h`;
+              }
             }
           }
         } else {
           countHistory = [];
-          crawlerGps = 0;
+          crawlerMpm = 0;
+          crawlerRateText = "0.0 match/min";
         }
       } catch (error) {
         logger.warn("frontend.app", "Global statistics config unavailable", error);
@@ -182,11 +218,35 @@
       ]);
       globalLimit = limitResult.limit;
       globalWorkers = workersResult.workers;
+      confirmingGlobalReset = false;
       statisticsConfigOpen = false;
     } catch (error) {
       logger.error("frontend.app", "Failed to save global statistics settings", error);
     } finally {
       savingGlobalLimit = false;
+    }
+  }
+
+  async function handleResetGlobalDatabase() {
+    resettingGlobalDb = true;
+    try {
+      const result = await resetGlobalAramDatabase();
+      clearStatisticsCache();
+      globalGames = result.games;
+      globalQueuedJobs = result.queued_jobs;
+      globalPatches = [];
+      globalOutdatedGames = 0;
+      globalHasPatchMismatch = false;
+      globalCollectorState = `global-aram:0/${result.limit} (reset)`;
+      countHistory = [];
+      crawlerMpm = 0;
+      crawlerRateText = "0.0 match/min";
+      confirmingGlobalReset = false;
+      statisticsRefreshKey += 1;
+    } catch (error) {
+      logger.error("frontend.app", "Failed to reset global ARAM database", error);
+    } finally {
+      resettingGlobalDb = false;
     }
   }
 
@@ -563,7 +623,7 @@
                     ({progressPct}%)
                   </span>
                   <span class="text-[11px] font-medium text-cyan-300/80 tabular-nums">
-                    · {crawlerGps.toFixed(1)} match/minute
+                    · {crawlerRateText}
                   </span>
                 </div>
               </div>
@@ -629,23 +689,116 @@
                     {/each}
                   </div>
 
+                  {#if globalHasPatchMismatch}
+                    <button
+                      type="button"
+                      onclick={() => {
+                        statisticsConfigOpen = true;
+                      }}
+                      title="Global database contains matches from older patches. Click to inspect or reset."
+                      class="flex cursor-pointer items-center gap-1.5 rounded-md border border-amber-500/50 bg-amber-950/40 px-2.5 py-1.5 text-xs font-medium text-amber-300 transition-colors hover:border-amber-400 hover:bg-amber-950/70"
+                    >
+                      <span class="icon-[heroicons--exclamation-triangle] h-4 w-4 text-amber-400"></span>
+                      <span>Outdated patch data ({globalOutdatedGames.toLocaleString()})</span>
+                    </button>
+                  {/if}
+
                   <div class="relative">
-                    <button type="button" class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-gray-700 p-0 text-gray-400 hover:text-white" title="Global database settings" aria-label="Global database settings" onclick={() => (statisticsConfigOpen = !statisticsConfigOpen)}>
+                    <button
+                      type="button"
+                      class="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-md border p-0 transition-colors {globalHasPatchMismatch ? 'border-amber-500/60 bg-amber-950/30 text-amber-300 hover:text-amber-100' : 'border-gray-700 text-gray-400 hover:text-white'}"
+                      title="Global database settings"
+                      aria-label="Global database settings"
+                      onclick={() => {
+                        statisticsConfigOpen = !statisticsConfigOpen;
+                        if (!statisticsConfigOpen) confirmingGlobalReset = false;
+                      }}
+                    >
                       <span class="icon-[heroicons--cog-6-tooth] h-4 w-4"></span>
+                      {#if globalHasPatchMismatch}
+                        <span class="absolute -right-1 -top-1 flex h-2.5 w-2.5">
+                          <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75"></span>
+                          <span class="relative inline-flex h-2.5 w-2.5 rounded-full bg-amber-500"></span>
+                        </span>
+                      {/if}
                     </button>
                     {#if statisticsConfigOpen}
-                      <div class="absolute right-0 top-9 z-30 w-64 rounded-lg border border-gray-700 bg-gray-900 p-3 shadow-xl">
+                      <div class="absolute right-0 top-9 z-30 w-72 rounded-lg border border-gray-700 bg-gray-900 p-3 shadow-xl">
+                        {#if globalHasPatchMismatch}
+                          <div class="mb-3 rounded-md border border-amber-500/40 bg-amber-950/40 p-2 text-[11px] text-amber-200">
+                            <div class="flex items-center gap-1.5 font-semibold text-amber-300">
+                              <span class="icon-[heroicons--exclamation-triangle] h-4 w-4 shrink-0 text-amber-400"></span>
+                              <span>Cross-patch games detected</span>
+                            </div>
+                            <p class="mt-1 text-[10px] leading-relaxed text-amber-200/80">
+                              {#if globalCurrentPatch}
+                                Current patch is <span class="font-semibold text-amber-100">v{globalCurrentPatch}</span>, but {globalOutdatedGames.toLocaleString()} stored {globalOutdatedGames === 1 ? "game is" : "games are"} from older patches.
+                              {:else}
+                                Stored games span multiple patches ({globalOutdatedGames.toLocaleString()} from older patches).
+                              {/if}
+                              Resetting is recommended after major ARAM Mayhem updates.
+                            </p>
+                            {#if globalPatches.length > 0}
+                              <div class="mt-1.5 flex flex-wrap gap-1">
+                                {#each globalPatches as entry (entry.patch)}
+                                  <span class="rounded border px-1.5 py-0.5 text-[10px] tabular-nums {globalCurrentPatch && entry.patch === globalCurrentPatch ? 'border-emerald-600/50 bg-emerald-950/50 text-emerald-300' : 'border-amber-600/40 bg-amber-950/60 text-amber-300'}">
+                                    {entry.patch === "unknown" ? "unknown" : `v${entry.patch}`}: {entry.games.toLocaleString()}
+                                  </span>
+                                {/each}
+                              </div>
+                            {/if}
+                          </div>
+                        {/if}
+
                         <label class="text-[11px] uppercase tracking-wider text-gray-500" for="global-aram-limit">Global ARAM game limit</label>
                         <input id="global-aram-limit" type="number" min="1" max="100000" bind:value={globalLimit} class="mt-1 w-full rounded border border-gray-700 bg-gray-950 px-2 py-1.5 text-xs text-gray-100" />
                         <label class="mt-2 block text-[11px] uppercase tracking-wider text-gray-500" for="global-aram-workers">Crawler worker agents</label>
                         <input id="global-aram-workers" type="number" min="1" max="16" bind:value={globalWorkers} class="mt-1 w-full rounded border border-gray-700 bg-gray-950 px-2 py-1.5 text-xs text-gray-100" />
-                        <p class="mt-1 text-[10px] text-gray-400">{globalGames}/{globalLimit} games · {globalWorkers} workers</p>
-                        <p class="mt-1 break-words text-[10px] text-cyan-300">Status: {globalCollectorState}{#if globalQueuedJobs > 0} · {globalQueuedJobs} queued{/if}</p>
+                        <p class="mt-1 text-[10px] text-gray-400">
+                          {globalGames.toLocaleString()}/{globalLimit.toLocaleString()} games · {globalWorkers} workers{#if globalCurrentPatch} · Patch v{globalCurrentPatch}{/if}
+                        </p>
+                        <p class="mt-1 break-words text-[10px] text-cyan-300">Status: {globalCollectorState}{#if globalQueuedJobs > 0} · {globalQueuedJobs.toLocaleString()} queued{/if}</p>
                         <label class="mt-3 flex items-center gap-2 text-[11px] text-gray-300">
                           <input type="checkbox" checked={hideLowPickrate} onchange={handleHideLowPickrateChange} class="rounded border-gray-700 bg-gray-950 text-purple-600 focus:ring-purple-500" />
                           Hide low pick-rate options (&lt;1%)
                         </label>
-                        <button type="button" class="mt-2 w-full rounded bg-purple-600 px-2 py-1.5 text-xs text-white disabled:opacity-50" disabled={savingGlobalLimit} onclick={saveGlobalStatisticsLimit}>{savingGlobalLimit ? "Saving..." : "Save settings"}</button>
+                        <button type="button" class="mt-2 w-full cursor-pointer rounded bg-purple-600 px-2 py-1.5 text-xs font-medium text-white transition-colors hover:bg-purple-500 disabled:opacity-50" disabled={savingGlobalLimit || resettingGlobalDb} onclick={saveGlobalStatisticsLimit}>{savingGlobalLimit ? "Saving..." : "Save settings"}</button>
+
+                        <div class="mt-3 border-t border-gray-800 pt-2.5">
+                          {#if !confirmingGlobalReset}
+                            <button
+                              type="button"
+                              disabled={resettingGlobalDb || savingGlobalLimit}
+                              onclick={() => (confirmingGlobalReset = true)}
+                              class="flex w-full cursor-pointer items-center justify-center gap-1.5 rounded border border-red-800/70 bg-red-950/30 px-2 py-1.5 text-xs font-medium text-red-300 transition-colors hover:border-red-600 hover:bg-red-950/60 hover:text-red-200 disabled:opacity-50"
+                            >
+                              <span class="icon-[heroicons--trash] h-3.5 w-3.5"></span>
+                              <span>Reset Database &amp; Search Tree</span>
+                            </button>
+                          {:else}
+                            <p class="mb-2 text-[10px] leading-snug text-red-300">
+                              Delete all {globalGames.toLocaleString()} global ARAM Mayhem games and reset the cached account search tree?
+                            </p>
+                            <div class="flex gap-1.5">
+                              <button
+                                type="button"
+                                disabled={resettingGlobalDb}
+                                onclick={handleResetGlobalDatabase}
+                                class="flex-1 cursor-pointer rounded bg-red-600 px-2 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-red-500 disabled:opacity-50"
+                              >
+                                {resettingGlobalDb ? "Resetting..." : "Confirm Reset"}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={resettingGlobalDb}
+                                onclick={() => (confirmingGlobalReset = false)}
+                                class="cursor-pointer rounded border border-gray-700 bg-gray-800 px-2.5 py-1.5 text-xs text-gray-300 transition-colors hover:bg-gray-700 disabled:opacity-50"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          {/if}
+                        </div>
                       </div>
                     {/if}
                   </div>
@@ -658,9 +811,9 @@
               </div>
               <div class="min-h-0 flex-1">
                 {#if statisticsPerspective === "champions"}
-                  <ProfileStatisticsView showHeader={false} scope={statisticsScope} hideLowPickrate={hideLowPickrate} />
+                  <ProfileStatisticsView showHeader={false} scope={statisticsScope} hideLowPickrate={hideLowPickrate} refreshKey={statisticsRefreshKey} />
                 {:else}
-                  <BuildStatisticsView scope={statisticsScope} hideLowPickrate={hideLowPickrate} />
+                  <BuildStatisticsView scope={statisticsScope} hideLowPickrate={hideLowPickrate} refreshKey={statisticsRefreshKey} />
                 {/if}
               </div>
             </div>

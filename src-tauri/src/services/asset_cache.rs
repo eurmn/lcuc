@@ -27,6 +27,19 @@ pub fn get_asset_cache_dir() -> PathBuf {
         .join("cdragon")
 }
 
+/// Clears both the in-memory and on-disk CDragon asset caches (triggered on patch updates).
+pub async fn invalidate_asset_cache() {
+    {
+        let mut mem = ASSET_MEMORY_CACHE.write().await;
+        mem.clear();
+    }
+    let cache_dir = get_asset_cache_dir();
+    if cache_dir.exists() {
+        let _ = fs::remove_dir_all(&cache_dir);
+        let _ = fs::create_dir_all(&cache_dir);
+    }
+}
+
 /// Converts a remote asset URL into a safe, deterministic filename on disk.
 fn url_to_filename(url: &str) -> String {
     let ext = if url.ends_with(".jpg") || url.ends_with(".jpeg") {

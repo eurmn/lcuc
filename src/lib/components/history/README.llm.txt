@@ -5,9 +5,9 @@ Contains Svelte 5 presentation components for viewing match history cards and de
 
 ## Components
 - `ProfileStatisticsView.svelte`:
-  - Renders the "Champions" statistics table and right-hand champion inspection panel.
+  - Renders a full-width champion inspector card on top and the "Champions" statistics table underneath.
   - Supports scopes: `"personal"` and `"compare"` (side-by-side Personal WR/WPA vs Global WR/WPA).
-  - Right sidebar lists associated items and augments with icons, filtered to exclude 1-game noise, sorted by WPA descending.
+  - Inspector is horizontal: summary/metrics | associated items | associated augments (`partnerList` snippet), with icons, filtered to exclude 1-game noise, sorted by WPA descending.
   - Integrates 200ms search debouncing (`handleSearchInput`) and client-side cached reads via `statistics-data.ts`.
 - `BuildStatisticsView.svelte`:
   - Renders performance tables for `"item"`, `"augment"`, and `"combo"` build aspects.

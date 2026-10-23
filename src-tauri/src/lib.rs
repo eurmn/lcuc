@@ -9,7 +9,8 @@ use agent_supervisor::AgentSupervisor;
 use commands::{
     agent::{
         api_agent_status, api_build_statistics, api_global_aram_config, api_global_aram_statistics,
-        api_log, api_set_global_aram_limit, api_set_global_aram_workers, api_statistics,
+        api_log, api_reset_global_aram, api_set_global_aram_limit, api_set_global_aram_workers,
+        api_statistics,
     },
     api_delete_runeset, api_detect_champion_from_name, api_export_saved_rune_page,
     api_get_champion_roster, api_get_champions, api_get_selected_champion_id,
@@ -94,6 +95,7 @@ pub fn run() {
             api_global_aram_config,
             api_global_aram_statistics,
             api_log,
+            api_reset_global_aram,
             api_set_global_aram_limit,
             api_set_global_aram_workers,
             api_summoner_profile,

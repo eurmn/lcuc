@@ -24,7 +24,13 @@ const PORO_SNAX_IDS: [i64; 2] = [2050, 2052];
 fn open_connection(path: impl AsRef<std::path::Path>) -> rusqlite::Result<Connection> {
     let connection = Connection::open(path)?;
     connection.busy_timeout(Duration::from_secs(5))?;
-    connection.execute_batch("PRAGMA synchronous = NORMAL; PRAGMA temp_store = MEMORY;")?;
+    connection.execute_batch(
+        "PRAGMA journal_mode = WAL;
+         PRAGMA synchronous = NORMAL;
+         PRAGMA temp_store = MEMORY;
+         PRAGMA mmap_size = 268435456;
+         PRAGMA cache_size = -64000;",
+    )?;
     Ok(connection)
 }
 
@@ -61,6 +67,7 @@ pub struct RuntimeState {
     pub queued_jobs: usize,
     pub global_collection_running: bool,
     pub projection_running: bool,
+    pub current_patch: Option<String>,
     pub operations: Vec<ProgressOperation>,
 }
 
@@ -111,6 +118,9 @@ struct ContextAggregate {
 lazy_static! {
     static ref STATISTICS_QUERY_CACHE: std::sync::Mutex<HashMap<String, (Instant, Value)>> =
         std::sync::Mutex::new(HashMap::new());
+    static ref COLLECTOR_WAKEUP: tokio::sync::Notify = tokio::sync::Notify::new();
+    static ref CRAWLER_GENERATION: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
 }
 
 fn json_i64_array(value: &str) -> Vec<i64> {
@@ -365,12 +375,62 @@ fn statistic_row(
             games_b.cmp(&games_a)
         }
     });
-    let effective_baseline = if kind == "champion" {
+    let effective_baseline = if kind == "champion" || kind == "combo" {
         baseline
     } else {
         champion_baseline
     };
-    json!({
+    // Bayesian shrinkage for combos: WR_adj = (wins + M * p0) / (games + M) with M = 10.0
+    // ponytail: M=10 prior weight; upgrade to empirical Bayes variance estimation when sample exceeds 100k
+    let (win_rate, wpa) = if kind == "combo" {
+        let m = 10.0;
+        let adj_win_rate = (aggregate.wins as f64 + m * baseline) / (games + m);
+        let adj_wpa = adj_win_rate - baseline;
+        (adj_win_rate, adj_wpa)
+    } else {
+        let wr = aggregate.wins as f64 / games;
+        (wr, wr - effective_baseline)
+    };
+    let components = if kind == "combo" {
+        id.strip_prefix("combo:")
+            .unwrap_or(&id)
+            .split('+')
+            .map(|part| {
+                if let Some(champ_id) = part.strip_prefix("champion:") {
+                    json!({
+                        "kind": "champion",
+                        "id": champ_id,
+                        "name": format!("Champion #{champ_id}"),
+                        "icon_url": ""
+                    })
+                } else if let Some(item_id) = part.strip_prefix("item:") {
+                    json!({
+                        "kind": "item",
+                        "id": item_id,
+                        "name": format!("Item #{item_id}"),
+                        "icon_url": ""
+                    })
+                } else if let Some(aug_id) = part.strip_prefix("augment:") {
+                    json!({
+                        "kind": "augment",
+                        "id": aug_id,
+                        "name": format!("Augment #{aug_id}"),
+                        "icon_url": ""
+                    })
+                } else {
+                    json!({
+                        "kind": "unknown",
+                        "id": part,
+                        "name": part,
+                        "icon_url": ""
+                    })
+                }
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let mut row_json = json!({
         "id": id,
         "name": name,
         "icon_url": "",
@@ -383,13 +443,18 @@ fn statistic_row(
         "damage": aggregate.damage,
         "gold": aggregate.gold,
         "duration": aggregate.duration,
-        "win_rate": aggregate.wins as f64 / games,
-        "wpa": aggregate.wins as f64 / games - effective_baseline,
+        "win_rate": win_rate,
+        "raw_win_rate": aggregate.wins as f64 / games,
+        "wpa": wpa,
         "pick_rate": aggregate.games as f64 / (population_count.max(1) as f64),
         "damage_per_minute": aggregate.damage as f64 / (duration / 60.0),
         "champions": champion_rows,
         "partners": partner_rows,
-    })
+    });
+    if kind == "combo" {
+        row_json["components"] = Value::Array(components);
+    }
+    row_json
 }
 
 fn load_statistics_projection(
@@ -413,7 +478,36 @@ fn load_statistics_projection(
         )
         .optional()
         .map_err(|error| format!("failed reading statistics projection: {error}"))?;
-    Ok(row)
+    if let Some((sample_count, baseline, rows)) = row {
+        // Invalidate legacy combo projection that lacks structured components
+        if kind == "combo" && rows.iter().any(|r| r.get("components").is_none()) {
+            let _ = connection.execute("DELETE FROM statistics_projections WHERE kind = 'combo'", []);
+            return Ok(None);
+        }
+        return Ok(Some((sample_count, baseline, rows)));
+    }
+    Ok(None)
+}
+
+fn compact_row_for_projection(row: &Value) -> Value {
+    let mut compacted = row.clone();
+    if let Some(obj) = compacted.as_object_mut() {
+        if let Some(kind) = obj.get("kind").and_then(Value::as_str) {
+            if kind == "combo" {
+                if let Some(champs) = obj.get_mut("champions").and_then(Value::as_array_mut) {
+                    if champs.len() > 3 {
+                        champs.truncate(3);
+                    }
+                }
+                if let Some(partners) = obj.get("partners").and_then(Value::as_array) {
+                    if partners.is_empty() {
+                        obj.remove("partners");
+                    }
+                }
+            }
+        }
+    }
+    compacted
 }
 
 fn store_statistics_projection(
@@ -425,7 +519,8 @@ fn store_statistics_projection(
 ) -> Result<(), String> {
     let connection = open_connection(path)
         .map_err(|error| format!("failed opening projection database: {error}"))?;
-    let rows_json = serde_json::to_string(rows)
+    let compacted_rows: Vec<Value> = rows.iter().map(compact_row_for_projection).collect();
+    let rows_json = serde_json::to_string(&compacted_rows)
         .map_err(|error| format!("failed encoding {kind} statistics projection: {error}"))?;
     connection
         .execute(
@@ -450,6 +545,13 @@ fn render_statistics_response(
     baseline: f64,
     mut rows: Vec<Value>,
 ) -> Value {
+    for row in &mut rows {
+        if let Some(obj) = row.as_object_mut() {
+            if !obj.contains_key("partners") {
+                obj.insert("partners".to_string(), Value::Array(Vec::new()));
+            }
+        }
+    }
     let search = args
         .get("search")
         .and_then(Value::as_str)
@@ -544,7 +646,7 @@ fn build_statistics_response(
     database: &PathBuf,
     global_database: &PathBuf,
 ) -> Result<Value, String> {
-    let scope = args
+    let raw_scope = args
         .get("scope")
         .and_then(Value::as_str)
         .unwrap_or("personal");
@@ -552,6 +654,12 @@ fn build_statistics_response(
         .get("kind")
         .and_then(Value::as_str)
         .unwrap_or("champion");
+    // ponytail: combos require global ARAM dataset; personal sample is too small for tuple mining
+    let scope = if kind == "combo" && raw_scope == "personal" {
+        "global"
+    } else {
+        raw_scope
+    };
     let search = args
         .get("search")
         .and_then(Value::as_str)
@@ -663,6 +771,11 @@ fn build_statistics_response(
                         "personal_wpa_vs_global_win_rate".into(),
                         Value::from(personal_wpa),
                     );
+                    if !object.contains_key("components") {
+                        if let Some(comps) = personal.and_then(|p| p.get("components")) {
+                            object.insert("components".into(), comps.clone());
+                        }
+                    }
                 }
                 row
             })
@@ -843,7 +956,12 @@ fn build_statistics_response(
         let observed = match kind {
             "item" => !fact.item_ids.is_empty(),
             "augment" => !fact.augment_ids.is_empty(),
-            "combo" => fact.item_ids.len() + fact.augment_ids.len() > 1,
+            "combo" => {
+                let active_count = (if fact.champion_id.is_some() { 1 } else { 0 })
+                    + fact.item_ids.iter().filter(|id| !PORO_SNAX_IDS.contains(id) && **id > 0).count()
+                    + fact.augment_ids.iter().filter(|id| !id.is_empty() && *id != "0").count();
+                active_count >= 2
+            }
             _ => fact.champion_id.is_some(),
         };
         if observed {
@@ -856,8 +974,105 @@ fn build_statistics_response(
     } else {
         0.0
     };
+    let min_combo_games = if population_count > 500 {
+        3
+    } else if population_count > 50 {
+        2
+    } else {
+        1
+    };
+
+    // Apriori optimization: pre-calculate candidate frequent components and pairs
+    let (combo_frequent_pairs, combo_fact_components) = if kind == "combo" {
+        // Step 1: count individual components (champion, item, augment) across facts
+        let mut comp_counts: HashMap<String, i64> = HashMap::new();
+        for fact in &facts {
+            if let Some(champ_id) = fact.champion_id {
+                *comp_counts.entry(format!("champion:{champ_id}")).or_default() += 1;
+            }
+            for &id in &fact.item_ids {
+                if !PORO_SNAX_IDS.contains(&id) && id > 0 {
+                    *comp_counts.entry(format!("item:{id}")).or_default() += 1;
+                }
+            }
+            for id in &fact.augment_ids {
+                if !id.is_empty() && *id != "0" {
+                    *comp_counts.entry(format!("augment:{id}")).or_default() += 1;
+                }
+            }
+        }
+        // Min support for single component: 2% pick rate floor, clamped by min_combo_games
+        let min_component_support = ((population_count as f64 * 0.02).ceil() as i64).max(min_combo_games);
+        let frequent_components: HashSet<String> = comp_counts
+            .into_iter()
+            .filter(|(_, count)| *count >= min_component_support)
+            .map(|(id, _)| id)
+            .collect();
+
+        // Step 2: filter fact components down to frequent items/augments
+        let mut filtered_fact_comps = Vec::with_capacity(facts.len());
+        let mut pair_counts: HashMap<(String, String), i64> = HashMap::new();
+        for fact in &facts {
+            let mut components = Vec::new();
+            if let Some(champ_id) = fact.champion_id {
+                let key = format!("champion:{champ_id}");
+                if frequent_components.contains(&key) {
+                    components.push(key);
+                }
+            }
+            let mut items = fact
+                .item_ids
+                .iter()
+                .filter(|id| !PORO_SNAX_IDS.contains(id) && **id > 0)
+                .copied()
+                .collect::<Vec<_>>();
+            items.sort_unstable();
+            items.dedup();
+            for id in items {
+                let key = format!("item:{id}");
+                if frequent_components.contains(&key) {
+                    components.push(key);
+                }
+            }
+            let mut augs = fact
+                .augment_ids
+                .iter()
+                .filter(|id| !id.is_empty() && *id != "0")
+                .cloned()
+                .collect::<Vec<_>>();
+            augs.sort();
+            augs.dedup();
+            for id in augs {
+                let key = format!("augment:{id}");
+                if frequent_components.contains(&key) {
+                    components.push(key);
+                }
+            }
+            components.sort();
+
+            // Count 2-tuples for frequent pair detection
+            let len = components.len();
+            for i in 0..len {
+                for j in (i + 1)..len {
+                    *pair_counts.entry((components[i].clone(), components[j].clone())).or_default() += 1;
+                }
+            }
+            filtered_fact_comps.push(components);
+        }
+
+        let frequent_pairs: HashSet<(String, String)> = pair_counts
+            .into_iter()
+            .filter(|(_, count)| *count >= min_combo_games)
+            .map(|(pair, _)| pair)
+            .collect();
+
+        (frequent_pairs, filtered_fact_comps)
+    } else {
+        (HashSet::new(), Vec::new())
+    };
+
     let mut aggregates: HashMap<String, (String, Aggregate)> = HashMap::new();
-    for fact in &facts {
+    for (fact_idx, fact) in facts.iter().enumerate() {
         let keys = match kind {
             "item" => fact
                 .item_ids
@@ -871,26 +1086,38 @@ fn build_statistics_response(
                 .map(|id| (format!("augment:{id}"), format!("Augment #{id}")))
                 .collect::<Vec<_>>(),
             "combo" => {
-                let mut parts = fact
-                    .item_ids
-                    .iter()
-                    .filter(|id| !PORO_SNAX_IDS.contains(id))
-                    .map(|id| format!("i{id}"))
-                    .chain(fact.augment_ids.iter().map(|id| format!("a{id}")))
-                    .collect::<Vec<_>>();
-                parts.sort();
-                if parts.len() > 1 {
-                    vec![(
-                        format!("combo:{}", parts.join("+")),
-                        parts
-                            .iter()
-                            .map(|part| part.trim_start_matches(&['i', 'a'][..]))
-                            .collect::<Vec<_>>()
-                            .join(" + "),
-                    )]
-                } else {
-                    Vec::new()
+                let components = &combo_fact_components[fact_idx];
+                let mut tuples = Vec::new();
+                let len = components.len();
+                // k = 2 combinations: only frequent pairs
+                for i in 0..len {
+                    for j in (i + 1)..len {
+                        let pair = (&components[i], &components[j]);
+                        if combo_frequent_pairs.contains(&(pair.0.clone(), pair.1.clone())) {
+                            let id = format!("combo:{}+{}", pair.0, pair.1);
+                            let name = format!("{} + {}", pair.0, pair.1);
+                            tuples.push((id, name));
+                        }
+                    }
                 }
+                // k = 3 combinations: Apriori principle (all 3 constituent pairs must be frequent)
+                for i in 0..len {
+                    for j in (i + 1)..len {
+                        if !combo_frequent_pairs.contains(&(components[i].clone(), components[j].clone())) {
+                            continue;
+                        }
+                        for l in (j + 1)..len {
+                            if combo_frequent_pairs.contains(&(components[i].clone(), components[l].clone()))
+                                && combo_frequent_pairs.contains(&(components[j].clone(), components[l].clone()))
+                            {
+                                let id = format!("combo:{}+{}+{}", components[i], components[j], components[l]);
+                                let name = format!("{} + {} + {}", components[i], components[j], components[l]);
+                                tuples.push((id, name));
+                            }
+                        }
+                    }
+                }
+                tuples
             }
             _ => fact
                 .champion_id
@@ -919,27 +1146,39 @@ fn build_statistics_response(
                 context.games += 1;
                 context.wins += i64::from(fact.win);
             }
-            for item_id in &fact.item_ids {
-                let partner = format!("item:{item_id}");
-                if partner != id {
-                    let context = aggregate.partners.entry(partner).or_default();
-                    context.games += 1;
-                    context.wins += i64::from(fact.win);
+            if kind != "combo" {
+                for item_id in &fact.item_ids {
+                    let partner = format!("item:{item_id}");
+                    if partner != id {
+                        let context = aggregate.partners.entry(partner).or_default();
+                        context.games += 1;
+                        context.wins += i64::from(fact.win);
+                    }
                 }
-            }
-            for augment_id in &fact.augment_ids {
-                let partner = format!("augment:{augment_id}");
-                if partner != id {
-                    let context = aggregate.partners.entry(partner).or_default();
-                    context.games += 1;
-                    context.wins += i64::from(fact.win);
+                for augment_id in &fact.augment_ids {
+                    let partner = format!("augment:{augment_id}");
+                    if partner != id {
+                        let context = aggregate.partners.entry(partner).or_default();
+                        context.games += 1;
+                        context.wins += i64::from(fact.win);
+                    }
                 }
             }
         }
     }
+    let min_combo_games = if population_count > 500 {
+        3
+    } else if population_count > 50 {
+        2
+    } else {
+        1
+    };
     let mut rows = aggregates
         .into_iter()
         .filter_map(|(id, (name, aggregate))| {
+            if kind == "combo" && aggregate.games < min_combo_games {
+                return None;
+            }
             let row = statistic_row(id, name, kind, &aggregate, baseline, population_count);
             if search.is_empty()
                 || row
@@ -1002,6 +1241,24 @@ fn build_statistics_response(
         }
     });
     if search.is_empty() && !hide_low_pickrate && sort_key == "name" {
+        let projection_rows = if kind == "combo" && rows.len() > 1000 {
+            // ponytail: cap projection to top 1000 combos; increase limit if memory allows
+            let mut top_rows = rows.clone();
+            top_rows.sort_by(|a, b| {
+                let wpa_b = b.get("wpa").and_then(Value::as_f64).unwrap_or(0.0);
+                let wpa_a = a.get("wpa").and_then(Value::as_f64).unwrap_or(0.0);
+                wpa_b.partial_cmp(&wpa_a).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            top_rows.truncate(1000);
+            top_rows.sort_by(|a, b| {
+                let name_a = a.get("name").and_then(Value::as_str).unwrap_or("");
+                let name_b = b.get("name").and_then(Value::as_str).unwrap_or("");
+                name_a.cmp(name_b)
+            });
+            top_rows
+        } else {
+            rows.clone()
+        };
         store_statistics_projection(
             if scope == "global" {
                 global_database
@@ -1011,7 +1268,7 @@ fn build_statistics_response(
             kind,
             sample_count,
             baseline,
-            &rows,
+            &projection_rows,
         )?;
     }
     let total = rows.len();
@@ -1086,6 +1343,8 @@ fn initialize_global_aram_database(path: &PathBuf) -> Result<(), String> {
             game_mode TEXT NOT NULL,
             game_creation INTEGER,
             game_duration INTEGER,
+            game_version TEXT,
+            patch TEXT,
             detail_json TEXT NOT NULL,
             discovered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
@@ -1120,6 +1379,12 @@ fn initialize_global_aram_database(path: &PathBuf) -> Result<(), String> {
         "#,
         )
         .map_err(|error| format!("failed initializing global ARAM database: {error}"))?;
+    let _ = connection.execute("ALTER TABLE aram_games ADD COLUMN game_version TEXT", []);
+    let _ = connection.execute("ALTER TABLE aram_games ADD COLUMN patch TEXT", []);
+    let _ = connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_aram_games_patch ON aram_games(patch)",
+        [],
+    );
     let cleanup_needed = connection
         .query_row(
             "SELECT value FROM config WHERE key = 'poro_snax_cleaned_v3'",
@@ -1166,7 +1431,73 @@ fn initialize_global_aram_database(path: &PathBuf) -> Result<(), String> {
     }
     drop(connection);
     repair_global_augment_ids(path)?;
+    backfill_global_game_patches(path)?;
     Ok(())
+}
+
+fn backfill_global_game_patches(path: &PathBuf) -> Result<(), String> {
+    let connection = open_connection(path).map_err(|error| {
+        format!("failed opening global database for patch backfill: {error}")
+    })?;
+    let backfilled = connection
+        .query_row(
+            "SELECT value FROM config WHERE key = 'game_patches_backfilled_v1'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| format!("failed reading patch backfill state: {error}"))?
+        .is_some();
+    if backfilled {
+        return Ok(());
+    }
+
+    let mut statement = connection
+        .prepare("SELECT game_id, detail_json FROM aram_games WHERE patch IS NULL OR patch = ''")
+        .map_err(|error| format!("failed preparing patch backfill: {error}"))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| format!("failed reading games for patch backfill: {error}"))?;
+    let details = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed collecting games for patch backfill: {error}"))?;
+    drop(statement);
+
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|error| format!("failed starting patch backfill transaction: {error}"))?;
+    for (game_id, detail_json) in details {
+        let detail = serde_json::from_str::<Value>(&detail_json).unwrap_or(Value::Null);
+        let game_version = detail
+            .get("gameVersion")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let patch = game_version
+            .as_deref()
+            .and_then(crate::services::patch_manager::normalize_patch);
+        if game_version.is_some() || patch.is_some() {
+            transaction
+                .execute(
+                    "UPDATE aram_games SET game_version = ?2, patch = ?3 WHERE game_id = ?1",
+                    rusqlite::params![game_id, game_version, patch],
+                )
+                .map_err(|error| {
+                    format!("failed backfilling patch for global game {game_id}: {error}")
+                })?;
+        }
+    }
+    transaction
+        .execute(
+            "INSERT INTO config (key, value, updated_at) VALUES ('game_patches_backfilled_v1', '1', CURRENT_TIMESTAMP)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
+            [],
+        )
+        .map_err(|error| format!("failed recording patch backfill state: {error}"))?;
+    transaction
+        .commit()
+        .map_err(|error| format!("failed committing patch backfill: {error}"))
 }
 
 fn repair_global_augment_ids(path: &PathBuf) -> Result<(), String> {
@@ -1292,6 +1623,8 @@ pub fn initialize_database(path: &PathBuf) -> Result<(), String> {
                 game_mode TEXT,
                 game_creation INTEGER,
                 game_duration INTEGER,
+                game_version TEXT,
+                patch TEXT,
                 collection_status TEXT NOT NULL DEFAULT 'discovered',
                 discovered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -1370,6 +1703,9 @@ pub fn initialize_database(path: &PathBuf) -> Result<(), String> {
             "#,
         )
         .map_err(|error| format!("Failed initializing agent database schema: {error}"))?;
+    let _ = connection.execute("ALTER TABLE games ADD COLUMN game_version TEXT", []);
+    let _ = connection.execute("ALTER TABLE games ADD COLUMN patch TEXT", []);
+    let _ = connection.execute("CREATE INDEX IF NOT EXISTS idx_games_patch ON games(patch)", []);
     import_legacy_store(&connection, path)?;
     let cleanup_needed = connection
         .query_row(
@@ -1567,50 +1903,40 @@ pub async fn handle_command(
             }))
         }
         "build_statistics" => {
-            let connection = match open_connection(path) {
-                Ok(connection) => connection,
-                Err(error) => {
-                    return response_error(format!("failed opening agent database: {error}"))
-                }
-            };
-            let mut statement = match connection.prepare(
-                "SELECT game_id, participant_id, puuid, champion_id, win,
-                        item_ids_json, augment_ids_json, kills, deaths, assists, damage, gold
-                 FROM game_build_facts ORDER BY game_id DESC LIMIT 500",
-            ) {
-                Ok(statement) => statement,
-                Err(error) => {
-                    return response_error(format!("failed preparing build statistics: {error}"))
-                }
-            };
-            let rows = statement.query_map([], |row| {
-                Ok(json!({
-                    "game_id": row.get::<_, i64>(0)?,
-                    "participant_id": row.get::<_, i64>(1)?,
-                    "puuid": row.get::<_, Option<String>>(2)?,
-                    "champion_id": row.get::<_, Option<i64>>(3)?,
-                    "win": row.get::<_, i64>(4)? != 0,
-                    "item_ids": serde_json::from_str::<Value>(&row.get::<_, String>(5)?).unwrap_or_else(|_| json!([])),
-                    "augment_ids": serde_json::from_str::<Value>(&row.get::<_, String>(6)?).unwrap_or_else(|_| json!([])),
-                    "kills": row.get::<_, i64>(7)?,
-                    "deaths": row.get::<_, i64>(8)?,
-                    "assists": row.get::<_, i64>(9)?,
-                    "damage": row.get::<_, Option<i64>>(10)?,
-                    "gold": row.get::<_, i64>(11)?,
-                }))
-            });
-            let rows = match rows {
-                Ok(rows) => rows,
-                Err(error) => {
-                    return response_error(format!("failed reading build statistics: {error}"))
-                }
-            };
-            let facts: Result<Vec<Value>, _> = rows.collect();
-            match facts {
-                Ok(facts) => response_ok(json!({ "facts": facts })),
-                Err(error) => {
-                    response_error(format!("failed collecting build statistics: {error}"))
-                }
+            // ponytail: offload synchronous rusqlite read to blocking pool
+            let database_path = path.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                let connection = open_connection(&database_path)
+                    .map_err(|error| format!("failed opening agent database: {error}"))?;
+                let mut statement = connection.prepare(
+                    "SELECT game_id, participant_id, puuid, champion_id, win,
+                            item_ids_json, augment_ids_json, kills, deaths, assists, damage, gold
+                     FROM game_build_facts ORDER BY game_id DESC LIMIT 500",
+                ).map_err(|error| format!("failed preparing build statistics: {error}"))?;
+                let rows = statement.query_map([], |row| {
+                    Ok(json!({
+                        "game_id": row.get::<_, i64>(0)?,
+                        "participant_id": row.get::<_, i64>(1)?,
+                        "puuid": row.get::<_, Option<String>>(2)?,
+                        "champion_id": row.get::<_, Option<i64>>(3)?,
+                        "win": row.get::<_, i64>(4)? != 0,
+                        "item_ids": serde_json::from_str::<Value>(&row.get::<_, String>(5)?).unwrap_or_else(|_| json!([])),
+                        "augment_ids": serde_json::from_str::<Value>(&row.get::<_, String>(6)?).unwrap_or_else(|_| json!([])),
+                        "kills": row.get::<_, i64>(7)?,
+                        "deaths": row.get::<_, i64>(8)?,
+                        "assists": row.get::<_, i64>(9)?,
+                        "damage": row.get::<_, Option<i64>>(10)?,
+                        "gold": row.get::<_, i64>(11)?,
+                    }))
+                }).map_err(|error| format!("failed reading build statistics: {error}"))?;
+                let facts: Result<Vec<Value>, _> = rows.collect();
+                facts.map_err(|error| format!("failed collecting build statistics: {error}"))
+            })
+            .await;
+            match result {
+                Ok(Ok(facts)) => response_ok(json!({ "facts": facts })),
+                Ok(Err(error)) => response_error(error),
+                Err(error) => response_error(format!("build statistics worker failed: {error}")),
             }
         }
         "statistics" => {
@@ -1648,10 +1974,11 @@ pub async fn handle_command(
                     global_game_count(&config_path)?,
                     global_queued_account_count(&config_path).unwrap_or(0),
                     global_worker_count(&config_path).unwrap_or(3),
+                    global_patch_breakdown(&config_path).unwrap_or_default(),
                 ))
             })
             .await;
-            let (limit, games, queued_accounts, workers) = match config {
+            let (limit, games, queued_accounts, workers, patches) = match config {
                 Ok(Ok(values)) => values,
                 Ok(Err(error)) => return response_error(error),
                 Err(error) => {
@@ -1659,6 +1986,37 @@ pub async fn handle_command(
                 }
             };
             let state = runtime.read().await;
+            let current_patch = state
+                .current_patch
+                .clone()
+                .or_else(crate::services::patch_manager::get_cached_patch);
+            let outdated_games: usize = if let Some(ref cp) = current_patch {
+                patches
+                    .iter()
+                    .filter(|(p, _)| p != cp && p != "unknown")
+                    .map(|(_, c)| *c)
+                    .sum()
+            } else {
+                // If active patch is not yet cached, check if DB itself spans multiple known patches
+                let mut known_patches: Vec<(String, usize)> = patches
+                    .iter()
+                    .filter(|(p, _)| p != "unknown")
+                    .cloned()
+                    .collect();
+                if known_patches.len() > 1 {
+                    known_patches.sort_by(|(a, _), (b, _)| {
+                        let va = crate::services::patch_manager::parse_patch_numbers(a)
+                            .unwrap_or((0, 0));
+                        let vb = crate::services::patch_manager::parse_patch_numbers(b)
+                            .unwrap_or((0, 0));
+                        vb.cmp(&va)
+                    });
+                    known_patches.into_iter().skip(1).map(|(_, c)| c).sum()
+                } else {
+                    0
+                }
+            };
+            let has_patch_mismatch = outdated_games > 0;
             response_ok(json!({
                 "limit": limit,
                 "games": games,
@@ -1666,6 +2024,13 @@ pub async fn handle_command(
                 "database_path": global_path,
                 "collector_state": state.collector_state,
                 "queued_jobs": queued_accounts,
+                "current_patch": current_patch,
+                "patches": patches.iter().map(|(patch, count)| json!({
+                    "patch": patch,
+                    "games": count
+                })).collect::<Vec<_>>(),
+                "outdated_games": outdated_games,
+                "has_patch_mismatch": has_patch_mismatch,
                 "operations": state.operations.iter().map(|operation| json!({
                     "id": operation.id,
                     "message": operation.message,
@@ -1674,15 +2039,88 @@ pub async fn handle_command(
                 })).collect::<Vec<_>>()
             }))
         }
+        "reset_global_aram" => {
+            CRAWLER_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let global_path = global_aram_database_path();
+            let agent_path = path.clone();
+            let reset_path = global_path.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                initialize_global_aram_database(&reset_path)?;
+                let connection = open_connection(&reset_path).map_err(|error| {
+                    format!("failed opening global ARAM database for reset: {error}")
+                })?;
+                connection
+                    .execute_batch(
+                        "DELETE FROM aram_games;
+                         DELETE FROM aram_participants;
+                         DELETE FROM discovered_accounts;
+                         DELETE FROM statistics_projections;",
+                    )
+                    .map_err(|error| format!("failed clearing global ARAM tables: {error}"))?;
+                let _ = connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+                drop(connection);
+
+                // Re-seed BFS search tree root with the current summoner PUUID if known
+                if let Ok(Some(seed_puuid)) =
+                    sync_state_value(&agent_path, "match_history_backfill_v2_puuid")
+                {
+                    if !seed_puuid.trim().is_empty() {
+                        let _ = queue_global_account(&reset_path, seed_puuid.trim());
+                    }
+                }
+                if let Ok(agent_conn) = open_connection(&agent_path) {
+                    let _ = invalidate_statistics_projections(&agent_conn);
+                } else if let Ok(mut cache) = STATISTICS_QUERY_CACHE.lock() {
+                    cache.clear();
+                }
+
+                Ok::<_, String>((
+                    global_game_limit(&reset_path)?,
+                    global_worker_count(&reset_path).unwrap_or(3),
+                    global_queued_account_count(&reset_path).unwrap_or(0),
+                ))
+            })
+            .await;
+
+            match result {
+                Ok(Ok((limit, workers, queued_accounts))) => {
+                    {
+                        let mut state = runtime.write().await;
+                        state.global_collection_running = false;
+                        state.operations.retain(|operation| {
+                            operation.id != "global-database" && operation.id != "global-statistics"
+                        });
+                        state.collector_state = format!("global-aram:0/{limit} (reset)");
+                    }
+                    COLLECTOR_WAKEUP.notify_one();
+                    logger::info(
+                        "agent.global-aram",
+                        "Reset global ARAM Mayhem database and BFS search tree",
+                    );
+                    response_ok(json!({
+                        "reset": true,
+                        "limit": limit,
+                        "games": 0,
+                        "workers": workers,
+                        "queued_jobs": queued_accounts,
+                    }))
+                }
+                Ok(Err(error)) => response_error(error),
+                Err(error) => response_error(format!("reset global ARAM worker failed: {error}")),
+            }
+        }
         "set_global_aram_limit" => {
             let global_path = global_aram_database_path();
-            if let Err(error) = initialize_global_aram_database(&global_path) {
-                return response_error(error);
-            }
             let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(1000) as usize;
-            match set_global_game_limit(&global_path, limit) {
-                Ok(()) => {
-                    let games = global_game_count(&global_path).unwrap_or(0);
+            let path_clone = global_path.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                initialize_global_aram_database(&path_clone)?;
+                set_global_game_limit(&path_clone, limit)?;
+                global_game_count(&path_clone)
+            })
+            .await;
+            match result {
+                Ok(Ok(games)) => {
                     let mut state = runtime.write().await;
                     state.collector_state = if games >= limit {
                         format!("global-aram:{games}/{limit} (paused)")
@@ -1691,18 +2129,23 @@ pub async fn handle_command(
                     };
                     response_ok(json!({ "limit": limit }))
                 }
-                Err(error) => response_error(error),
+                Ok(Err(error)) => response_error(error),
+                Err(error) => response_error(format!("set limit worker failed: {error}")),
             }
         }
         "set_global_aram_workers" => {
             let global_path = global_aram_database_path();
-            if let Err(error) = initialize_global_aram_database(&global_path) {
-                return response_error(error);
-            }
             let workers = args.get("workers").and_then(Value::as_u64).unwrap_or(3) as usize;
-            match set_global_worker_count(&global_path, workers) {
-                Ok(()) => response_ok(json!({ "workers": workers.clamp(1, 16) })),
-                Err(error) => response_error(error),
+            let path_clone = global_path.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                initialize_global_aram_database(&path_clone)?;
+                set_global_worker_count(&path_clone, workers)
+            })
+            .await;
+            match result {
+                Ok(Ok(())) => response_ok(json!({ "workers": workers.clamp(1, 16) })),
+                Ok(Err(error)) => response_error(error),
+                Err(error) => response_error(format!("set workers worker failed: {error}")),
             }
         }
         "global_aram_statistics" => {
@@ -1805,12 +2248,14 @@ fn store_recent_games(
         let Some(game_id) = game.get("gameId").and_then(Value::as_i64) else {
             continue;
         };
+        let game_version = game.get("gameVersion").and_then(Value::as_str);
+        let patch = game_version.and_then(crate::services::patch_manager::normalize_patch);
         transaction
             .execute(
                 "INSERT INTO games (
                     game_id, puuid, queue_id, map_id, game_mode,
-                    game_creation, game_duration, collection_status, updated_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'discovered', CURRENT_TIMESTAMP)
+                    game_creation, game_duration, game_version, patch, collection_status, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'discovered', CURRENT_TIMESTAMP)
                 ON CONFLICT(game_id) DO UPDATE SET
                     puuid = COALESCE(excluded.puuid, games.puuid),
                     queue_id = excluded.queue_id,
@@ -1818,6 +2263,8 @@ fn store_recent_games(
                     game_mode = excluded.game_mode,
                     game_creation = excluded.game_creation,
                     game_duration = excluded.game_duration,
+                    game_version = COALESCE(excluded.game_version, games.game_version),
+                    patch = COALESCE(excluded.patch, games.patch),
                     updated_at = CURRENT_TIMESTAMP",
                 rusqlite::params![
                     game_id,
@@ -1827,6 +2274,8 @@ fn store_recent_games(
                     game.get("gameMode").and_then(Value::as_str),
                     game.get("gameCreation").and_then(Value::as_i64),
                     game.get("gameDuration").and_then(Value::as_i64),
+                    game_version,
+                    patch,
                 ],
             )
             .map_err(|error| format!("failed storing game {game_id}: {error}"))?;
@@ -1918,6 +2367,33 @@ fn store_recent_games(
 fn is_aram_mayhem(game: &Value) -> bool {
     game.get("gameMode").and_then(Value::as_str) == Some("KIWI")
         || game.get("game_mode").and_then(Value::as_str) == Some("KIWI")
+}
+
+fn is_game_summary_on_patch(game: &Value, target_patch: Option<&str>) -> bool {
+    let Some(target) = target_patch else {
+        return true;
+    };
+    match game
+        .get("gameVersion")
+        .and_then(Value::as_str)
+        .and_then(crate::services::patch_manager::normalize_patch)
+    {
+        Some(game_patch) => game_patch == target,
+        // If summary does not include gameVersion, allow detail fetch to verify it
+        None => true,
+    }
+}
+
+fn is_game_detail_on_patch(detail: &Value, target_patch: Option<&str>) -> bool {
+    let Some(target) = target_patch else {
+        return true;
+    };
+    detail
+        .get("gameVersion")
+        .and_then(Value::as_str)
+        .and_then(crate::services::patch_manager::normalize_patch)
+        .as_deref()
+        == Some(target)
 }
 
 fn global_game_count(path: &PathBuf) -> Result<usize, String> {
@@ -2069,15 +2545,44 @@ fn global_queued_account_count(path: &PathBuf) -> Result<usize, String> {
         .map_err(|error| format!("failed counting queued global accounts: {error}"))
 }
 
+fn global_patch_breakdown(path: &PathBuf) -> Result<Vec<(String, usize)>, String> {
+    let connection = open_connection(path).map_err(|error| {
+        format!("failed opening global ARAM database for patch breakdown: {error}")
+    })?;
+    let mut statement = connection
+        .prepare(
+            "SELECT COALESCE(NULLIF(patch, ''), 'unknown') AS p, COUNT(*)
+             FROM aram_games
+             GROUP BY p
+             ORDER BY COUNT(*) DESC",
+        )
+        .map_err(|error| format!("failed preparing global patch breakdown query: {error}"))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
+        })
+        .map_err(|error| format!("failed reading global patch breakdown: {error}"))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("failed collecting global patch breakdown: {error}"))
+}
+
 fn store_global_detail(
     path: &PathBuf,
     source_puuid: &str,
     detail: &Value,
-) -> Result<Vec<String>, String> {
+    target_patch: Option<&str>,
+) -> Result<bool, String> {
     let game_id = detail
         .get("gameId")
         .and_then(Value::as_i64)
         .ok_or_else(|| "global ARAM detail did not contain gameId".to_string())?;
+    let game_version = detail.get("gameVersion").and_then(Value::as_str);
+    let patch = game_version.and_then(crate::services::patch_manager::normalize_patch);
+    if let Some(target) = target_patch {
+        if patch.as_deref() != Some(target) {
+            return Ok(false);
+        }
+    }
     let connection = open_connection(path)
         .map_err(|error| format!("failed opening global ARAM database for detail: {error}"))?;
     let game_exists = connection
@@ -2088,7 +2593,7 @@ fn store_global_detail(
         )
         .is_ok();
     if game_exists {
-        return Ok(Vec::new());
+        return Ok(false);
     }
     let detail_json = serde_json::to_string(detail)
         .map_err(|error| format!("failed encoding global ARAM detail {game_id}: {error}"))?;
@@ -2096,8 +2601,8 @@ fn store_global_detail(
         .execute(
             "INSERT OR IGNORE INTO aram_games (
             game_id, source_puuid, queue_id, map_id, game_mode,
-            game_creation, game_duration, detail_json
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            game_creation, game_duration, game_version, patch, detail_json
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             rusqlite::params![
                 game_id,
                 source_puuid,
@@ -2109,6 +2614,8 @@ fn store_global_detail(
                     .unwrap_or("KIWI"),
                 detail.get("gameCreation").and_then(Value::as_i64),
                 detail.get("gameDuration").and_then(Value::as_i64),
+                game_version,
+                patch,
                 detail_json,
             ],
         )
@@ -2202,7 +2709,7 @@ fn store_global_detail(
     if !game_exists {
         invalidate_statistics_projections(&connection)?;
     }
-    Ok(discovered)
+    Ok(true)
 }
 
 /// Manages request pacing for crawler and collector workers.
@@ -2229,9 +2736,6 @@ impl WorkerRatePacer {
     }
 
     /// Delays execution until at least `interval` has elapsed since the start of the previous request.
-    /// If the previous request took longer than `interval`, it does not delay, allowing immediate execution
-    /// without accumulating artificial lag. It then records the new request start time so subsequent requests
-    /// maintain the safe spacing interval (preventing request bursts/spam).
     pub async fn pace_next(&mut self) {
         if let Some(prev_start) = self.last_request_start {
             let elapsed = prev_start.elapsed();
@@ -2243,10 +2747,256 @@ impl WorkerRatePacer {
     }
 }
 
+/// Dynamic, cross-worker adaptive rate limiter implementing AIMD with ceiling discovery and locking.
+/// Automatically discovers the sustainable LCU requests-per-minute (RPM) ceiling per route, locks onto it,
+/// and deduplicates concurrent in-flight worker failures so a single choke event only backs off once.
+#[derive(Debug)]
+pub struct AdaptiveRateLimiter {
+    current_rpm: u32,
+    min_rpm: u32,
+    max_rpm: u32,
+    learned_ceiling_rpm: Option<u32>,
+    success_streak: u32,
+    step_up: u32,
+    success_threshold: u32,
+    ceiling_probe_threshold: u32,
+    last_request_start: Option<std::time::Instant>,
+    last_backoff_at: Option<std::time::Instant>,
+}
+
+impl AdaptiveRateLimiter {
+    pub fn new(initial_rpm: u32, min_rpm: u32, max_rpm: u32) -> Self {
+        Self::with_ceiling(initial_rpm, min_rpm, max_rpm, None)
+    }
+
+    pub fn with_ceiling(
+        initial_rpm: u32,
+        min_rpm: u32,
+        max_rpm: u32,
+        ceiling_rpm: Option<u32>,
+    ) -> Self {
+        let clamped_ceiling = ceiling_rpm.map(|c| c.clamp(min_rpm, max_rpm));
+        let effective_max = clamped_ceiling.unwrap_or(max_rpm);
+        Self {
+            current_rpm: initial_rpm.clamp(min_rpm, effective_max),
+            min_rpm,
+            max_rpm,
+            learned_ceiling_rpm: clamped_ceiling,
+            success_streak: 0,
+            step_up: 2,
+            success_threshold: 8,
+            ceiling_probe_threshold: 80,
+            last_request_start: None,
+            last_backoff_at: None,
+        }
+    }
+
+    pub fn current_rpm(&self) -> u32 {
+        self.current_rpm
+    }
+
+    pub fn ceiling_rpm(&self) -> Option<u32> {
+        self.learned_ceiling_rpm
+    }
+
+    /// Calculates required inter-request delay given `current_rpm`.
+    fn interval(&self) -> Duration {
+        let rpm = self.current_rpm.max(1) as u64;
+        let millis = (60_000 + rpm - 1) / rpm;
+        Duration::from_millis(millis)
+    }
+
+    /// Atomically gates the next request across all workers and returns `(current_rpm, request_started_at)`.
+    pub async fn pace_next_tagged(&mut self) -> (u32, std::time::Instant) {
+        let interval = self.interval();
+        if let Some(prev_start) = self.last_request_start {
+            let elapsed = prev_start.elapsed();
+            if elapsed < interval {
+                tokio::time::sleep(interval - elapsed).await;
+            }
+        }
+        let started_at = std::time::Instant::now();
+        self.last_request_start = Some(started_at);
+        (self.current_rpm, started_at)
+    }
+
+    /// Atomically gates the next request across all workers and returns current RPM.
+    pub async fn pace_next(&mut self) -> u32 {
+        self.pace_next_tagged().await.0
+    }
+
+    /// Records a successful request.
+    /// - When no ceiling is known yet, increases RPM by `step_up` (+2) every `success_threshold` (8) successes.
+    /// - When below a learned ceiling, steps up cautiously (+1 RPM) every `success_threshold` (8) successes up to the ceiling.
+    /// - Once at the learned ceiling, holds steady and only probes +1 RPM after `ceiling_probe_threshold` (80) consecutive successes.
+    pub fn record_success(&mut self) -> Option<u32> {
+        self.success_streak += 1;
+        match self.learned_ceiling_rpm {
+            Some(ceiling) if self.current_rpm >= ceiling => {
+                if self.success_streak >= self.ceiling_probe_threshold {
+                    self.success_streak = 0;
+                    if self.current_rpm < self.max_rpm {
+                        let next_rpm = (self.current_rpm + 1).min(self.max_rpm);
+                        self.current_rpm = next_rpm;
+                        self.learned_ceiling_rpm = Some(next_rpm);
+                        return Some(self.current_rpm);
+                    }
+                }
+                None
+            }
+            Some(ceiling) => {
+                if self.success_streak >= self.success_threshold {
+                    self.success_streak = 0;
+                    let old = self.current_rpm;
+                    self.current_rpm = (self.current_rpm + 1).min(ceiling).min(self.max_rpm);
+                    if self.current_rpm != old {
+                        return Some(self.current_rpm);
+                    }
+                }
+                None
+            }
+            None => {
+                if self.success_streak >= self.success_threshold {
+                    self.success_streak = 0;
+                    if self.current_rpm < self.max_rpm {
+                        let old = self.current_rpm;
+                        self.current_rpm = (self.current_rpm + self.step_up).min(self.max_rpm);
+                        if self.current_rpm != old {
+                            return Some(self.current_rpm);
+                        }
+                    }
+                }
+                None
+            }
+        }
+    }
+
+    /// Records a rate-limiting event (HTTP 429) or transient timeout/error for a request started at `request_started_at`.
+    /// Ignores stale errors from sibling worker requests that were already in flight before the most recent backoff.
+    pub fn record_backoff_for_request(
+        &mut self,
+        is_429: bool,
+        request_started_at: std::time::Instant,
+    ) -> Option<u32> {
+        if self
+            .last_backoff_at
+            .is_some_and(|last| request_started_at <= last)
+        {
+            return None;
+        }
+        self.last_backoff_at = Some(std::time::Instant::now());
+        Some(self.apply_backoff(is_429))
+    }
+
+    /// Records a rate-limiting event (HTTP 429) or transient timeout/error unconditionally.
+    pub fn record_backoff(&mut self, is_429: bool) -> u32 {
+        self.last_backoff_at = Some(std::time::Instant::now());
+        self.apply_backoff(is_429)
+    }
+
+    fn apply_backoff(&mut self, is_429: bool) -> u32 {
+        self.success_streak = 0;
+        let safe_ceiling_factor = if is_429 { 0.80 } else { 0.85 };
+        let discovered_safe = ((self.current_rpm as f32 * safe_ceiling_factor) as u32)
+            .min(self.current_rpm.saturating_sub(1))
+            .clamp(self.min_rpm, self.max_rpm);
+        self.learned_ceiling_rpm = Some(match self.learned_ceiling_rpm {
+            Some(prev) => ((prev + discovered_safe) / 2).clamp(self.min_rpm, self.max_rpm),
+            None => discovered_safe,
+        });
+
+        let factor = if is_429 { 0.50 } else { 0.75 };
+        let mut new_rpm =
+            ((self.current_rpm as f32 * factor) as u32).clamp(self.min_rpm, self.max_rpm);
+        if let Some(ceiling) = self.learned_ceiling_rpm {
+            new_rpm = new_rpm.min(ceiling);
+        }
+        self.current_rpm = new_rpm;
+        new_rpm
+    }
+}
+
+fn load_route_rate_limit(
+    path: &PathBuf,
+    route_key: &str,
+    default_rpm: u32,
+    min_rpm: u32,
+    max_rpm: u32,
+) -> (u32, Option<u32>) {
+    let Ok(conn) = open_connection(path) else {
+        return (default_rpm.clamp(min_rpm, max_rpm), None);
+    };
+    let rpm_key = format!("rate_limit_{route_key}_rpm");
+    let ceiling_key = format!("rate_limit_{route_key}_ceiling_rpm");
+
+    let saved_rpm = conn
+        .query_row(
+            "SELECT value FROM config WHERE key = ?1",
+            rusqlite::params![rpm_key],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .map(|v| v.clamp(min_rpm, max_rpm));
+
+    let saved_ceiling = conn
+        .query_row(
+            "SELECT value FROM config WHERE key = ?1",
+            rusqlite::params![ceiling_key],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .map(|v| v.clamp(min_rpm, max_rpm));
+
+    let initial_rpm = saved_rpm
+        .or(saved_ceiling)
+        .unwrap_or(default_rpm)
+        .clamp(min_rpm, saved_ceiling.unwrap_or(max_rpm));
+    (initial_rpm, saved_ceiling)
+}
+
+fn save_route_rate_limit(
+    path: &PathBuf,
+    route_key: &str,
+    current_rpm: u32,
+    ceiling_rpm: Option<u32>,
+) {
+    let Ok(conn) = open_connection(path) else {
+        return;
+    };
+    let rpm_key = format!("rate_limit_{route_key}_rpm");
+    let _ = conn.execute(
+        "INSERT INTO config(key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        rusqlite::params![rpm_key, current_rpm.to_string()],
+    );
+    if let Some(ceiling) = ceiling_rpm {
+        let ceiling_key = format!("rate_limit_{route_key}_ceiling_rpm");
+        let _ = conn.execute(
+            "INSERT INTO config(key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![ceiling_key, ceiling.to_string()],
+        );
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum CooldownOutcome {
+    NoCooldown,
+    Triggered {
+        streak: u32,
+        cooldown_secs: u64,
+        next_backoff_secs: u64,
+    },
+    JoinedExisting {
+        remaining_secs: u64,
+    },
+}
+
 struct CrawlerCircuitBreaker {
     consecutive_errors: u32,
     cooldown_until: Option<std::time::Instant>,
     current_backoff_secs: u64,
+    last_error_at: Option<std::time::Instant>,
 }
 
 impl CrawlerCircuitBreaker {
@@ -2254,7 +3004,8 @@ impl CrawlerCircuitBreaker {
         Self {
             consecutive_errors: 0,
             cooldown_until: None,
-            current_backoff_secs: 120, // 2 minutes initial backoff
+            current_backoff_secs: 60, // 1 minute initial backoff
+            last_error_at: None,
         }
     }
 
@@ -2268,20 +3019,69 @@ impl CrawlerCircuitBreaker {
         None
     }
 
+    /// Records a failure for a request that started at `request_started_at`.
+    /// - If a cooldown is ALREADY active, does NOT increment `consecutive_errors` or double `current_backoff_secs`;
+    ///   instead returns `JoinedExisting` so the sibling worker simply waits out the existing cooldown.
+    /// - If the request started before the most recent error (`request_started_at <= last_error_at`),
+    ///   treats it as part of the same concurrent wave without escalating the error streak.
+    fn record_failure_for_request(
+        &mut self,
+        is_429: bool,
+        request_started_at: std::time::Instant,
+    ) -> CooldownOutcome {
+        if let Some(remaining) = self.is_in_cooldown() {
+            return CooldownOutcome::JoinedExisting {
+                remaining_secs: remaining.as_secs().max(1),
+            };
+        }
+
+        let is_stale_in_flight = self
+            .last_error_at
+            .is_some_and(|last| request_started_at <= last);
+        if is_stale_in_flight && !is_429 {
+            return CooldownOutcome::NoCooldown;
+        }
+
+        self.last_error_at = Some(std::time::Instant::now());
+        if is_429 {
+            let cooldown = self. record_rate_limit(60);
+            CooldownOutcome::Triggered {
+                streak: self.consecutive_errors,
+                cooldown_secs: cooldown,
+                next_backoff_secs: self.current_backoff_secs,
+            }
+        } else if let Some((streak, cooldown_secs, next_backoff_secs)) = self.record_error() {
+            CooldownOutcome::Triggered {
+                streak,
+                cooldown_secs,
+                next_backoff_secs,
+            }
+        } else {
+            CooldownOutcome::NoCooldown
+        }
+    }
+
     fn record_rate_limit(&mut self, cooldown_secs: u64) -> u64 {
+        if let Some(remaining) = self.is_in_cooldown() {
+            return remaining.as_secs().max(1);
+        }
         self.consecutive_errors += 1;
         let cooldown = cooldown_secs.max(self.current_backoff_secs);
         self.cooldown_until = Some(std::time::Instant::now() + Duration::from_secs(cooldown));
-        self.current_backoff_secs = (cooldown * 2).min(1800);
+        self.current_backoff_secs = (cooldown * 2).min(900);
         cooldown
     }
 
     fn record_error(&mut self) -> Option<(u32, u64, u64)> {
+        if let Some(remaining) = self.is_in_cooldown() {
+            let rem = remaining.as_secs().max(1);
+            return Some((self.consecutive_errors, rem, self.current_backoff_secs));
+        }
         self.consecutive_errors += 1;
         if self.consecutive_errors >= 4 {
             let cooldown = self.current_backoff_secs;
             self.cooldown_until = Some(std::time::Instant::now() + Duration::from_secs(cooldown));
-            let next_backoff = (self.current_backoff_secs * 2).min(1800);
+            let next_backoff = (self.current_backoff_secs * 2).min(900);
             self.current_backoff_secs = next_backoff;
             Some((self.consecutive_errors, cooldown, next_backoff))
         } else {
@@ -2292,7 +3092,7 @@ impl CrawlerCircuitBreaker {
     fn record_success(&mut self) {
         if self.consecutive_errors > 0 {
             self.consecutive_errors = 0;
-            self.current_backoff_secs = 120;
+            self.current_backoff_secs = 60;
             self.cooldown_until = None;
         }
     }
@@ -2300,20 +3100,34 @@ impl CrawlerCircuitBreaker {
 
 async fn run_global_aram_worker(
     worker_id: usize,
+    generation: u64,
     client: crate::services::lcu_client::LcuClient,
     path: PathBuf,
     runtime: Arc<RwLock<RuntimeState>>,
     in_flight_games: Arc<tokio::sync::Mutex<HashSet<i64>>>,
     circuit_breaker: Arc<tokio::sync::Mutex<CrawlerCircuitBreaker>>,
+    matches_limiter: Arc<tokio::sync::Mutex<AdaptiveRateLimiter>>,
+    games_limiter: Arc<tokio::sync::Mutex<AdaptiveRateLimiter>>,
 ) {
     logger::info(
         "agent.global-aram",
-        &format!("Global ARAM worker #{worker_id} started"),
+        &format!("Global ARAM worker #{worker_id} started (gen {generation})"),
     );
     let mut empty_streak = 0;
-    let mut pacer = WorkerRatePacer::new(100);
 
     loop {
+        if CRAWLER_GENERATION.load(std::sync::atomic::Ordering::SeqCst) != generation {
+            logger::info(
+                "agent.global-aram",
+                &format!("Worker #{worker_id} stopping due to database reset"),
+            );
+            break;
+        }
+        if runtime.read().await.collector_state.starts_with("game_in_progress") {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            continue;
+        }
+
         // If the circuit breaker is active, pause until cooldown expires
         let wait_dur = {
             let cb = circuit_breaker.lock().await;
@@ -2388,8 +3202,20 @@ async fn run_global_aram_worker(
                 }
             };
 
-        // Pace: max 100 requests/minute per worker, evenly spaced, non-bottlenecked
-        pacer.pace_next().await;
+        // Shared adaptive rate limiter for the `/matches` route across all workers
+        let (_, req_started_at) = matches_limiter.lock().await.pace_next_tagged().await;
+
+        // Re-check circuit breaker after waiting on the pacer in case a sibling worker just triggered cooldown
+        if let Some(dur) = circuit_breaker.lock().await.is_in_cooldown() {
+            let mark_path = path.clone();
+            let mark_puuid = account_puuid.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                mark_global_account(&mark_path, &mark_puuid, "queued")
+            })
+            .await;
+            tokio::time::sleep(dur).await;
+            continue;
+        }
 
         let route = format!(
             "/lol-match-history/v1/products/lol/{account_puuid}/matches?begIndex=0&endIndex=19"
@@ -2397,6 +3223,24 @@ async fn run_global_aram_worker(
         let history = match client.get_json::<Value>(&route).await {
             Ok(history) => {
                 circuit_breaker.lock().await.record_success();
+                let maybe_update = {
+                    let mut rl = matches_limiter.lock().await;
+                    rl.record_success().map(|rpm| (rpm, rl.ceiling_rpm()))
+                };
+                if let Some((new_rpm, ceiling)) = maybe_update {
+                    let save_path = path.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        save_route_rate_limit(&save_path, "matches", new_rpm, ceiling);
+                    })
+                    .await;
+                    logger::info(
+                        "agent.global-aram",
+                        &format!(
+                            "Crawler `/matches` rate increased: now operating at {new_rpm} req/min (ceiling: {:?})",
+                            ceiling
+                        ),
+                    );
+                }
                 history
             }
             Err(error) => {
@@ -2408,53 +3252,138 @@ async fn run_global_aram_worker(
                 let mark_puuid = account_puuid.clone();
 
                 let is_rate_limited = error.contains("429");
-                let cooldown_action = {
-                    let mut cb = circuit_breaker.lock().await;
-                    if is_rate_limited {
-                        let cooldown = cb.record_rate_limit(60);
-                        Some((cb.consecutive_errors, cooldown, cb.current_backoff_secs))
-                    } else {
-                        cb.record_error()
-                    }
+                let maybe_backoff = {
+                    let mut rl = matches_limiter.lock().await;
+                    rl.record_backoff_for_request(is_rate_limited, req_started_at)
+                        .map(|rpm| (rpm, rl.ceiling_rpm()))
                 };
-
-                if let Some((streak, cooldown_secs, next_backoff)) = cooldown_action {
-                    let mins = (cooldown_secs + 59) / 60;
-                    let next_mins = (next_backoff + 59) / 60;
-                    let reason = if is_rate_limited { "HTTP 429 Rate Limit" } else { "unavailable consecutively" };
-                    logger::warn(
+                if let Some((new_rpm, ceiling)) = maybe_backoff {
+                    let save_path = path.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        save_route_rate_limit(&save_path, "matches", new_rpm, ceiling);
+                    })
+                    .await;
+                    logger::info(
                         "agent.global-aram",
                         &format!(
-                            "Match history {reason} ({streak} errors). Backing off all workers for {cooldown_secs}s before retrying (next backoff: {next_mins}m)..."
+                            "Crawler `/matches` rate adjusted down: now operating at {new_rpm} req/min (learned ceiling: {:?})",
+                            ceiling
                         ),
                     );
-                    {
-                        let mut state = runtime.write().await;
-                        state.collector_state = format!("global-aram:paused (backoff {mins}m)");
+                }
+
+                let outcome = circuit_breaker
+                    .lock()
+                    .await
+                    .record_failure_for_request(is_rate_limited, req_started_at);
+
+                match outcome {
+                    CooldownOutcome::Triggered {
+                        streak,
+                        cooldown_secs,
+                        next_backoff_secs,
+                    } => {
+                        let mins = (cooldown_secs + 59) / 60;
+                        let next_mins = (next_backoff_secs + 59) / 60;
+                        let reason = if is_rate_limited {
+                            "HTTP 429 Rate Limit"
+                        } else {
+                            "unavailable consecutively"
+                        };
+                        logger::warn(
+                            "agent.global-aram",
+                            &format!(
+                                "Match history {reason} ({streak} errors). Backing off all workers for {cooldown_secs}s before retrying (next backoff: {next_mins}m)..."
+                            ),
+                        );
+                        {
+                            let mut state = runtime.write().await;
+                            state.collector_state =
+                                format!("global-aram:paused (backoff {mins}m)");
+                        }
+                        // Re-queue this account so it is not permanently lost due to the LCU outage
+                        let _ = tokio::task::spawn_blocking(move || {
+                            mark_global_account(&mark_path, &mark_puuid, "queued")
+                        })
+                        .await;
+                        tokio::time::sleep(Duration::from_secs(cooldown_secs)).await;
                     }
-                    // Re-queue this account so it is not permanently lost due to the LCU outage
-                    let _ = tokio::task::spawn_blocking(move || {
-                        mark_global_account(&mark_path, &mark_puuid, "queued")
-                    })
-                    .await;
-                    tokio::time::sleep(Duration::from_secs(cooldown_secs)).await;
-                } else {
-                    let _ = tokio::task::spawn_blocking(move || {
-                        mark_global_account(&mark_path, &mark_puuid, "failed")
-                    })
-                    .await;
+                    CooldownOutcome::JoinedExisting { remaining_secs } => {
+                        let _ = tokio::task::spawn_blocking(move || {
+                            mark_global_account(&mark_path, &mark_puuid, "queued")
+                        })
+                        .await;
+                        tokio::time::sleep(Duration::from_secs(remaining_secs)).await;
+                    }
+                    CooldownOutcome::NoCooldown => {
+                        let _ = tokio::task::spawn_blocking(move || {
+                            mark_global_account(&mark_path, &mark_puuid, "failed")
+                        })
+                        .await;
+                    }
                 }
                 continue;
             }
         };
 
+        let active_patch = runtime
+            .read()
+            .await
+            .current_patch
+            .clone()
+            .or_else(crate::services::patch_manager::get_cached_patch);
         let summaries = history
             .get("games")
             .and_then(|value| value.get("games"))
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        let aram_summaries: Vec<Value> = summaries.into_iter().filter(is_aram_mayhem).collect();
+        let all_aram_summaries: Vec<Value> =
+            summaries.into_iter().filter(is_aram_mayhem).collect();
+        let aram_summaries: Vec<Value> = all_aram_summaries
+            .iter()
+            .filter(|summary| is_game_summary_on_patch(summary, active_patch.as_deref()))
+            .cloned()
+            .collect();
+
+        // If the seed account has no games on the current patch yet and no other accounts are queued,
+        // seed discovered_accounts from their most recent ARAM Mayhem game's participants without storing the old game.
+        if aram_summaries.is_empty() && !all_aram_summaries.is_empty() {
+            if global_game_count(&path).unwrap_or(0) == 0
+                && global_queued_account_count(&path).unwrap_or(0) == 0
+            {
+                if let Some(seed_game_id) = all_aram_summaries[0]
+                    .get("gameId")
+                    .and_then(Value::as_i64)
+                {
+                    games_limiter.lock().await.pace_next().await;
+                    if let Ok(detail) = client
+                        .get_json::<Value>(&format!("/lol-match-history/v1/games/{seed_game_id}"))
+                        .await
+                    {
+                        if let Some(identities) = detail
+                            .get("participantIdentities")
+                            .and_then(Value::as_array)
+                        {
+                            let seed_path = path.clone();
+                            let puuids: Vec<String> = identities
+                                .iter()
+                                .filter_map(|id| id.get("player"))
+                                .filter_map(|p| p.get("puuid"))
+                                .filter_map(Value::as_str)
+                                .map(str::to_string)
+                                .collect();
+                            let _ = tokio::task::spawn_blocking(move || {
+                                for p in puuids {
+                                    let _ = queue_global_account(&seed_path, &p);
+                                }
+                            })
+                            .await;
+                        }
+                    }
+                }
+            }
+        }
 
         let aram_game_ids: Vec<i64> = aram_summaries
             .iter()
@@ -2481,14 +3410,16 @@ async fn run_global_aram_worker(
             }
         }
 
-        for game_id in games_to_fetch {
+        for &game_id in &games_to_fetch {
+            if CRAWLER_GENERATION.load(std::sync::atomic::Ordering::SeqCst) != generation {
+                break;
+            }
             // Check if the circuit breaker cooldown is active before starting each game request
             let wait_dur = {
                 let cb = circuit_breaker.lock().await;
                 cb.is_in_cooldown()
             };
             if let Some(dur) = wait_dur {
-                in_flight_games.lock().await.remove(&game_id);
                 tokio::time::sleep(dur).await;
                 break;
             }
@@ -2496,29 +3427,63 @@ async fn run_global_aram_worker(
             if let Ok(count) = global_game_count(&path) {
                 if let Ok(limit) = global_game_limit(&path) {
                     if count >= limit {
-                        in_flight_games.lock().await.remove(&game_id);
                         break;
                     }
                 }
             }
 
-            // Enforce max 100 games/minute limit per worker, evenly spaced, non-bottlenecked
-            pacer.pace_next().await;
+            // Shared adaptive rate limiter for the `/games/{id}` route across all workers
+            let (_, game_req_started_at) = games_limiter.lock().await.pace_next_tagged().await;
+
+            if let Some(dur) = circuit_breaker.lock().await.is_in_cooldown() {
+                tokio::time::sleep(dur).await;
+                break;
+            }
 
             let result = client
                 .get_json::<Value>(&format!("/lol-match-history/v1/games/{game_id}"))
                 .await;
 
             match result {
-                Ok(detail) if is_aram_mayhem(&detail) => {
+                Ok(detail)
+                    if is_aram_mayhem(&detail)
+                        && is_game_detail_on_patch(&detail, active_patch.as_deref()) =>
+                {
+                    if CRAWLER_GENERATION.load(std::sync::atomic::Ordering::SeqCst) != generation {
+                        break;
+                    }
                     circuit_breaker.lock().await.record_success();
+                    let maybe_update = {
+                        let mut rl = games_limiter.lock().await;
+                        rl.record_success().map(|rpm| (rpm, rl.ceiling_rpm()))
+                    };
+                    if let Some((new_rpm, ceiling)) = maybe_update {
+                        let save_path = path.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            save_route_rate_limit(&save_path, "games", new_rpm, ceiling);
+                        })
+                        .await;
+                        logger::info(
+                            "agent.global-aram",
+                            &format!(
+                                "Crawler `/games` rate increased: now operating at {new_rpm} req/min (ceiling: {:?})",
+                                ceiling
+                            ),
+                        );
+                    }
                     let write_path = path.clone();
                     let write_source = account_puuid.clone();
+                    let write_patch = active_patch.clone();
                     let store_result = tokio::task::spawn_blocking(move || {
-                        store_global_detail(&write_path, &write_source, &detail)
+                        store_global_detail(
+                            &write_path,
+                            &write_source,
+                            &detail,
+                            write_patch.as_deref(),
+                        )
                     })
                     .await;
-                    if let Ok(Ok(_)) = store_result {
+                    if let Ok(Ok(true)) = store_result {
                         if let (Ok(count), Ok(live_limit)) =
                             (global_game_count(&path), global_game_limit(&path))
                         {
@@ -2538,14 +3503,56 @@ async fn run_global_aram_worker(
                                 &format!("Worker #{worker_id} stored game {game_id}; dataset is {count}/{live_limit}"),
                             );
                             if count >= live_limit {
-                                in_flight_games.lock().await.remove(&game_id);
                                 break;
                             }
                         }
                     }
                 }
+                Ok(detail) if is_aram_mayhem(&detail) => {
+                    // Detail is from an older patch; since match history is newest-first,
+                    // all subsequent matches for this account are also from older patches.
+                    circuit_breaker.lock().await.record_success();
+                    let maybe_update = {
+                        let mut rl = games_limiter.lock().await;
+                        rl.record_success().map(|rpm| (rpm, rl.ceiling_rpm()))
+                    };
+                    if let Some((new_rpm, ceiling)) = maybe_update {
+                        let save_path = path.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            save_route_rate_limit(&save_path, "games", new_rpm, ceiling);
+                        })
+                        .await;
+                        logger::info(
+                            "agent.global-aram",
+                            &format!(
+                                "Crawler `/games` rate increased: now operating at {new_rpm} req/min (ceiling: {:?})",
+                                ceiling
+                            ),
+                        );
+                    }
+                    in_flight_games.lock().await.remove(&game_id);
+                    break;
+                }
                 Ok(_) => {
                     circuit_breaker.lock().await.record_success();
+                    let maybe_update = {
+                        let mut rl = games_limiter.lock().await;
+                        rl.record_success().map(|rpm| (rpm, rl.ceiling_rpm()))
+                    };
+                    if let Some((new_rpm, ceiling)) = maybe_update {
+                        let save_path = path.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            save_route_rate_limit(&save_path, "games", new_rpm, ceiling);
+                        })
+                        .await;
+                        logger::info(
+                            "agent.global-aram",
+                            &format!(
+                                "Crawler `/games` rate increased: now operating at {new_rpm} req/min (ceiling: {:?})",
+                                ceiling
+                            ),
+                        );
+                    }
                 }
                 Err(error) => {
                     logger::warn(
@@ -2554,41 +3561,86 @@ async fn run_global_aram_worker(
                     );
 
                     let is_rate_limited = error.contains("429");
-                    let cooldown_action = {
-                        let mut cb = circuit_breaker.lock().await;
-                        if is_rate_limited {
-                            let cooldown = cb.record_rate_limit(60);
-                            Some((cb.consecutive_errors, cooldown, cb.current_backoff_secs))
-                        } else if error.contains("timed out") || error.contains("503") || error.contains("504") {
-                            cb.record_error()
-                        } else {
-                            None
-                        }
+                    let is_transient = error.contains("timed out")
+                        || error.contains("503")
+                        || error.contains("504")
+                        || error.contains("error sending request");
+                    let maybe_backoff = {
+                        let mut rl = games_limiter.lock().await;
+                        rl.record_backoff_for_request(is_rate_limited, game_req_started_at)
+                            .map(|rpm| (rpm, rl.ceiling_rpm()))
                     };
-
-                    if let Some((streak, cooldown_secs, next_backoff)) = cooldown_action {
-                        let mins = (cooldown_secs + 59) / 60;
-                        let next_mins = (next_backoff + 59) / 60;
-                        let reason = if is_rate_limited { "HTTP 429 Rate Limit" } else { "consecutive timeouts/errors" };
-                        logger::warn(
+                    if let Some((new_rpm, ceiling)) = maybe_backoff {
+                        let save_path = path.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            save_route_rate_limit(&save_path, "games", new_rpm, ceiling);
+                        })
+                        .await;
+                        logger::info(
                             "agent.global-aram",
                             &format!(
-                                "Game fetch {reason} ({streak} errors). Backing off all workers for {cooldown_secs}s before retrying (next backoff: {next_mins}m)..."
+                                "Crawler `/games` rate adjusted down: now operating at {new_rpm} req/min (learned ceiling: {:?})",
+                                ceiling
                             ),
                         );
-                        {
-                            let mut state = runtime.write().await;
-                            state.collector_state = format!("global-aram:paused (backoff {mins}m)");
+                    }
+
+                    let outcome = if is_rate_limited || is_transient {
+                        circuit_breaker
+                            .lock()
+                            .await
+                            .record_failure_for_request(is_rate_limited, game_req_started_at)
+                    } else {
+                        CooldownOutcome::NoCooldown
+                    };
+
+                    match outcome {
+                        CooldownOutcome::Triggered {
+                            streak,
+                            cooldown_secs,
+                            next_backoff_secs,
+                        } => {
+                            let mins = (cooldown_secs + 59) / 60;
+                            let next_mins = (next_backoff_secs + 59) / 60;
+                            let reason = if is_rate_limited {
+                                "HTTP 429 Rate Limit"
+                            } else {
+                                "consecutive timeouts/errors"
+                            };
+                            logger::warn(
+                                "agent.global-aram",
+                                &format!(
+                                    "Game fetch {reason} ({streak} errors). Backing off all workers for {cooldown_secs}s before retrying (next backoff: {next_mins}m)..."
+                                ),
+                            );
+                            {
+                                let mut state = runtime.write().await;
+                                state.collector_state =
+                                    format!("global-aram:paused (backoff {mins}m)");
+                            }
+                            tokio::time::sleep(Duration::from_secs(cooldown_secs)).await;
+                            break;
                         }
-                        in_flight_games.lock().await.remove(&game_id);
-                        tokio::time::sleep(Duration::from_secs(cooldown_secs)).await;
-                        break;
+                        CooldownOutcome::JoinedExisting { remaining_secs } => {
+                            tokio::time::sleep(Duration::from_secs(remaining_secs)).await;
+                            break;
+                        }
+                        CooldownOutcome::NoCooldown => {}
                     }
                 }
             }
             in_flight_games.lock().await.remove(&game_id);
         }
+        {
+            let mut inflight = in_flight_games.lock().await;
+            for id in &games_to_fetch {
+                inflight.remove(id);
+            }
+        }
 
+        if CRAWLER_GENERATION.load(std::sync::atomic::Ordering::SeqCst) != generation {
+            break;
+        }
         let mark_path = path.clone();
         let mark_puuid = account_puuid.clone();
         let _ = tokio::task::spawn_blocking(move || {
@@ -2606,6 +3658,7 @@ async fn run_global_aram_worker(
 async fn collect_global_aram(
     client: &crate::services::lcu_client::LcuClient,
     seed_puuid: &str,
+    generation: u64,
     runtime: &Arc<RwLock<RuntimeState>>,
 ) -> Result<(), String> {
     let path = global_aram_database_path();
@@ -2648,16 +3701,39 @@ async fn collect_global_aram(
 
     let _ = queue_global_account(&path, seed_puuid);
 
+    let rate_path = path.clone();
+    let ((matches_rpm, matches_ceiling), (games_rpm, games_ceiling)) =
+        tokio::task::spawn_blocking(move || {
+            let matches_cfg = load_route_rate_limit(&rate_path, "matches", 30, 12, 90);
+            let games_cfg = load_route_rate_limit(&rate_path, "games", 48, 15, 120);
+            (matches_cfg, games_cfg)
+        })
+        .await
+        .unwrap_or(((30, None), (48, None)));
+
     logger::info(
         "agent.global-aram",
         &format!(
-            "Starting global ARAM collection with {worker_count} concurrent workers at {}/{} games",
-            current, limit
+            "Starting global ARAM collection with {worker_count} concurrent workers at {}/{} games (cached `/matches`: {} RPM [ceiling {:?}], `/games`: {} RPM [ceiling {:?}])",
+            current, limit, matches_rpm, matches_ceiling, games_rpm, games_ceiling
         ),
     );
 
     let in_flight_games = Arc::new(tokio::sync::Mutex::new(HashSet::new()));
     let circuit_breaker = Arc::new(tokio::sync::Mutex::new(CrawlerCircuitBreaker::new()));
+    // Separate adaptive rate limiters per route, initialized from cached rate limits in SQLite config.
+    let matches_limiter = Arc::new(tokio::sync::Mutex::new(AdaptiveRateLimiter::with_ceiling(
+        matches_rpm,
+        12,
+        90,
+        matches_ceiling,
+    )));
+    let games_limiter = Arc::new(tokio::sync::Mutex::new(AdaptiveRateLimiter::with_ceiling(
+        games_rpm,
+        15,
+        120,
+        games_ceiling,
+    )));
     let mut handles = Vec::new();
 
     for worker_id in 0..worker_count {
@@ -2666,13 +3742,22 @@ async fn collect_global_aram(
         let runtime = runtime.clone();
         let in_flight = in_flight_games.clone();
         let cb = circuit_breaker.clone();
+        let ml = matches_limiter.clone();
+        let gl = games_limiter.clone();
         handles.push(tokio::spawn(async move {
-            run_global_aram_worker(worker_id, client, path, runtime, in_flight, cb).await;
+            run_global_aram_worker(
+                worker_id, generation, client, path, runtime, in_flight, cb, ml, gl,
+            )
+            .await;
         }));
     }
 
     for handle in handles {
         let _ = handle.await;
+    }
+
+    if CRAWLER_GENERATION.load(std::sync::atomic::Ordering::SeqCst) != generation {
+        return Ok(());
     }
 
     let final_count = global_game_count(&path).unwrap_or(current);
@@ -2720,6 +3805,9 @@ async fn refresh_statistics_projections(
 
     for (scope, source_path) in [("personal", database), ("global", global_database)] {
         for (index, kind) in ["champion", "item", "augment", "combo"].iter().enumerate() {
+            if scope == "personal" && *kind == "combo" {
+                continue;
+            }
             let args = json!({
                 "scope": scope,
                 "kind": kind,
@@ -3035,6 +4123,26 @@ async fn backfill_match_history(
 
 pub async fn collector_loop(path: PathBuf, runtime: Arc<RwLock<RuntimeState>>) {
     let mut last_reconciled_puuid: Option<String> = None;
+    {
+        let (initial_patch, patch_changed) =
+            crate::services::patch_manager::ensure_patch_freshness(None).await;
+        if let Some(ref p) = initial_patch {
+            runtime.write().await.current_patch = Some(p.clone());
+        }
+        if patch_changed {
+            let db_path = path.clone();
+            let global_path = global_aram_database_path();
+            let _ = tokio::task::spawn_blocking(move || {
+                if let Ok(conn) = open_connection(&db_path) {
+                    let _ = invalidate_statistics_projections(&conn);
+                }
+                if let Ok(conn) = open_connection(&global_path) {
+                    let _ = invalidate_statistics_projections(&conn);
+                }
+            })
+            .await;
+        }
+    }
     loop {
         let credentials = crate::services::lcu_client::LcuClient::find_credentials();
         let Some(credentials) = credentials else {
@@ -3062,12 +4170,31 @@ pub async fn collector_loop(path: PathBuf, runtime: Arc<RwLock<RuntimeState>>) {
             }
         };
 
+        let (detected_patch, patch_changed) =
+            crate::services::patch_manager::ensure_patch_freshness(Some(&client)).await;
+        if patch_changed {
+            let db_path = path.clone();
+            let global_path = global_aram_database_path();
+            let _ = tokio::task::spawn_blocking(move || {
+                if let Ok(conn) = open_connection(&db_path) {
+                    let _ = invalidate_statistics_projections(&conn);
+                }
+                if let Ok(conn) = open_connection(&global_path) {
+                    let _ = invalidate_statistics_projections(&conn);
+                }
+            })
+            .await;
+        }
+
         {
             let mut state = runtime.write().await;
             if state.collector_state != "event_pending" {
                 state.collector_state = "collecting".to_string();
             }
             state.league_client_connected = true;
+            if detected_patch.is_some() {
+                state.current_patch = detected_patch;
+            }
         }
 
         let puuid = client
@@ -3184,12 +4311,18 @@ pub async fn collector_loop(path: PathBuf, runtime: Arc<RwLock<RuntimeState>>) {
                 let client = client.clone();
                 let puuid = puuid.to_string();
                 let runtime = runtime.clone();
+                let generation = CRAWLER_GENERATION.load(std::sync::atomic::Ordering::SeqCst);
                 tokio::spawn(async move {
-                    if let Err(error) = collect_global_aram(&client, &puuid, &runtime).await {
+                    if let Err(error) =
+                        collect_global_aram(&client, &puuid, generation, &runtime).await
+                    {
                         logger::error(
                             "agent.global-aram",
                             &format!("Global ARAM collection failed: {error}"),
                         );
+                    }
+                    if CRAWLER_GENERATION.load(std::sync::atomic::Ordering::SeqCst) != generation {
+                        return;
                     }
                     let mut state = runtime.write().await;
                     state.global_collection_running = false;
@@ -3218,11 +4351,16 @@ pub async fn collector_loop(path: PathBuf, runtime: Arc<RwLock<RuntimeState>>) {
 
         {
             let mut state = runtime.write().await;
-            if state.collector_state != "event_pending" {
+            if state.collector_state != "event_pending" && !state.collector_state.starts_with("game_in_progress") {
                 state.collector_state = "live".to_string();
             }
         }
-        sleep(Duration::from_secs(15)).await;
+        tokio::select! {
+            _ = COLLECTOR_WAKEUP.notified() => {
+                logger::debug("agent.collector", "Reactive wakeup triggered by LCU event");
+            }
+            _ = sleep(Duration::from_secs(60)) => {}
+        }
     }
 }
 
@@ -3294,21 +4432,29 @@ pub async fn websocket_loop(runtime: Arc<RwLock<RuntimeState>>) {
             let Ok(value) = serde_json::from_str::<Value>(&text) else {
                 continue;
             };
-            let Some(uri) = value
-                .as_array()
-                .and_then(|array| array.get(2))
-                .and_then(|payload| payload.get("uri"))
-                .and_then(Value::as_str)
-            else {
-                continue;
-            };
+            let payload = value.as_array().and_then(|array| array.get(2));
+            let uri = payload.and_then(|p| p.get("uri")).and_then(Value::as_str);
+            let data = payload.and_then(|p| p.get("data"));
 
-            if uri.contains("match-history")
-                || uri == "/lol-gameflow/v1/gameflow-phase"
-                || uri == "/lol-login/v1/session"
-            {
-                let mut state = runtime.write().await;
-                state.collector_state = "event_pending".to_string();
+            if let Some(uri) = uri {
+                if uri == "/lol-gameflow/v1/gameflow-phase" {
+                    let phase = data.and_then(Value::as_str).unwrap_or("");
+                    let mut state = runtime.write().await;
+                    if phase == "InProgress" {
+                        state.collector_state = "game_in_progress".to_string();
+                        logger::info("agent.websocket", "Gameflow phase InProgress: pausing background crawler");
+                    } else if phase == "EndOfGame" || phase == "WaitingForStats" {
+                        state.collector_state = "event_pending".to_string();
+                        COLLECTOR_WAKEUP.notify_one();
+                    } else if state.collector_state == "game_in_progress" {
+                        state.collector_state = "live".to_string();
+                        COLLECTOR_WAKEUP.notify_one();
+                    }
+                } else if uri.contains("match-history") || uri == "/lol-login/v1/session" {
+                    let mut state = runtime.write().await;
+                    state.collector_state = "event_pending".to_string();
+                    COLLECTOR_WAKEUP.notify_one();
+                }
             }
         }
 
@@ -3496,10 +4642,17 @@ mod tests {
         assert!(cb.record_error().is_none());
         assert!(cb.is_in_cooldown().is_none());
 
-        // 4th error triggers cooldown
+        // 4th error triggers cooldown (initial backoff 60s, next 120s)
         let action = cb.record_error();
-        assert!(action.is_some());
+        assert_eq!(action, Some((4, 60, 120)));
         assert!(cb.is_in_cooldown().is_some());
+
+        // Concurrent in-flight request failing while cooldown is ALREADY active must NOT escalate backoff!
+        let stale_req_start = std::time::Instant::now() - Duration::from_secs(5);
+        let joined = cb.record_failure_for_request(false, stale_req_start);
+        assert!(matches!(joined, CooldownOutcome::JoinedExisting { .. }));
+        assert_eq!(cb.consecutive_errors, 4);
+        assert_eq!(cb.current_backoff_secs, 120);
 
         // Success resets streak
         cb.record_success();
@@ -3508,7 +4661,61 @@ mod tests {
 
         // HTTP 429 triggers immediately on first error
         let cooldown = cb.record_rate_limit(60);
-        assert_eq!(cooldown, 120); // max of 60 and initial backoff 120
+        assert_eq!(cooldown, 60); // max of 60 and initial backoff 60
         assert!(cb.is_in_cooldown().is_some());
     }
+
+    #[test]
+    fn test_adaptive_rate_limiter_aimd_and_ceiling_locking() {
+        let mut limiter = AdaptiveRateLimiter::new(60, 20, 100);
+        assert_eq!(limiter.current_rpm(), 60);
+        assert_eq!(limiter.ceiling_rpm(), None);
+
+        // 7 successes - not yet threshold (8)
+        for _ in 0..7 {
+            assert!(limiter.record_success().is_none());
+        }
+        assert_eq!(limiter.current_rpm(), 60);
+
+        // 8th success increases RPM additively (+2 when no ceiling is learned yet)
+        assert_eq!(limiter.record_success(), Some(62));
+        assert_eq!(limiter.current_rpm(), 62);
+
+        // Multiplicative decrease on transient error (-25%) and learns safe ceiling (85% of 62 = 52)
+        let r1_start = std::time::Instant::now();
+        let decreased = limiter.record_backoff_for_request(false, r1_start);
+        assert_eq!(decreased, Some(46));
+        assert_eq!(limiter.current_rpm(), 46);
+        assert_eq!(limiter.ceiling_rpm(), Some(52));
+
+        // Stale concurrent request that started at or before the backoff must be ignored
+        assert_eq!(limiter.record_backoff_for_request(false, r1_start), None);
+        assert_eq!(limiter.current_rpm(), 46);
+
+        // Stepping up toward learned ceiling (52) uses +1 RPM per 8 successes and locks at 52
+        for expected in 47..=52 {
+            for _ in 0..7 {
+                assert!(limiter.record_success().is_none());
+            }
+            assert_eq!(limiter.record_success(), Some(expected));
+        }
+        assert_eq!(limiter.current_rpm(), 52);
+
+        // Once at the learned ceiling (52), 8 successes do NOT increase RPM (it holds steady)
+        for _ in 0..16 {
+            assert!(limiter.record_success().is_none());
+        }
+        assert_eq!(limiter.current_rpm(), 52);
+
+        // Multiplicative decrease on 429 (-50%)
+        let rate_limited = limiter.record_backoff(true);
+        assert_eq!(rate_limited, 26);
+        assert_eq!(limiter.current_rpm(), 26);
+
+        // Further backoff clamped to min_rpm (20)
+        let clamped = limiter.record_backoff(true);
+        assert_eq!(clamped, 20);
+        assert_eq!(limiter.current_rpm(), 20);
+    }
 }
+

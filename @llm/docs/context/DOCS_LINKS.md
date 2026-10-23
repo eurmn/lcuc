@@ -58,6 +58,10 @@ This document catalogs every documentation file available in `@llm/docs/`, organ
 
 - [`DATABASE.md`](/@llm/docs/db/DATABASE.md)
   - **Purpose**: SQLite schema definitions, indexing, and query patterns for `runesets`.
+
+- [`DATABASE_METRICS.llm.txt`](/@llm/docs/db/DATABASE_METRICS.llm.txt)
+  - **Purpose**: Live storage footprint, table row counts, average size per game/participant entry, and cross-reference links.
+
   - **Usage**: Consult when adding new database tables or extending rune metadata.
 
 - [`RUNES.md`](/@llm/docs/db/RUNES.md)

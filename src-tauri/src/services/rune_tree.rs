@@ -38,11 +38,20 @@ fn icon_path_to_url(icon_path: &str) -> String {
     }
 }
 
+/// Clears the in-memory rune perks and style trees cache so they reload on the next request.
+pub async fn invalidate_rune_tree_cache() {
+    let mut initialized = CACHE_INITIALIZED.write().await;
+    *initialized = false;
+    PERKS_CACHE.write().await.clear();
+    PERKSTYLES_CACHE.write().await.clear();
+}
+
 /// Ensures that the CommunityDragon perk metadata and style definitions are loaded into memory.
 ///
 /// Lazily downloads `perks.json` and `perkstyles.json` on the first call and stores them in
 /// thread-safe asynchronous read-write locks (`RwLock`).
 pub async fn ensure_cdragon_cache() -> Result<(), String> {
+    let _ = crate::services::patch_manager::ensure_patch_freshness(None).await;
     {
         let initialized = CACHE_INITIALIZED.read().await;
         if *initialized {

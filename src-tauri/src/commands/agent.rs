@@ -67,6 +67,13 @@ pub async fn api_set_global_aram_workers(
 }
 
 #[tauri::command]
+pub async fn api_reset_global_aram(
+    supervisor: tauri::State<'_, AgentSupervisor>,
+) -> Result<serde_json::Value, String> {
+    supervisor.request("reset_global_aram").await
+}
+
+#[tauri::command]
 pub fn api_log(
     level: String,
     source: String,

@@ -21,7 +21,7 @@ export function getAgentBuildStatistics(): Promise<AgentBuildStatistics> {
   return invoke<AgentBuildStatistics>('api_build_statistics');
 }
 
-export type StatisticsScope = 'personal' | 'compare';
+export type StatisticsScope = 'personal' | 'compare' | 'global';
 export type StatisticsKind = 'champion' | 'item' | 'augment' | 'combo';
 
 export interface ServerStatisticContext {
@@ -39,6 +39,18 @@ export interface ServerStatisticContext {
   price_total?: number;
 }
 
+export interface ComboComponentDto {
+  kind: 'champion' | 'item' | 'augment';
+  id: string | number;
+  name: string;
+  icon_url: string;
+  rarity?: string;
+  item_class?: string;
+  description?: string;
+  price_total?: number;
+  categories?: string[];
+}
+
 export interface ServerStatisticRow {
   id: string;
   name: string;
@@ -49,6 +61,8 @@ export interface ServerStatisticRow {
   description?: string;
   price_total?: number;
   categories?: string[];
+  components?: ComboComponentDto[];
+  raw_win_rate?: number;
   games: number;
   wins: number;
   kills: number;
@@ -103,6 +117,11 @@ export function getStatistics(query: ServerStatisticsQuery): Promise<ServerStati
   return invoke<ServerStatisticsResponse>('api_statistics', { query });
 }
 
+export interface GlobalAramPatchBreakdown {
+  patch: string;
+  games: number;
+}
+
 export interface GlobalAramConfig {
   limit: number;
   games: number;
@@ -110,6 +129,10 @@ export interface GlobalAramConfig {
   database_path: string;
   collector_state: string;
   queued_jobs: number;
+  current_patch?: string | null;
+  patches?: GlobalAramPatchBreakdown[];
+  outdated_games?: number;
+  has_patch_mismatch?: boolean;
   operations: AgentOperation[];
 }
 
@@ -130,6 +153,16 @@ export function setGlobalAramLimit(limit: number): Promise<{ limit: number }> {
 
 export function setGlobalAramWorkers(workers: number): Promise<{ workers: number }> {
   return invoke<{ workers: number }>('api_set_global_aram_workers', { workers });
+}
+
+export function resetGlobalAramDatabase(): Promise<{
+  reset: boolean;
+  limit: number;
+  games: number;
+  workers: number;
+  queued_jobs: number;
+}> {
+  return invoke('api_reset_global_aram');
 }
 
 export function getGlobalAramStatistics(): Promise<AgentBuildStatistics> {

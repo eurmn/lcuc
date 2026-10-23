@@ -80,6 +80,14 @@ impl CoachlessProvider {
                 patch: p.patch,
                 patch_additions: p.patch_additions,
             }
+        } else if let Some((major, minor)) =
+            crate::services::patch_manager::get_cached_patch_numbers()
+        {
+            CoachlessPatch {
+                major,
+                patch: minor,
+                patch_additions: 0,
+            }
         } else {
             CoachlessPatch::default()
         };

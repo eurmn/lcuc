@@ -33,8 +33,17 @@ fn champion_icon_path_to_url(icon_path: &str) -> String {
     }
 }
 
+/// Clears the in-memory champion catalog cache so it reloads on the next request.
+pub async fn invalidate_champions_cache() {
+    let mut initialized = CHAMPIONS_INITIALIZED.write().await;
+    *initialized = false;
+    let mut cache = CHAMPIONS_CACHE.write().await;
+    cache.clear();
+}
+
 /// Ensures that the CommunityDragon champion summaries are loaded and cached into memory.
 pub async fn ensure_champions_cache() -> Result<(), String> {
+    let _ = crate::services::patch_manager::ensure_patch_freshness(None).await;
     {
         let initialized = CHAMPIONS_INITIALIZED.read().await;
         if *initialized {

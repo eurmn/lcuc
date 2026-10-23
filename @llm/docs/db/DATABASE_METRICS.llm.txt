@@ -1,0 +1,79 @@
+# Database Storage Metrics, Sizing & Reference Map
+
+> **Quick References**:
+> - SQLite Schema & Architecture: [`@llm/docs/db/DATABASE.md`](@llm/docs/db/DATABASE.md)
+> - Rune Storage & Perks: [`@llm/docs/db/RUNES.md`](@llm/docs/db/RUNES.md)
+> - Documentation Manifest: [`@llm/docs/context/DOCS_LINKS.md`](@llm/docs/context/DOCS_LINKS.md)
+> - Standalone Agent & Crawler Overview: [`src-tauri/src/agent/README.llm.txt`](src-tauri/src/agent/README.llm.txt)
+> - Crawler Adaptive Rate Limiter Walkthrough: [`@llm/docs/historical/walkthrough/crawler_adaptive_rate_limiter_walkthrough.md`](@llm/docs/historical/walkthrough/crawler_adaptive_rate_limiter_walkthrough.md)
+
+---
+
+## 1. Storage Location & Ownership
+
+All SQLite databases are isolated under `%LOCALAPPDATA%\lcu-companion\`:
+- **`global-aram.db`**: Multi-worker crawled global ARAM dataset, participant facts, discovered PUUIDs, and crawler configuration.
+- **`agent.db`**: Current player's personal match history, build facts, synced rune pages, and app configuration.
+
+---
+
+## 2. Live Database Size Metrics (October 2026 Snapshot)
+
+### A. Total Database File Sizes
+- **`global-aram.db`**: **325.08 MB** (340,873,216 bytes)
+- **`agent.db`**: **0.52 MB** (540,672 bytes)
+
+---
+
+### B. Global Dataset (`global-aram.db`) Sizing & Entry Breakdown
+
+| Table | Row Count | Description |
+| :--- | :--- | :--- |
+| `aram_games` | **5,533** | Unique collected ARAM: Mayhem games |
+| `aram_participants` | **55,312** | Participant facts (10 players per game) |
+| `discovered_accounts` | **37,302** | Summoner PUUIDs queue for crawler |
+| `config` | **6** | Crawler worker count, game limits, and flags |
+| `statistics_projections` | Dynamic | Pre-aggregated augment/item synergy projections |
+
+#### Average Size Per Entry:
+1. **Raw Detail JSON**:
+   - Total text in `aram_games.detail_json`: **165.43 MB**
+   - Average raw JSON per game: **30.37 KB** (31,103 bytes)
+2. **Total Effective Database Footprint Per Game**:
+   - Total DB size / `aram_games`: **59.69 KB** (61,121 bytes) per game
+   - *Includes the raw JSON payload, normalized game attributes, 10 indexed participant rows, account links, and SQLite B-tree pages.*
+3. **Effective Footprint Per Participant**:
+   - Total DB size / `aram_participants`: **6.11 KB** (6,114 bytes) per participant entry
+4. **Effective Footprint Per Discovered Account**:
+   - Total DB size / `discovered_accounts`: **9.07 KB** per account entry
+
+---
+
+### C. Personal Dataset (`agent.db`) Entry Breakdown
+
+| Table | Row Count | Description |
+| :--- | :--- | :--- |
+| `games` | **25** | Recent personal games |
+| `game_build_facts` | **25** | Participant facts for current player |
+| `runesets` | **7** | Saved / exported rune pages |
+| `favorite_champions` | **4** | Pinned champion IDs |
+| `app_settings` | **2** | Personal client settings |
+| `sync_state` | **4** | LCU synchronization markers |
+
+#### Average Size Per Entry:
+- Average storage per personal match: **~21.6 KB** (includes personal match JSON, build facts, and index pages).
+
+---
+
+## 3. Related Documentation & Key Links
+
+- **Database Schemas & Queries**:
+  - [`@llm/docs/db/DATABASE.md`](@llm/docs/db/DATABASE.md) — Comprehensive schema definition (`runesets`, `favorite_champions`, `game_build_facts`, indexes).
+  - [`@llm/docs/db/RUNES.md`](@llm/docs/db/RUNES.md) — Style tree mappings, perk IDs, and serialization rules.
+- **Backend Architecture & Synchronization**:
+  - [`@llm/docs/context/BACKEND_ARCHITECTURE.md`](@llm/docs/context/BACKEND_ARCHITECTURE.md) — Background Tokio collector loops, projection builds, and WAL connection helpers.
+  - [`@llm/docs/context/SESSION_HANDOFF_2026-10-11.md`](@llm/docs/context/SESSION_HANDOFF_2026-10-11.md) — Details on collector pacing, worker pools, and database contention resolution.
+- **Agent Code**:
+  - [`src-tauri/src/agent/mod.rs`](src-tauri/src/agent/mod.rs) — SQLite repository implementations, `AdaptiveRateLimiter`, and crawler worker loop.
+  - [`src-tauri/src/agent/README.llm.txt`](src-tauri/src/agent/README.llm.txt) — High-level agent and collection flow.
+

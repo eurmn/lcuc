@@ -41,10 +41,15 @@
     return date.toLocaleDateString(undefined, { month: "2-digit", day: "2-digit", year: "numeric" });
   }
 
-  function formatMap(mapId: number): string {
+  function formatMap(mapId: number, mapName?: string | null): string {
+    if (mapName && mapName.trim().length > 0) return mapName;
     if (mapId === 11) return "Summoner's Rift";
     if (mapId === 12) return "Howling Abyss";
+    if (mapId === 14) return "Butcher's Bridge";
+    if (mapId === 21) return "Nexus Blitz";
     if (mapId === 30) return "Koeshin's Crossing";
+    if (mapId === 33) return "Final City";
+    if (mapId === 35) return "The Bandlewood";
     return "League of Legends";
   }
 
@@ -269,8 +274,8 @@
 
           <div class="relative z-10 flex items-center justify-center gap-3 text-center text-xs text-gray-400">
             <div>
-              <div class="mt-0.5 text-sm text-gray-200">{formatMap(match.map_id)}</div>
-              <div class="mt-0.5">{formatDuration(match.game_duration_secs)} <span class="mx-1 text-gray-600">•</span> {formatDate(match.game_creation_date)}</div>
+              <div class="mt-0.5 text-sm text-gray-200">{formatMap(match.map_id, match.map_name)}</div>
+              <div class="mt-0.5">{formatDuration(match.game_duration_secs)} <span class="mx-1 text-gray-600">•</span> {formatDate(match.game_creation_date)}{#if match.patch} <span class="mx-1 text-gray-600">•</span> <span class="text-gray-500">v{match.patch}</span>{/if}</div>
               {#if match.augments?.length}
                 <div class="mt-1.5 flex items-center justify-center gap-1.5" title="Augments">
                   {#each match.augments as augment, augIndex (augment.id)}

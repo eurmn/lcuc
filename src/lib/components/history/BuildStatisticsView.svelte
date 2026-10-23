@@ -3,10 +3,12 @@
   import { getCachedStatistics, requestStatistics, type StatisticsKind, type StatisticsScope } from "../../utils/statistics-data";
   import type { ServerStatisticRow } from "../../api/agent";
   import { parseGameDescription } from "../../utils/gameDescription";
-  import GameEntityPopover from "../common/GameEntityPopover.svelte";
+  import * as dom from "@floating-ui/dom";
+  import { createPopoverMiddlewares } from "../../utils/popoverPlacement";
   import AugmentIcon from "../common/AugmentIcon.svelte";
 
-  let { scope = "personal", hideLowPickrate = false }: { scope?: StatisticsScope; hideLowPickrate?: boolean } = $props();
+  let { scope = "personal", hideLowPickrate = false, refreshKey = 0 }: { scope?: StatisticsScope; hideLowPickrate?: boolean; refreshKey?: number } = $props();
+  let lastRefreshKey = 0;
   let kind = $state<StatisticsKind>("item");
   let rows = $state<ServerStatisticRow[]>([]);
   let selectedId = $state<string | null>(null);
@@ -14,8 +16,10 @@
   let debouncedSearch = $state("");
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
   type SortKey = "name" | "games" | "pickRate" | "winRate" | "personalWinRate" | "globalWinRate" | "wpa" | "personalWpa" | "globalWpa" | "kda" | "rarity" | "champWpa";
-  let sortKey = $state<SortKey>("wpa");
-  let sortDescending = $state(true);
+  const cachedSortKey = localStorage.getItem("lcu-builds-sort-key") as SortKey | null;
+  const cachedSortDesc = localStorage.getItem("lcu-builds-sort-desc");
+  let sortKey = $state<SortKey>(cachedSortKey ?? "globalWpa");
+  let sortDescending = $state(cachedSortDesc !== null ? cachedSortDesc === "true" : true);
   let loading = $state(true);
   let refreshing = $state(false);
   let error = $state<string | null>(null);
@@ -44,10 +48,11 @@
   }
 
   function query() {
-    const effectiveSortKey = scope === "compare"
+    const effectiveScope = kind === "combo" && scope === "personal" ? "global" : (scope ?? "personal");
+    const effectiveSortKey = effectiveScope === "compare"
       ? sortKey === "winRate" ? "personalWinRate" : sortKey === "wpa" ? "personalWpa" : sortKey
       : sortKey === "personalWinRate" || sortKey === "globalWinRate" ? "winRate" : sortKey === "personalWpa" || sortKey === "globalWpa" ? "wpa" : sortKey;
-    return { scope: scope ?? "personal", kind, search: debouncedSearch, hide_low_pickrate: hideLowPickrate, sort_key: effectiveSortKey, descending: sortDescending, limit: 100 };
+    return { scope: effectiveScope, kind, search: debouncedSearch, hide_low_pickrate: hideLowPickrate, sort_key: effectiveSortKey, descending: sortDescending, limit: 100 };
   }
 
   async function load(force = false) {
@@ -82,14 +87,6 @@
     if (lower.includes("gold")) return "text-[#e3c49f]";
     if (lower.includes("silver")) return "text-[#a3b9bd]";
     return "text-gray-200";
-  }
-
-  function getAugmentIconBorder(r?: string) {
-    const lower = (r ?? "").toLowerCase();
-    if (lower.includes("prismatic")) return "border-[#e78fff]/80 ring-1 ring-[#e78fff]/40";
-    if (lower.includes("gold")) return "border-[#e3c49f]";
-    if (lower.includes("silver")) return "border-[#a3b9bd]";
-    return "border-gray-700";
   }
 
   function getTopChampions(row: ServerStatisticRow, count = 3): ServerStatisticRow["champions"] {
@@ -133,6 +130,14 @@
           return true;
         }
 
+        // 3. Search query matching across row name and components
+        if (debouncedSearch) {
+          const q = debouncedSearch.toLowerCase();
+          const matchesName = row.name.toLowerCase().includes(q);
+          const matchesComponent = row.components?.some((c) => c.name.toLowerCase().includes(q));
+          if (!matchesName && !matchesComponent) return false;
+        }
+
         return true;
       })
       .sort((a, b) => {
@@ -153,6 +158,8 @@
   function setSort(key: typeof sortKey) {
     if (sortKey === key) sortDescending = !sortDescending;
     else { sortKey = key; sortDescending = key !== "name"; }
+    localStorage.setItem("lcu-builds-sort-key", sortKey);
+    localStorage.setItem("lcu-builds-sort-desc", String(sortDescending));
     void load();
   }
   function percent(value: number) { return `${Math.round(value * 100)}%`; }
@@ -203,8 +210,53 @@
       });
   }
 
-  function cleanDomId(id: string | number): string {
-    return `dom-${String(id).replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+  interface ActiveHoverEntity {
+    name: string;
+    iconUrl?: string;
+    description?: string;
+    rarity?: string;
+    itemClass?: string;
+    priceTotal?: number;
+    categories?: string[];
+  }
+
+  let activeHover = $state<ActiveHoverEntity | null>(null);
+  let popoverPos = $state<{ x: number; y: number }>({ x: 0, y: 0 });
+  let popoverEl: HTMLElement | null = $state(null);
+  let hoverTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function triggerHover(e: MouseEvent, entity: ActiveHoverEntity, placement: "top" | "bottom" = "top") {
+    if (hoverTimer) clearTimeout(hoverTimer);
+    const target = e.currentTarget as HTMLElement;
+    hoverTimer = setTimeout(async () => {
+      activeHover = entity;
+      await new Promise((r) => requestAnimationFrame(r));
+      if (popoverEl && target) {
+        const middlewares = createPopoverMiddlewares(placement, 8, 12);
+        const { x, y } = await dom.computePosition(target, popoverEl, {
+          placement,
+          middleware: middlewares,
+        });
+        popoverPos = { x, y };
+      }
+    }, 180);
+  }
+
+  function clearHover() {
+    if (hoverTimer) clearTimeout(hoverTimer);
+    activeHover = null;
+  }
+
+  let displayLimit = $state(35);
+  const renderedRows = $derived(visibleRows.slice(0, displayLimit));
+
+  function handleTableScroll(e: UIEvent) {
+    const el = e.currentTarget as HTMLElement;
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 100) {
+      if (displayLimit < visibleRows.length) {
+        displayLimit = Math.min(displayLimit + 35, visibleRows.length);
+      }
+    }
   }
 
   $effect(() => {
@@ -212,8 +264,17 @@
     void kind;
     void debouncedSearch;
     void hideLowPickrate;
+    void augmentTier;
+    void showStarters;
+    void showComponents;
+    void showBoots;
+    void sortKey;
+    const forceRefresh = refreshKey !== lastRefreshKey;
+    lastRefreshKey = refreshKey;
+    displayLimit = 35;
+    clearHover();
     untrack(() => {
-      void load();
+      void load(forceRefresh);
     });
   });
 </script>
@@ -238,7 +299,34 @@
             <div class="w-full lg:w-[calc(33.333%-4rem)] shrink-0 flex flex-col justify-between rounded-lg border border-gray-800/80 bg-gray-950/60 p-2.5">
               <div>
                 <div class="flex items-start gap-2.5 min-w-0">
-                  {#if selected.icon_url}
+                  {#if kind === "combo" && selected.components && selected.components.length > 0}
+                    <div class="flex items-center gap-1.5 shrink-0 p-1.5 bg-gray-900 rounded-lg border border-gray-800">
+                      {#each selected.components as comp, cIdx}
+                        {#if cIdx > 0}
+                          <span class="text-gray-500 text-xs font-bold select-none">+</span>
+                        {/if}
+                        {#if comp.kind === "champion"}
+                          {#if comp.icon_url}
+                            <img src={comp.icon_url} alt={comp.name} class="h-8 w-8 rounded-full object-cover border border-cyan-700/60" />
+                          {:else}
+                            <div class="h-8 w-8 rounded-full bg-cyan-950 border border-cyan-700 flex items-center justify-center text-[10px] font-bold text-cyan-300">
+                              {comp.name.slice(0, 1)}
+                            </div>
+                          {/if}
+                        {:else if comp.kind === "augment"}
+                          <AugmentIcon src={comp.icon_url} name={comp.name} rarity={comp.rarity} class="h-8 w-8" />
+                        {:else}
+                          {#if comp.icon_url}
+                            <img src={comp.icon_url} alt={comp.name} class="h-8 w-8 rounded-md object-cover border border-gray-700" />
+                          {:else}
+                            <div class="h-8 w-8 rounded-md bg-gray-800 border border-gray-700 flex items-center justify-center text-[10px] font-bold text-gray-300">
+                              {comp.name.slice(0, 1)}
+                            </div>
+                          {/if}
+                        {/if}
+                      {/each}
+                    </div>
+                  {:else if selected.icon_url}
                     {#if kind === "augment" || selected.rarity}
                       <AugmentIcon src={selected.icon_url} name={selected.name} rarity={selected.rarity} class="h-10 w-10" roundedClass="rounded-lg" />
                     {:else}
@@ -267,7 +355,22 @@
                 </div>
 
                 <!-- Description directly inside the card (no nested box/container) -->
-                {#if selected.description}
+                {#if kind === "combo" && selected.components}
+                  <div class="mt-2 text-xs text-gray-300 space-y-1.5 max-h-[125px] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-800 select-text">
+                    {#each selected.components as comp}
+                      <div class="flex items-center gap-2">
+                        <span class="text-[9px] uppercase font-bold text-gray-400 bg-gray-800/80 px-1 py-0.5 rounded border border-gray-700/60 shrink-0">{comp.kind}</span>
+                        <span class="font-medium text-gray-200 truncate">{comp.name}</span>
+                        {#if comp.rarity}
+                          <span class="text-[9px] font-bold uppercase tracking-wider {getAugmentTitleColor(comp.rarity)}">({comp.rarity})</span>
+                        {/if}
+                        {#if comp.price_total}
+                          <span class="text-[10px] font-semibold text-yellow-400">({comp.price_total}g)</span>
+                        {/if}
+                      </div>
+                    {/each}
+                  </div>
+                {:else if selected.description}
                   <div class="mt-2 text-xs leading-relaxed text-gray-300 max-h-[125px] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-800 select-text">
                     {@html parseGameDescription(selected.description)}
                   </div>
@@ -351,8 +454,11 @@
                   </h4>
                   <div class="space-y-1.5 overflow-y-auto max-h-[180px] scrollbar-thin scrollbar-thumb-gray-800 pr-0 flex-1">
                     {#each pairedItems.slice(0, 5) as partner (partner.id)}
-                      {@const pDomId = cleanDomId(`item-${partner.id}`)}
-                      <div id={pDomId} class="flex items-center gap-2 p-1 rounded-md hover:bg-gray-800/50 transition-colors cursor-help">
+                      <div
+                        class="flex items-center gap-2 p-1 rounded-md hover:bg-gray-800/50 transition-colors cursor-help"
+                        onmouseenter={(e) => triggerHover(e, { name: partner.name, iconUrl: partner.icon_url, description: partner.description, itemClass: partner.item_class, priceTotal: partner.price_total }, "bottom")}
+                        onmouseleave={clearHover}
+                      >
                         {#if partner.icon_url}
                           <img src={partner.icon_url} alt={partner.name} class="h-7 w-7 shrink-0 rounded-md object-cover border border-gray-700 shadow-sm" />
                         {:else}
@@ -373,15 +479,6 @@
                           </p>
                         </div>
                       </div>
-                      <GameEntityPopover
-                        targetId={pDomId}
-                        name={partner.name}
-                        iconUrl={partner.icon_url}
-                        description={partner.description}
-                        itemClass={partner.item_class}
-                        priceTotal={partner.price_total}
-                        placement="bottom"
-                      />
                     {:else}
                       <span class="text-gray-600 text-[11px] italic py-2">No item matches</span>
                     {/each}
@@ -395,8 +492,11 @@
                   </h4>
                   <div class="space-y-1.5 overflow-y-auto max-h-[180px] scrollbar-thin scrollbar-thumb-gray-800 pr-0 flex-1">
                     {#each pairedAugments.slice(0, 5) as partner (partner.id)}
-                      {@const pDomId = cleanDomId(`aug-${partner.id}`)}
-                      <div id={pDomId} class="flex items-center gap-2 p-1 rounded-md hover:bg-gray-800/50 transition-colors cursor-help">
+                      <div
+                        class="flex items-center gap-2 p-1 rounded-md hover:bg-gray-800/50 transition-colors cursor-help"
+                        onmouseenter={(e) => triggerHover(e, { name: partner.name, iconUrl: partner.icon_url, description: partner.description, rarity: partner.rarity }, "bottom")}
+                        onmouseleave={clearHover}
+                      >
                         <AugmentIcon src={partner.icon_url} name={partner.name} rarity={partner.rarity} class="h-7 w-7" />
                         <div class="min-w-0 flex-1">
                           <p class="truncate font-medium text-xs {getAugmentTitleColor(partner.rarity)}" title={partner.name}>{partner.name}</p>
@@ -411,14 +511,6 @@
                           </p>
                         </div>
                       </div>
-                      <GameEntityPopover
-                        targetId={pDomId}
-                        name={partner.name}
-                        iconUrl={partner.icon_url}
-                        description={partner.description}
-                        rarity={partner.rarity}
-                        placement="bottom"
-                      />
                     {:else}
                       <span class="text-gray-600 text-[11px] italic py-2">No augment matches</span>
                     {/each}
@@ -431,7 +523,7 @@
       {/if}
 
       <!-- Main Table Section (Spanning 100% Width) -->
-      <section class="min-h-0 flex-1 overflow-auto rounded-lg border border-gray-800 bg-black/40 scrollbar-thin scrollbar-thumb-gray-800">
+      <section onscroll={handleTableScroll} class="min-h-0 flex-1 overflow-auto rounded-lg border border-gray-800 bg-black/40 scrollbar-thin scrollbar-thumb-gray-800">
         <div class="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-2 border-b border-gray-800 bg-gray-900 px-3 py-2">
           <div>
             <h2 class="text-sm font-semibold text-white">Build performance</h2>
@@ -549,23 +641,65 @@
             </tr>
           </thead>
           <tbody class="divide-y divide-gray-800">
-            {#each visibleRows as row (row.id)}
+            {#each renderedRows as row (row.id)}
               {@const localWpa = scope === "compare" ? row.personal_wpa ?? 0 : row.wpa}
               {@const globalWpa = row.global_wpa ?? row.wpa}
-              {@const domId = cleanDomId(row.id)}
               {@const topChamps = getTopChampions(row, 3)}
               <tr
-                id={domId}
                 class="cursor-pointer hover:bg-gray-800/60 {selected?.id === row.id ? 'bg-purple-950/40' : ''}"
                 onclick={() => (selectedId = selectedId === row.id ? null : row.id)}
               >
-                <td id={`${domId}-cell`} class="flex max-w-[340px] items-center gap-2 px-3 py-2">
-                  {#if kind === "augment" || row.rarity}
+                <td
+                  class="flex max-w-[380px] items-center gap-2 px-3 py-2 cursor-help"
+                  onmouseenter={(e) => {
+                    if (kind !== "combo") {
+                      triggerHover(e, { name: row.name, iconUrl: row.icon_url, description: row.description, rarity: row.rarity, itemClass: row.item_class, priceTotal: row.price_total, categories: row.categories }, "top");
+                    }
+                  }}
+                  onmouseleave={clearHover}
+                >
+                  {#if kind === "combo" && row.components && row.components.length > 0}
+                    <div class="flex items-center gap-1.5 shrink-0 flex-wrap">
+                      {#each row.components as comp, cIdx}
+                        {#if cIdx > 0}
+                          <span class="text-gray-500 text-xs font-bold select-none">+</span>
+                        {/if}
+                        <div
+                          class="relative shrink-0 cursor-help"
+                          onmouseenter={(e) => triggerHover(e, { name: comp.name, iconUrl: comp.icon_url, description: comp.description, rarity: comp.rarity, itemClass: comp.item_class, priceTotal: comp.price_total, categories: comp.categories }, "top")}
+                          onmouseleave={clearHover}
+                        >
+                          {#if comp.kind === "champion"}
+                            {#if comp.icon_url}
+                              <img src={comp.icon_url} alt={comp.name} class="h-7 w-7 rounded-full object-cover border border-cyan-700/60 shadow-sm" />
+                            {:else}
+                              <div class="h-7 w-7 rounded-full bg-cyan-950 border border-cyan-700 flex items-center justify-center text-[10px] font-bold text-cyan-300">
+                                {comp.name.slice(0, 1)}
+                              </div>
+                            {/if}
+                          {:else if comp.kind === "augment"}
+                            <AugmentIcon src={comp.icon_url} name={comp.name} rarity={comp.rarity} class="h-7 w-7" />
+                          {:else}
+                            {#if comp.icon_url}
+                              <img src={comp.icon_url} alt={comp.name} class="h-7 w-7 rounded-md object-cover border border-gray-700 shadow-sm" />
+                            {:else}
+                              <div class="h-7 w-7 rounded-md bg-gray-800 border border-gray-700 flex items-center justify-center text-[10px] font-bold text-gray-300">
+                                {comp.name.slice(0, 1)}
+                              </div>
+                            {/if}
+                          {/if}
+                        </div>
+                      {/each}
+                    </div>
+                  {:else if kind === "augment" || row.rarity}
                     <AugmentIcon src={row.icon_url} name={row.name} rarity={row.rarity} class="h-7 w-7" />
+                    <span class="truncate font-medium {kind === 'augment' && row.rarity ? getAugmentTitleColor(row.rarity) : 'text-gray-200'}">{row.name}</span>
                   {:else if row.icon_url}
                     <img src={row.icon_url} alt={row.name} class="h-7 w-7 rounded object-cover shrink-0 border border-gray-800" />
+                    <span class="truncate font-medium text-gray-200">{row.name}</span>
+                  {:else}
+                    <span class="truncate font-medium text-gray-200">{row.name}</span>
                   {/if}
-                  <span class="truncate font-medium {kind === 'augment' && row.rarity ? getAugmentTitleColor(row.rarity) : 'text-gray-200'}">{row.name}</span>
                 </td>
                 {#if kind === "augment"}
                   <td class="px-3 py-2">
@@ -583,10 +717,10 @@
                 <td class="px-3 py-2">
                   {#if topChamps.length > 0}
                     <div class="flex items-center gap-2">
-                      <div class="flex items-center -space-x-2.5 hover:space-x-0.5 transition-all duration-200 py-0.5">
+                      <div class="flex items-center -space-x-2.5 py-0.5">
                         {#each topChamps as champ, i (champ.id)}
                           <div
-                            class="relative rounded-full transition-transform hover:scale-125 hover:z-30 cursor-pointer"
+                            class="relative rounded-full cursor-default"
                             style="z-index: {10 + i};"
                             title={`${champ.name}: ${champ.wpa >= 0 ? '+' : ''}${(champ.wpa * 100).toFixed(1)}% WPA (${champ.games} games, ${percent(champ.win_rate)} WR)`}
                           >
@@ -626,22 +760,78 @@
                 {/if}
                 <td class="px-3 py-2 text-right text-gray-400">{averageKda(row).toFixed(2)}</td>
               </tr>
-              <GameEntityPopover
-                targetId={domId}
-                reference={`#${domId}-cell`}
-                name={row.name}
-                iconUrl={row.icon_url}
-                description={row.description}
-                rarity={row.rarity}
-                itemClass={row.item_class}
-                priceTotal={row.price_total}
-                categories={row.categories}
-                placement="right"
-              />
             {/each}
+            {#if visibleRows.length > displayLimit}
+              <tr class="border-t border-gray-800">
+                <td colspan={kind === "augment" ? (scope === "compare" ? 10 : 8) : (scope === "compare" ? 9 : 7)} class="py-2.5 text-center">
+                  <button
+                    type="button"
+                    class="text-xs text-purple-400 hover:text-purple-300 font-medium px-4 py-1.5 rounded-md bg-purple-950/40 hover:bg-purple-900/40 border border-purple-800/40 transition-colors"
+                    onclick={() => (displayLimit = Math.min(displayLimit + 35, visibleRows.length))}
+                  >
+                    Show more ({displayLimit} of {visibleRows.length})
+                  </button>
+                </td>
+              </tr>
+            {/if}
           </tbody>
         </table>
       </section>
+    </div>
+  {/if}
+
+  {#if activeHover && (activeHover.description || activeHover.name)}
+    {@const normRarity = (activeHover.rarity ?? "").toLowerCase()}
+    <div
+      bind:this={popoverEl}
+      style="position: fixed; left: {popoverPos.x}px; top: {popoverPos.y}px;"
+      class="overflow-hidden z-50 w-80 max-w-[90vw] rounded-xl border {normRarity === 'prismatic' ? 'border-[#e78fff]/60 shadow-[0_0_16px_rgba(231,143,255,0.25)]' : normRarity === 'gold' ? 'border-[#e3c49f]/60 shadow-[0_0_16px_rgba(227,196,159,0.2)]' : normRarity === 'silver' ? 'border-[#a3b9bd]/60 shadow-[0_0_16px_rgba(163,185,189,0.15)]' : 'border-gray-700 shadow-2xl'} bg-gray-900/95 backdrop-blur-md p-3 text-gray-200 text-xs font-sans pointer-events-none transition-opacity duration-150"
+    >
+      <div class="flex items-center gap-2.5 pb-2.5 border-b border-gray-800">
+        {#if activeHover.iconUrl}
+          {#if activeHover.rarity}
+            <AugmentIcon src={activeHover.iconUrl} name={activeHover.name} rarity={activeHover.rarity} class="h-10 w-10" roundedClass="rounded-lg" />
+          {:else}
+            <div class="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-lg overflow-hidden bg-gray-950 border border-gray-700">
+              <img src={activeHover.iconUrl} alt={activeHover.name} class="h-full w-full object-cover" />
+            </div>
+          {/if}
+        {/if}
+        <div class="min-w-0 flex-1">
+          <div class="flex items-center justify-between gap-1.5">
+            <h3 class="font-bold text-sm tracking-wide truncate {normRarity === 'prismatic' ? 'text-[#f2c2ff]' : normRarity === 'gold' ? 'text-[#e3c49f]' : normRarity === 'silver' ? 'text-[#a3b9bd]' : 'text-white'}">
+              {activeHover.name}
+            </h3>
+            {#if activeHover.rarity}
+              <span class="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider {normRarity === 'silver' ? 'bg-[#a3b9bd]/15 text-[#a3b9bd] border border-[#a3b9bd]/40' : normRarity === 'gold' ? 'bg-[#e3c49f]/15 text-[#e3c49f] border border-[#e3c49f]/40' : 'bg-[#70008f]/30 text-[#f2c2ff] border border-[#e78fff]/50'}">
+                {activeHover.rarity}
+              </span>
+            {/if}
+          </div>
+          <div class="flex flex-wrap items-center gap-2 mt-0.5 text-[11px] text-gray-400">
+            {#if (activeHover.priceTotal ?? 0) > 0}
+              <span class="inline-flex items-center gap-1 font-semibold text-yellow-400">
+                <img src="https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/assets/ux/fonts/texticons/lol/gameplay/goldcoins.png" alt="gold" class="h-3 w-3 object-contain inline" />
+                {(activeHover.priceTotal ?? 0).toLocaleString()}g
+              </span>
+            {/if}
+            {#if activeHover.itemClass}
+              <span class="capitalize text-gray-400">{activeHover.itemClass}</span>
+            {/if}
+            {#if activeHover.categories && activeHover.categories.length > 0}
+              <span class="text-gray-500 truncate">{activeHover.categories.slice(0, 3).join(", ")}</span>
+            {/if}
+          </div>
+        </div>
+      </div>
+
+      {#if activeHover.description}
+        <div class="mt-2 text-xs text-gray-300 leading-relaxed select-text space-y-1">
+          {@html parseGameDescription(activeHover.description)}
+        </div>
+      {:else}
+        <p class="mt-2 text-xs text-gray-500 italic">No description available.</p>
+      {/if}
     </div>
   {/if}
 </div>

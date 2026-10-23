@@ -35,6 +35,8 @@ export interface MatchHistoryItem {
   damage_dealt_to_champions: number | null;
   augments: MatchHistoryAugmentInfo[];
   map_id: number;
+  map_name?: string | null;
+  patch?: string | null;
 }
 
 export interface BuildStatisticChampion {
@@ -50,11 +52,25 @@ export interface BuildStatisticChampion {
   gold: number;
 }
 
+export interface ComboComponentDto {
+  kind: "champion" | "item" | "augment";
+  id: string | number;
+  name: string;
+  icon_url: string;
+  rarity?: string;
+  item_class?: string;
+  description?: string;
+  price_total?: number;
+  categories?: string[];
+}
+
 export interface BuildStatisticEntry {
   id: string;
   name: string;
   icon_url: string;
   kind: "item" | "augment" | "combo";
+  components?: ComboComponentDto[];
+  raw_win_rate?: number;
   games: number;
   wins: number;
   kills: number;

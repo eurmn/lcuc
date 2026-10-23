@@ -50,7 +50,7 @@
     transitionParams={{ duration: 150 }}
     {placement}
     arrow
-    class="z-50 w-80 max-w-[90vw] rounded-xl border {normRarity === 'prismatic' ? 'border-[#e78fff]/60 shadow-[0_0_16px_rgba(231,143,255,0.25)]' : normRarity === 'gold' ? 'border-[#e3c49f]/60 shadow-[0_0_16px_rgba(227,196,159,0.2)]' : normRarity === 'silver' ? 'border-[#a3b9bd]/60 shadow-[0_0_16px_rgba(163,185,189,0.15)]' : 'border-gray-700 shadow-2xl'} bg-gray-900/95 backdrop-blur-md p-3 text-gray-200 text-xs font-sans pointer-events-none"
+    class="overflow-hidden z-50 w-80 max-w-[90vw] rounded-xl border {normRarity === 'prismatic' ? 'border-[#e78fff]/60 shadow-[0_0_16px_rgba(231,143,255,0.25)]' : normRarity === 'gold' ? 'border-[#e3c49f]/60 shadow-[0_0_16px_rgba(227,196,159,0.2)]' : normRarity === 'silver' ? 'border-[#a3b9bd]/60 shadow-[0_0_16px_rgba(163,185,189,0.15)]' : 'border-gray-700 shadow-2xl'} bg-gray-900/95 backdrop-blur-md p-3 text-gray-200 text-xs font-sans pointer-events-none"
     defaultClass=""
   >
     <!-- Header: Icon, Title, Badge, Gold -->

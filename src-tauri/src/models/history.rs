@@ -45,4 +45,8 @@ pub struct MatchHistoryItem {
     #[serde(default)]
     pub augments: Vec<MatchHistoryAugmentInfo>,
     pub map_id: u16,
+    #[serde(default)]
+    pub map_name: Option<String>,
+    #[serde(default)]
+    pub patch: Option<String>,
 }

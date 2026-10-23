@@ -6,6 +6,48 @@ export type { StatisticsKind, StatisticsScope };
 
 const cache = new Map<string, ServerStatisticsResponse>();
 const requests = new Map<string, Promise<ServerStatisticsResponse>>();
+const PATCH_STORAGE_KEY = "lcu-cached-patch";
+
+export function clearStatisticsCache() {
+  cache.clear();
+  try {
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith("lcu-server-statistics:")) {
+        keysToRemove.push(k);
+      }
+    }
+    for (const k of keysToRemove) {
+      localStorage.removeItem(k);
+    }
+  } catch {
+    // Ignore storage access errors
+  }
+}
+
+export function syncStatisticsCachePatch(patch: string | null | undefined): boolean {
+  if (!patch) return false;
+  try {
+    const previous = localStorage.getItem(PATCH_STORAGE_KEY);
+    if (previous && previous !== patch) {
+      logger.info(
+        "frontend.statistics",
+        `Detected patch update (${previous} -> ${patch}); invalidating frontend caches`,
+      );
+      clearStatisticsCache();
+      localStorage.removeItem("lcu-match-history");
+      localStorage.setItem(PATCH_STORAGE_KEY, patch);
+      return true;
+    }
+    if (!previous) {
+      localStorage.setItem(PATCH_STORAGE_KEY, patch);
+    }
+  } catch {
+    // Ignore storage errors
+  }
+  return false;
+}
 
 function isPoroSnax(row: ServerStatisticsResponse["rows"][number]) {
   return row.name.toLowerCase().includes("poro-snax") || row.id === "item:2050" || row.id === "item:2052";
@@ -13,7 +55,7 @@ function isPoroSnax(row: ServerStatisticsResponse["rows"][number]) {
 
 function key(query: ServerStatisticsQuery) {
   return JSON.stringify({
-    version: 4,
+    version: 5,
     scope: query.scope,
     kind: query.kind,
     search: query.search ?? "",
