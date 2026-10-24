@@ -55,7 +55,7 @@ function isPoroSnax(row: ServerStatisticsResponse["rows"][number]) {
 
 function key(query: ServerStatisticsQuery) {
   return JSON.stringify({
-    version: 5,
+    version: 6,
     scope: query.scope,
     kind: query.kind,
     search: query.search ?? "",

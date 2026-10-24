@@ -21,8 +21,94 @@ pub async fn api_statistics(
     query: serde_json::Value,
     supervisor: tauri::State<'_, AgentSupervisor>,
 ) -> Result<serde_json::Value, String> {
-    let response = supervisor.request_with_args("statistics", query).await?;
-    enrich_statistics_response(response).await
+    let search = query
+        .get("search")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    let sort_key = query
+        .get("sort_key")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("wpa");
+    let descending = query
+        .get("descending")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    let limit = query
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(100) as usize;
+    let offset = query
+        .get("offset")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0) as usize;
+
+    let mut agent_query = query.clone();
+    if let Some(obj) = agent_query.as_object_mut() {
+        obj.insert("search".to_string(), serde_json::Value::String(String::new()));
+        obj.insert("offset".to_string(), serde_json::Value::from(0));
+        obj.insert("limit".to_string(), serde_json::Value::from(10000));
+    }
+
+    let response = supervisor.request_with_args("statistics", agent_query).await?;
+    let mut enriched = enrich_statistics_response(response).await?;
+
+    if let Some(rows) = enriched.get_mut("rows").and_then(serde_json::Value::as_array_mut) {
+        if !search.is_empty() {
+            rows.retain(|row| {
+                let matches_name = row
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_ascii_lowercase()
+                    .contains(&search);
+                let matches_comp = row
+                    .get("components")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|comps| {
+                        comps.iter().any(|c| {
+                            c.get("name")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("")
+                                .to_ascii_lowercase()
+                                .contains(&search)
+                        })
+                    });
+                matches_name || matches_comp
+            });
+        }
+        if sort_key == "name" {
+            rows.sort_by(|left, right| {
+                let left_name = left
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                let right_name = right
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                let ord = left_name
+                    .to_ascii_lowercase()
+                    .cmp(&right_name.to_ascii_lowercase());
+                if descending {
+                    ord.reverse()
+                } else {
+                    ord
+                }
+            });
+        }
+        let total = rows.len();
+        let paged: Vec<serde_json::Value> = rows.drain(..).skip(offset).take(limit).collect();
+        *rows = paged;
+        if let Some(obj) = enriched.as_object_mut() {
+            obj.insert("total".to_string(), serde_json::Value::from(total));
+            obj.insert("offset".to_string(), serde_json::Value::from(offset));
+            obj.insert("limit".to_string(), serde_json::Value::from(limit));
+        }
+    }
+
+    Ok(enriched)
 }
 
 #[tauri::command]

@@ -42,7 +42,7 @@
     const effectiveSortKey = scope === "compare"
       ? sortKey === "winRate" ? "personalWinRate" : sortKey === "wpa" ? "personalWpa" : sortKey
       : sortKey === "personalWinRate" || sortKey === "globalWinRate" ? "winRate" : sortKey === "personalWpa" || sortKey === "globalWpa" ? "wpa" : sortKey;
-    return { scope: scope ?? "personal", kind: "champion" as const, search: debouncedSearch, hide_low_pickrate: hideLowPickrate, sort_key: effectiveSortKey, descending: sortDescending, limit: 100 };
+    return { scope: scope ?? "personal", kind: "champion" as const, hide_low_pickrate: hideLowPickrate, sort_key: effectiveSortKey, descending: sortDescending, limit: 1000 };
   }
 
   async function load(force = false) {
@@ -74,8 +74,12 @@
     }
   }
 
-  const visibleRows = $derived(rows);
-  const selected = $derived(rows.find((row) => row.id === selectedId) ?? visibleRows[0] ?? null);
+  const visibleRows = $derived.by(() => {
+    const q = debouncedSearch.trim().toLowerCase();
+    if (!q) return rows;
+    return rows.filter((row) => row.name.toLowerCase().includes(q));
+  });
+  const selected = $derived(visibleRows.find((row) => row.id === selectedId) ?? visibleRows[0] ?? null);
 
   function setSort(key: SortKey) {
     if (sortKey === key) sortDescending = !sortDescending;
@@ -119,7 +123,6 @@
 
   $effect(() => {
     void scope;
-    void debouncedSearch;
     void hideLowPickrate;
     const forceRefresh = refreshKey !== lastRefreshKey;
     lastRefreshKey = refreshKey;
@@ -182,7 +185,7 @@
           <input value={search} oninput={handleSearchInput} type="search" placeholder="Search champions..." class="w-40 rounded-md border border-gray-700 bg-gray-950 px-2 py-1.5 text-[11px] text-gray-100 outline-none placeholder:text-gray-600 focus:border-purple-500" />
         </div>
         <table class="w-full text-left text-xs">
-          <thead class="sticky top-[41px] bg-gray-900 text-xs uppercase tracking-wider text-gray-400"><tr>
+          <thead class="sticky top-[41px] z-10 bg-gray-900 text-xs uppercase tracking-wider text-gray-400"><tr>
             <th class="cursor-pointer px-3 py-2" onclick={() => setSort("name")}>Champion {sortIndicator("name")}</th>
             <th class="cursor-pointer px-3 py-2 text-right" onclick={() => setSort("games")}>Games {sortIndicator("games")}</th>
             <th class="cursor-pointer px-3 py-2 text-right" onclick={() => setSort("pickRate")}>Pick rate {sortIndicator("pickRate")}</th>
@@ -201,6 +204,8 @@
                 <td class="flex items-center gap-2 px-3 py-2">{#if row.icon_url}<img src={row.icon_url} alt={row.name} class="h-7 w-7 rounded-full object-cover" />{/if}<span>{row.name}</span></td>
                 <td class="px-3 py-2 text-right">{scope === "compare" ? `${row.personal_games ?? 0}/${row.global_observed ? row.global_games ?? row.games : "—"}` : row.games}</td><td class="px-3 py-2 text-right">{percent(row.pick_rate)}</td><td class="px-3 py-2 text-right">{scope === "compare" ? (row.personal_games ? percent(row.personal_win_rate ?? 0) : "—") : percent(row.win_rate)}</td>{#if scope === "compare"}<td class="px-3 py-2 text-right">{row.global_observed ? percent(row.global_win_rate ?? row.win_rate) : "—"}</td>{/if}<td class="px-3 py-2 text-right {localWpa >= 0 ? 'text-emerald-300' : 'text-red-300'}">{scope === "compare" && !row.personal_games ? "—" : formatWpaPoints(localWpa)}</td>{#if scope === "compare"}<td class="px-3 py-2 text-right {globalWpa >= 0 ? 'text-emerald-300' : 'text-red-300'}">{row.global_observed ? formatWpaPoints(globalWpa) : "—"}</td>{/if}<td class="px-3 py-2 text-right">{averageKda(row).toFixed(2)}</td><td class="px-3 py-2 text-right">{row.damage_per_minute ? Math.round(row.damage_per_minute) : "—"}</td>
               </tr>
+            {:else}
+              <tr><td colspan={scope === "compare" ? 9 : 7} class="px-3 py-6 text-center text-gray-500">No matching champions found.</td></tr>
             {/each}
           </tbody>
         </table>

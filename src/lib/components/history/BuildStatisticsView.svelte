@@ -52,7 +52,7 @@
     const effectiveSortKey = effectiveScope === "compare"
       ? sortKey === "winRate" ? "personalWinRate" : sortKey === "wpa" ? "personalWpa" : sortKey
       : sortKey === "personalWinRate" || sortKey === "globalWinRate" ? "winRate" : sortKey === "personalWpa" || sortKey === "globalWpa" ? "wpa" : sortKey;
-    return { scope: effectiveScope, kind, search: debouncedSearch, hide_low_pickrate: hideLowPickrate, sort_key: effectiveSortKey, descending: sortDescending, limit: 100 };
+    return { scope: effectiveScope, kind, hide_low_pickrate: hideLowPickrate, sort_key: effectiveSortKey, descending: sortDescending, limit: 1000 };
   }
 
   async function load(force = false) {
@@ -131,8 +131,8 @@
         }
 
         // 3. Search query matching across row name and components
-        if (debouncedSearch) {
-          const q = debouncedSearch.toLowerCase();
+        const q = debouncedSearch.trim().toLowerCase();
+        if (q) {
           const matchesName = row.name.toLowerCase().includes(q);
           const matchesComponent = row.components?.some((c) => c.name.toLowerCase().includes(q));
           if (!matchesName && !matchesComponent) return false;
@@ -262,12 +262,7 @@
   $effect(() => {
     void scope;
     void kind;
-    void debouncedSearch;
     void hideLowPickrate;
-    void augmentTier;
-    void showStarters;
-    void showComponents;
-    void showBoots;
     void sortKey;
     const forceRefresh = refreshKey !== lastRefreshKey;
     lastRefreshKey = refreshKey;
@@ -276,6 +271,16 @@
     untrack(() => {
       void load(forceRefresh);
     });
+  });
+
+  $effect(() => {
+    void debouncedSearch;
+    void augmentTier;
+    void showStarters;
+    void showComponents;
+    void showBoots;
+    displayLimit = 35;
+    clearHover();
   });
 </script>
 
@@ -524,7 +529,7 @@
 
       <!-- Main Table Section (Spanning 100% Width) -->
       <section onscroll={handleTableScroll} class="min-h-0 flex-1 overflow-auto rounded-lg border border-gray-800 bg-black/40 scrollbar-thin scrollbar-thumb-gray-800">
-        <div class="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-2 border-b border-gray-800 bg-gray-900 px-3 py-2">
+        <div class="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-2 border-b border-gray-800 bg-gray-900 px-3 py-2">
           <div>
             <h2 class="text-sm font-semibold text-white">Build performance</h2>
             <p class="text-[11px] text-gray-400">
@@ -618,7 +623,7 @@
           </div>
         </div>
         <table class="w-full text-left text-xs">
-          <thead class="sticky top-[57px] bg-gray-900 text-[10px] uppercase tracking-wider text-gray-500">
+          <thead class="sticky top-[57px] z-20 bg-gray-900 text-[10px] uppercase tracking-wider text-gray-500">
             <tr>
               <th class="cursor-pointer px-3 py-2" onclick={() => setSort("name")}>Build {sortIndicator("name")}</th>
               {#if kind === "augment"}
@@ -717,11 +722,11 @@
                 <td class="px-3 py-2">
                   {#if topChamps.length > 0}
                     <div class="flex items-center gap-2">
-                      <div class="flex items-center -space-x-2.5 py-0.5">
+                      <div class="isolate flex items-center -space-x-2.5 py-0.5">
                         {#each topChamps as champ, i (champ.id)}
                           <div
                             class="relative rounded-full cursor-default"
-                            style="z-index: {10 + i};"
+                            style="z-index: {i};"
                             title={`${champ.name}: ${champ.wpa >= 0 ? '+' : ''}${(champ.wpa * 100).toFixed(1)}% WPA (${champ.games} games, ${percent(champ.win_rate)} WR)`}
                           >
                             {#if champ.icon_url}
@@ -760,6 +765,8 @@
                 {/if}
                 <td class="px-3 py-2 text-right text-gray-400">{averageKda(row).toFixed(2)}</td>
               </tr>
+            {:else}
+              <tr><td colspan={kind === "augment" ? (scope === "compare" ? 10 : 8) : (scope === "compare" ? 9 : 7)} class="px-3 py-6 text-center text-gray-500">No matching builds found.</td></tr>
             {/each}
             {#if visibleRows.length > displayLimit}
               <tr class="border-t border-gray-800">
