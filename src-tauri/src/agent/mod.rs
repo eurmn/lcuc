@@ -42,7 +42,21 @@ fn invalidate_statistics_projections(connection: &Connection) -> Result<(), Stri
     if let Ok(mut cache) = STATISTICS_QUERY_CACHE.lock() {
         cache.clear();
     }
+    if let Ok(mut cache) = PROJECTION_MEMORY_CACHE.lock() {
+        cache.clear();
+    }
+    crate::commands::agent::invalidate_enriched_statistics_cache();
     Ok(())
+}
+
+pub fn invalidate_projection_memory_cache() {
+    if let Ok(mut cache) = STATISTICS_QUERY_CACHE.lock() {
+        cache.clear();
+    }
+    if let Ok(mut cache) = PROJECTION_MEMORY_CACHE.lock() {
+        cache.clear();
+    }
+    crate::commands::agent::invalidate_enriched_statistics_cache();
 }
 
 #[derive(Debug, Deserialize)]
@@ -60,7 +74,7 @@ pub struct AgentResponse {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct RuntimeState {
     pub collector_state: String,
     pub league_client_connected: bool,
@@ -69,6 +83,71 @@ pub struct RuntimeState {
     pub projection_running: bool,
     pub current_patch: Option<String>,
     pub operations: Vec<ProgressOperation>,
+    pub crawler_rate_text: String,
+    pub crawler_mpm: f64,
+    pub crawler_speed_history: std::collections::VecDeque<(std::time::Instant, usize)>,
+}
+
+impl Default for RuntimeState {
+    fn default() -> Self {
+        Self {
+            collector_state: String::new(),
+            league_client_connected: false,
+            queued_jobs: 0,
+            global_collection_running: false,
+            projection_running: false,
+            current_patch: None,
+            operations: Vec::new(),
+            crawler_rate_text: "0.0 match/min".to_string(),
+            crawler_mpm: 0.0,
+            crawler_speed_history: std::collections::VecDeque::new(),
+        }
+    }
+}
+
+impl RuntimeState {
+    pub fn update_crawler_progress(&mut self, current_count: usize, live_limit: usize) {
+        let now = std::time::Instant::now();
+        self.collector_state = format!("global-aram:{current_count}/{live_limit}");
+        if let Some(operation) = self
+            .operations
+            .iter_mut()
+            .find(|op| op.id == "global-database")
+        {
+            operation.current = Some(current_count);
+            operation.total = Some(live_limit);
+            operation.message = "Updating global game database".to_string();
+        }
+
+        self.crawler_speed_history.push_back((now, current_count));
+        let cutoff = now.checked_sub(Duration::from_secs(30)).unwrap_or(now);
+        while let Some(&(time, _)) = self.crawler_speed_history.front() {
+            if time < cutoff && self.crawler_speed_history.len() > 2 {
+                self.crawler_speed_history.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        if self.crawler_speed_history.len() >= 2 {
+            let (oldest_time, oldest_count) = *self.crawler_speed_history.front().unwrap();
+            let (newest_time, newest_count) = *self.crawler_speed_history.back().unwrap();
+            let time_delta = newest_time.duration_since(oldest_time).as_secs_f64();
+            let count_delta = newest_count.saturating_sub(oldest_count);
+            if time_delta >= 1.0 {
+                let rps = count_delta as f64 / time_delta;
+                let mpm = rps * 60.0;
+                self.crawler_mpm = mpm;
+                if rps >= 1.0 {
+                    self.crawler_rate_text = format!("{:.1} match/s", rps);
+                } else if mpm >= 1.0 {
+                    self.crawler_rate_text = format!("{:.1} match/min", mpm);
+                } else {
+                    self.crawler_rate_text = format!("{:.0} match/h", mpm * 60.0);
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -117,6 +196,8 @@ struct ContextAggregate {
 
 lazy_static! {
     static ref STATISTICS_QUERY_CACHE: std::sync::Mutex<HashMap<String, (Instant, Value)>> =
+        std::sync::Mutex::new(HashMap::new());
+    static ref PROJECTION_MEMORY_CACHE: std::sync::Mutex<HashMap<(PathBuf, String), (i64, f64, Vec<Value>)>> =
         std::sync::Mutex::new(HashMap::new());
     static ref COLLECTOR_WAKEUP: tokio::sync::Notify = tokio::sync::Notify::new();
     static ref CRAWLER_GENERATION: std::sync::atomic::AtomicU64 =
@@ -346,6 +427,7 @@ fn statistic_row(
             games_b.cmp(&games_a)
         }
     });
+    champion_rows.truncate(10);
     let mut partner_rows = aggregate
         .partners
         .iter()
@@ -375,6 +457,20 @@ fn statistic_row(
             games_b.cmp(&games_a)
         }
     });
+    let mut items = Vec::new();
+    let mut augments = Vec::new();
+    for p in partner_rows {
+        let pid = p.get("id").and_then(Value::as_str).unwrap_or("");
+        if pid.starts_with("augment:") {
+            if augments.len() < 10 {
+                augments.push(p);
+            }
+        } else if items.len() < 10 {
+            items.push(p);
+        }
+    }
+    items.extend(augments);
+    let partner_rows = items;
     let effective_baseline = if kind == "champion" || kind == "combo" {
         baseline
     } else {
@@ -461,6 +557,12 @@ fn load_statistics_projection(
     path: &PathBuf,
     kind: &str,
 ) -> Result<Option<(i64, f64, Vec<Value>)>, String> {
+    if let Ok(cache) = PROJECTION_MEMORY_CACHE.lock() {
+        if let Some((sample_count, baseline, rows)) = cache.get(&(path.clone(), kind.to_string())) {
+            return Ok(Some((*sample_count, *baseline, rows.clone())));
+        }
+    }
+
     let connection = open_connection(path)
         .map_err(|error| format!("failed opening projection database: {error}"))?;
     let row = connection
@@ -481,10 +583,23 @@ fn load_statistics_projection(
     if let Some((sample_count, baseline, rows)) = row {
         // Invalidate legacy combo projection that lacks structured components
         if kind == "combo" && rows.iter().any(|r| r.get("components").is_none()) {
-            let _ = connection.execute("DELETE FROM statistics_projections WHERE kind = 'combo'", []);
+            let _ = connection.execute(
+                "DELETE FROM statistics_projections WHERE kind = 'combo'",
+                [],
+            );
             return Ok(None);
         }
-        return Ok(Some((sample_count, baseline, rows)));
+        let compacted_rows: Vec<Value> = rows
+            .into_iter()
+            .map(|r| compact_row_for_projection(&r))
+            .collect();
+        if let Ok(mut cache) = PROJECTION_MEMORY_CACHE.lock() {
+            cache.insert(
+                (path.clone(), kind.to_string()),
+                (sample_count, baseline, compacted_rows.clone()),
+            );
+        }
+        return Ok(Some((sample_count, baseline, compacted_rows)));
     }
     Ok(None)
 }
@@ -492,18 +607,31 @@ fn load_statistics_projection(
 fn compact_row_for_projection(row: &Value) -> Value {
     let mut compacted = row.clone();
     if let Some(obj) = compacted.as_object_mut() {
-        if let Some(kind) = obj.get("kind").and_then(Value::as_str) {
-            if kind == "combo" {
-                if let Some(champs) = obj.get_mut("champions").and_then(Value::as_array_mut) {
-                    if champs.len() > 3 {
-                        champs.truncate(3);
+        let is_combo = obj.get("kind").and_then(Value::as_str) == Some("combo");
+        if let Some(champs) = obj.get_mut("champions").and_then(Value::as_array_mut) {
+            let max_champs = if is_combo { 3 } else { 10 };
+            if champs.len() > max_champs {
+                champs.truncate(max_champs);
+            }
+        }
+        if let Some(partners) = obj.get_mut("partners").and_then(Value::as_array_mut) {
+            if is_combo && partners.is_empty() {
+                obj.remove("partners");
+            } else {
+                let mut items = Vec::new();
+                let mut augments = Vec::new();
+                for p in partners.drain(..) {
+                    let pid = p.get("id").and_then(Value::as_str).unwrap_or("");
+                    if pid.starts_with("augment:") {
+                        if augments.len() < 10 {
+                            augments.push(p);
+                        }
+                    } else if items.len() < 10 {
+                        items.push(p);
                     }
                 }
-                if let Some(partners) = obj.get("partners").and_then(Value::as_array) {
-                    if partners.is_empty() {
-                        obj.remove("partners");
-                    }
-                }
+                items.extend(augments);
+                *partners = items;
             }
         }
     }
@@ -534,7 +662,16 @@ fn store_statistics_projection(
             rusqlite::params![kind, sample_count, baseline, rows_json],
         )
         .map(|_| ())
-        .map_err(|error| format!("failed storing {kind} statistics projection: {error}"))
+        .map_err(|error| format!("failed storing {kind} statistics projection: {error}"))?;
+
+    if let Ok(mut cache) = PROJECTION_MEMORY_CACHE.lock() {
+        cache.insert(
+            (path.clone(), kind.to_string()),
+            (sample_count, baseline, compacted_rows),
+        );
+    }
+    crate::commands::agent::invalidate_enriched_statistics_cache();
+    Ok(())
 }
 
 fn render_statistics_response(
@@ -606,7 +743,9 @@ fn render_statistics_response(
                     champs
                         .iter()
                         .filter_map(|c| c.get("wpa").and_then(Value::as_f64))
-                        .fold(None, |acc: Option<f64>, v| Some(acc.map_or(v, |m| m.max(v))))
+                        .fold(None, |acc: Option<f64>, v| {
+                            Some(acc.map_or(v, |m| m.max(v)))
+                        })
                 })
                 .unwrap_or(-999.0),
             _ => row.get("wpa").and_then(Value::as_f64).unwrap_or(0.0),
@@ -679,6 +818,41 @@ fn build_statistics_response(
         .unwrap_or(true);
     let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(100) as usize;
     let offset = args.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
+
+    let mut cache_args = args.clone();
+    if let Some(object) = cache_args.as_object_mut() {
+        object.remove("offset");
+        object.remove("limit");
+    }
+    let cache_key = cache_args.to_string();
+    if let Ok(mut cache) = STATISTICS_QUERY_CACHE.lock() {
+        if let Some((created_at, cached)) = cache.get(&cache_key) {
+            if created_at.elapsed() < Duration::from_secs(60) {
+                let cached_rows = cached
+                    .get("rows")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                let total = cached_rows.len();
+                let rows = cached_rows
+                    .into_iter()
+                    .skip(offset)
+                    .take(limit)
+                    .collect::<Vec<_>>();
+                let mut resp = cached.clone();
+                if let Some(obj) = resp.as_object_mut() {
+                    obj.insert("total".to_string(), Value::from(total));
+                    obj.insert("offset".to_string(), Value::from(offset));
+                    obj.insert("limit".to_string(), Value::from(limit));
+                    obj.insert("rows".to_string(), Value::Array(rows));
+                    obj.insert("cached".to_string(), Value::Bool(true));
+                }
+                return Ok(resp);
+            }
+        }
+        cache.retain(|_, (created_at, _)| created_at.elapsed() < Duration::from_secs(180));
+    }
+
     if scope == "compare" {
         let mut personal_args = args.clone();
         let mut global_args = args.clone();
@@ -831,7 +1005,9 @@ fn build_statistics_response(
                         champs
                             .iter()
                             .filter_map(|c| c.get("wpa").and_then(Value::as_f64))
-                            .fold(None, |acc: Option<f64>, v| Some(acc.map_or(v, |m| m.max(v))))
+                            .fold(None, |acc: Option<f64>, v| {
+                                Some(acc.map_or(v, |m| m.max(v)))
+                            })
                     })
                     .unwrap_or(-999.0),
                 _ => row
@@ -857,6 +1033,26 @@ fn build_statistics_response(
             }
         });
         let total = rows.len();
+        let cached_rows = rows.clone();
+        if let Ok(mut cache) = STATISTICS_QUERY_CACHE.lock() {
+            cache.insert(
+                cache_key,
+                (
+                    Instant::now(),
+                    json!({
+                        "scope": "compare",
+                        "kind": kind,
+                        "sample_count": global.get("sample_count").and_then(Value::as_i64).unwrap_or(0),
+                        "baseline": global.get("baseline").and_then(Value::as_f64).unwrap_or(0.0),
+                        "personal_sample_count": personal.get("sample_count").and_then(Value::as_i64).unwrap_or(0),
+                        "personal_baseline": personal.get("baseline").and_then(Value::as_f64).unwrap_or(0.0),
+                        "global_sample_count": global.get("sample_count").and_then(Value::as_i64).unwrap_or(0),
+                        "global_baseline": global.get("baseline").and_then(Value::as_f64).unwrap_or(0.0),
+                        "rows": cached_rows
+                    }),
+                ),
+            );
+        }
         return Ok(json!({
             "scope": "compare",
             "kind": kind,
@@ -872,41 +1068,6 @@ fn build_statistics_response(
             "rows": rows.into_iter().skip(offset).take(limit).collect::<Vec<_>>(),
             "cached": false
         }));
-    }
-    let mut cache_args = args.clone();
-    if let Some(object) = cache_args.as_object_mut() {
-        object.remove("offset");
-        object.remove("limit");
-    }
-    let cache_key = cache_args.to_string();
-    if let Ok(mut cache) = STATISTICS_QUERY_CACHE.lock() {
-        if let Some((created_at, cached)) = cache.get(&cache_key) {
-            if created_at.elapsed() < Duration::from_secs(30) {
-                let cached_rows = cached
-                    .get("rows")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
-                let total = cached_rows.len();
-                let rows = cached_rows
-                    .into_iter()
-                    .skip(offset)
-                    .take(limit)
-                    .collect::<Vec<_>>();
-                return Ok(json!({
-                    "scope": scope,
-                    "kind": kind,
-                    "sample_count": cached.get("sample_count").and_then(Value::as_i64).unwrap_or(0),
-                    "baseline": cached.get("baseline").and_then(Value::as_f64).unwrap_or(0.0),
-                    "total": total,
-                    "offset": offset,
-                    "limit": limit,
-                    "rows": rows,
-                    "cached": true
-                }));
-            }
-        }
-        cache.retain(|_, (created_at, _)| created_at.elapsed() < Duration::from_secs(120));
     }
     let projection_path = if scope == "global" {
         global_database
@@ -958,8 +1119,16 @@ fn build_statistics_response(
             "augment" => !fact.augment_ids.is_empty(),
             "combo" => {
                 let active_count = (if fact.champion_id.is_some() { 1 } else { 0 })
-                    + fact.item_ids.iter().filter(|id| !PORO_SNAX_IDS.contains(id) && **id > 0).count()
-                    + fact.augment_ids.iter().filter(|id| !id.is_empty() && *id != "0").count();
+                    + fact
+                        .item_ids
+                        .iter()
+                        .filter(|id| !PORO_SNAX_IDS.contains(id) && **id > 0)
+                        .count()
+                    + fact
+                        .augment_ids
+                        .iter()
+                        .filter(|id| !id.is_empty() && *id != "0")
+                        .count();
                 active_count >= 2
             }
             _ => fact.champion_id.is_some(),
@@ -988,7 +1157,9 @@ fn build_statistics_response(
         let mut comp_counts: HashMap<String, i64> = HashMap::new();
         for fact in &facts {
             if let Some(champ_id) = fact.champion_id {
-                *comp_counts.entry(format!("champion:{champ_id}")).or_default() += 1;
+                *comp_counts
+                    .entry(format!("champion:{champ_id}"))
+                    .or_default() += 1;
             }
             for &id in &fact.item_ids {
                 if !PORO_SNAX_IDS.contains(&id) && id > 0 {
@@ -1002,7 +1173,8 @@ fn build_statistics_response(
             }
         }
         // Min support for single component: 2% pick rate floor, clamped by min_combo_games
-        let min_component_support = ((population_count as f64 * 0.02).ceil() as i64).max(min_combo_games);
+        let min_component_support =
+            ((population_count as f64 * 0.02).ceil() as i64).max(min_combo_games);
         let frequent_components: HashSet<String> = comp_counts
             .into_iter()
             .filter(|(_, count)| *count >= min_component_support)
@@ -1054,7 +1226,9 @@ fn build_statistics_response(
             let len = components.len();
             for i in 0..len {
                 for j in (i + 1)..len {
-                    *pair_counts.entry((components[i].clone(), components[j].clone())).or_default() += 1;
+                    *pair_counts
+                        .entry((components[i].clone(), components[j].clone()))
+                        .or_default() += 1;
                 }
             }
             filtered_fact_comps.push(components);
@@ -1103,15 +1277,25 @@ fn build_statistics_response(
                 // k = 3 combinations: Apriori principle (all 3 constituent pairs must be frequent)
                 for i in 0..len {
                     for j in (i + 1)..len {
-                        if !combo_frequent_pairs.contains(&(components[i].clone(), components[j].clone())) {
+                        if !combo_frequent_pairs
+                            .contains(&(components[i].clone(), components[j].clone()))
+                        {
                             continue;
                         }
                         for l in (j + 1)..len {
-                            if combo_frequent_pairs.contains(&(components[i].clone(), components[l].clone()))
-                                && combo_frequent_pairs.contains(&(components[j].clone(), components[l].clone()))
+                            if combo_frequent_pairs
+                                .contains(&(components[i].clone(), components[l].clone()))
+                                && combo_frequent_pairs
+                                    .contains(&(components[j].clone(), components[l].clone()))
                             {
-                                let id = format!("combo:{}+{}+{}", components[i], components[j], components[l]);
-                                let name = format!("{} + {} + {}", components[i], components[j], components[l]);
+                                let id = format!(
+                                    "combo:{}+{}+{}",
+                                    components[i], components[j], components[l]
+                                );
+                                let name = format!(
+                                    "{} + {} + {}",
+                                    components[i], components[j], components[l]
+                                );
                                 tuples.push((id, name));
                             }
                         }
@@ -1220,7 +1404,9 @@ fn build_statistics_response(
                     champs
                         .iter()
                         .filter_map(|c| c.get("wpa").and_then(Value::as_f64))
-                        .fold(None, |acc: Option<f64>, v| Some(acc.map_or(v, |m| m.max(v))))
+                        .fold(None, |acc: Option<f64>, v| {
+                            Some(acc.map_or(v, |m| m.max(v)))
+                        })
                 })
                 .unwrap_or(-999.0),
             _ => row.get("wpa").and_then(Value::as_f64).unwrap_or(0.0),
@@ -1247,7 +1433,9 @@ fn build_statistics_response(
             top_rows.sort_by(|a, b| {
                 let wpa_b = b.get("wpa").and_then(Value::as_f64).unwrap_or(0.0);
                 let wpa_a = a.get("wpa").and_then(Value::as_f64).unwrap_or(0.0);
-                wpa_b.partial_cmp(&wpa_a).unwrap_or(std::cmp::Ordering::Equal)
+                wpa_b
+                    .partial_cmp(&wpa_a)
+                    .unwrap_or(std::cmp::Ordering::Equal)
             });
             top_rows.truncate(1000);
             top_rows.sort_by(|a, b| {
@@ -1294,6 +1482,65 @@ fn build_statistics_response(
     Ok(
         json!({ "scope": scope, "kind": kind, "sample_count": sample_count, "baseline": baseline, "total": total, "offset": offset, "limit": limit, "rows": rows, "cached": false }),
     )
+}
+
+fn compact_stored_projections(path: &PathBuf) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let connection = open_connection(path)
+        .map_err(|error| format!("failed opening database for projection compaction: {error}"))?;
+    let mut statement = match connection
+        .prepare("SELECT kind, sample_count, baseline, rows_json FROM statistics_projections")
+    {
+        Ok(stmt) => stmt,
+        Err(_) => return Ok(()),
+    };
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, f64>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|e| format!("failed querying projections for compaction: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("failed collecting projections for compaction: {e}"))?;
+    drop(statement);
+
+    let mut compacted_any = false;
+    for (kind, _sample_count, _baseline, rows_json) in rows {
+        if rows_json.len() > 500_000 {
+            if let Ok(parsed_rows) = serde_json::from_str::<Vec<Value>>(&rows_json) {
+                let compacted: Vec<Value> = parsed_rows
+                    .into_iter()
+                    .map(|r| compact_row_for_projection(&r))
+                    .collect();
+                if let Ok(new_json) = serde_json::to_string(&compacted) {
+                    let _ = connection.execute(
+                        "UPDATE statistics_projections SET rows_json = ?1, updated_at = CURRENT_TIMESTAMP WHERE kind = ?2",
+                        rusqlite::params![new_json, kind],
+                    );
+                    compacted_any = true;
+                    logger::info(
+                        "agent.database",
+                        &format!(
+                            "Compacted {kind} projection in {:?}: {} bytes -> {} bytes",
+                            path.file_name().unwrap_or_default(),
+                            rows_json.len(),
+                            new_json.len()
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    if compacted_any {
+        let _ = connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    }
+    Ok(())
 }
 
 pub fn database_path() -> PathBuf {
@@ -1376,6 +1623,9 @@ fn initialize_global_aram_database(path: &PathBuf) -> Result<(), String> {
         CREATE INDEX IF NOT EXISTS idx_discovered_accounts_status ON discovered_accounts(status);
         INSERT OR IGNORE INTO config (key, value) VALUES ('game_limit', '1000');
         INSERT OR IGNORE INTO config (key, value) VALUES ('worker_count', '3');
+        UPDATE config SET value = '3' WHERE key = 'worker_count';
+        DELETE FROM config WHERE key = 'rate_limit_games_ceiling_rpm' AND CAST(value AS INTEGER) < 120;
+        DELETE FROM config WHERE key = 'rate_limit_games_rpm' AND CAST(value AS INTEGER) < 120;
         "#,
         )
         .map_err(|error| format!("failed initializing global ARAM database: {error}"))?;
@@ -1432,13 +1682,13 @@ fn initialize_global_aram_database(path: &PathBuf) -> Result<(), String> {
     drop(connection);
     repair_global_augment_ids(path)?;
     backfill_global_game_patches(path)?;
+    compact_stored_projections(path)?;
     Ok(())
 }
 
 fn backfill_global_game_patches(path: &PathBuf) -> Result<(), String> {
-    let connection = open_connection(path).map_err(|error| {
-        format!("failed opening global database for patch backfill: {error}")
-    })?;
+    let connection = open_connection(path)
+        .map_err(|error| format!("failed opening global database for patch backfill: {error}"))?;
     let backfilled = connection
         .query_row(
             "SELECT value FROM config WHERE key = 'game_patches_backfilled_v1'",
@@ -1705,7 +1955,10 @@ pub fn initialize_database(path: &PathBuf) -> Result<(), String> {
         .map_err(|error| format!("Failed initializing agent database schema: {error}"))?;
     let _ = connection.execute("ALTER TABLE games ADD COLUMN game_version TEXT", []);
     let _ = connection.execute("ALTER TABLE games ADD COLUMN patch TEXT", []);
-    let _ = connection.execute("CREATE INDEX IF NOT EXISTS idx_games_patch ON games(patch)", []);
+    let _ = connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_games_patch ON games(patch)",
+        [],
+    );
     import_legacy_store(&connection, path)?;
     let cleanup_needed = connection
         .query_row(
@@ -1749,6 +2002,7 @@ pub fn initialize_database(path: &PathBuf) -> Result<(), String> {
             )
             .map_err(|error| format!("failed recording Poro-Snax cleanup state: {error}"))?;
     }
+    compact_stored_projections(path)?;
     Ok(())
 }
 
@@ -1978,7 +2232,7 @@ pub async fn handle_command(
                 ))
             })
             .await;
-            let (limit, games, queued_accounts, workers, patches) = match config {
+            let (limit, games, queued_accounts, _workers, patches) = match config {
                 Ok(Ok(values)) => values,
                 Ok(Err(error)) => return response_error(error),
                 Err(error) => {
@@ -2020,7 +2274,7 @@ pub async fn handle_command(
             response_ok(json!({
                 "limit": limit,
                 "games": games,
-                "workers": workers,
+                "workers": 4,
                 "database_path": global_path,
                 "collector_state": state.collector_state,
                 "queued_jobs": queued_accounts,
@@ -2031,6 +2285,8 @@ pub async fn handle_command(
                 })).collect::<Vec<_>>(),
                 "outdated_games": outdated_games,
                 "has_patch_mismatch": has_patch_mismatch,
+                "crawler_rate_text": state.crawler_rate_text,
+                "crawler_mpm": state.crawler_mpm,
                 "operations": state.operations.iter().map(|operation| json!({
                     "id": operation.id,
                     "message": operation.message,
@@ -2583,7 +2839,7 @@ fn store_global_detail(
             return Ok(false);
         }
     }
-    let connection = open_connection(path)
+    let mut connection = open_connection(path)
         .map_err(|error| format!("failed opening global ARAM database for detail: {error}"))?;
     let game_exists = connection
         .query_row(
@@ -2597,29 +2853,33 @@ fn store_global_detail(
     }
     let detail_json = serde_json::to_string(detail)
         .map_err(|error| format!("failed encoding global ARAM detail {game_id}: {error}"))?;
-    connection
-        .execute(
-            "INSERT OR IGNORE INTO aram_games (
-            game_id, source_puuid, queue_id, map_id, game_mode,
-            game_creation, game_duration, game_version, patch, detail_json
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            rusqlite::params![
-                game_id,
-                source_puuid,
-                detail.get("queueId").and_then(Value::as_i64),
-                detail.get("mapId").and_then(Value::as_i64),
-                detail
-                    .get("gameMode")
-                    .and_then(Value::as_str)
-                    .unwrap_or("KIWI"),
-                detail.get("gameCreation").and_then(Value::as_i64),
-                detail.get("gameDuration").and_then(Value::as_i64),
-                game_version,
-                patch,
-                detail_json,
-            ],
-        )
-        .map_err(|error| format!("failed storing global ARAM game {game_id}: {error}"))?;
+
+    let tx = connection
+        .transaction()
+        .map_err(|error| format!("failed starting transaction for game {game_id}: {error}"))?;
+
+    tx.execute(
+        "INSERT OR IGNORE INTO aram_games (
+        game_id, source_puuid, queue_id, map_id, game_mode,
+        game_creation, game_duration, game_version, patch, detail_json
+    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        rusqlite::params![
+            game_id,
+            source_puuid,
+            detail.get("queueId").and_then(Value::as_i64),
+            detail.get("mapId").and_then(Value::as_i64),
+            detail
+                .get("gameMode")
+                .and_then(Value::as_str)
+                .unwrap_or("KIWI"),
+            detail.get("gameCreation").and_then(Value::as_i64),
+            detail.get("gameDuration").and_then(Value::as_i64),
+            game_version,
+            patch,
+            detail_json,
+        ],
+    )
+    .map_err(|error| format!("failed storing global ARAM game {game_id}: {error}"))?;
 
     let identities = detail
         .get("participantIdentities")
@@ -2631,7 +2891,7 @@ fn store_global_detail(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let mut discovered = Vec::new();
+
     for participant in participants {
         let participant_id = participant
             .get("participantId")
@@ -2647,8 +2907,10 @@ fn store_global_detail(
             .and_then(Value::as_str)
             .map(str::to_string);
         if let Some(puuid) = puuid.as_deref() {
-            discovered.push(puuid.to_string());
-            queue_global_account(path, puuid)?;
+            let _ = tx.execute(
+                "INSERT OR IGNORE INTO discovered_accounts (puuid) VALUES (?1)",
+                rusqlite::params![puuid],
+            );
         }
         let stats = participant.get("stats");
         let item_ids = normalize_item_ids(
@@ -2662,52 +2924,67 @@ fn store_global_detail(
                 .collect(),
         );
         let augment_ids = participant_augment_ids(&participant);
-        connection
-            .execute(
-                "INSERT OR REPLACE INTO aram_participants (
-                game_id, participant_id, puuid, champion_id, win,
-                item_ids_json, augment_ids_json, kills, deaths, assists, damage, gold
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-                rusqlite::params![
-                    game_id,
-                    participant_id,
-                    puuid,
-                    participant.get("championId").and_then(Value::as_i64),
-                    stats
-                        .and_then(|value| value.get("win"))
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false),
-                    serde_json::to_string(&item_ids).unwrap_or_else(|_| "[]".to_string()),
-                    serde_json::to_string(&augment_ids).unwrap_or_else(|_| "[]".to_string()),
-                    stats
-                        .and_then(|value| value.get("kills"))
-                        .and_then(Value::as_i64)
-                        .unwrap_or(0),
-                    stats
-                        .and_then(|value| value.get("deaths"))
-                        .and_then(Value::as_i64)
-                        .unwrap_or(0),
-                    stats
-                        .and_then(|value| value.get("assists"))
-                        .and_then(Value::as_i64)
-                        .unwrap_or(0),
-                    stats
-                        .and_then(|value| value.get("totalDamageDealtToChampions"))
-                        .and_then(Value::as_i64),
-                    stats
-                        .and_then(|value| value.get("goldEarned"))
-                        .and_then(Value::as_i64)
-                        .unwrap_or(0),
-                ],
-            )
-            .map_err(|error| {
-                format!(
-                    "failed storing global ARAM participant {game_id}:{participant_id}: {error}"
-                )
-            })?;
+        tx.execute(
+            "INSERT OR REPLACE INTO aram_participants (
+            game_id, participant_id, puuid, champion_id, win,
+            item_ids_json, augment_ids_json, kills, deaths, assists, damage, gold
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            rusqlite::params![
+                game_id,
+                participant_id,
+                puuid,
+                participant.get("championId").and_then(Value::as_i64),
+                stats
+                    .and_then(|value| value.get("win"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                serde_json::to_string(&item_ids).unwrap_or_else(|_| "[]".to_string()),
+                serde_json::to_string(&augment_ids).unwrap_or_else(|_| "[]".to_string()),
+                stats
+                    .and_then(|value| value.get("kills"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0),
+                stats
+                    .and_then(|value| value.get("deaths"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0),
+                stats
+                    .and_then(|value| value.get("assists"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0),
+                stats
+                    .and_then(|value| value.get("totalDamageDealtToChampions"))
+                    .and_then(Value::as_i64),
+                stats
+                    .and_then(|value| value.get("goldEarned"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0),
+            ],
+        )
+        .map_err(|error| {
+            format!("failed storing global ARAM participant {game_id}:{participant_id}: {error}")
+        })?;
     }
-    if !game_exists {
-        invalidate_statistics_projections(&connection)?;
+
+    tx.commit()
+        .map_err(|error| format!("failed committing global ARAM game {game_id}: {error}"))?;
+
+    // Throttled projection invalidation: only invalidate projections at most once every 60 seconds
+    // during active batch crawling to prevent UI lockup and disk I/O thrashing.
+    static LAST_PROJECTION_INVALIDATION: std::sync::Mutex<Option<std::time::Instant>> =
+        std::sync::Mutex::new(None);
+    let should_invalidate = {
+        let mut last = LAST_PROJECTION_INVALIDATION.lock().unwrap();
+        match *last {
+            Some(instant) if instant.elapsed() < Duration::from_secs(60) => false,
+            _ => {
+                *last = Some(std::time::Instant::now());
+                true
+            }
+        }
+    };
+    if should_invalidate {
+        let _ = invalidate_statistics_projections(&connection);
     }
     Ok(true)
 }
@@ -2755,6 +3032,9 @@ pub struct AdaptiveRateLimiter {
     current_rpm: u32,
     min_rpm: u32,
     max_rpm: u32,
+    min_spacing_ms: u64,
+    max_burst_per_sec: u32,
+    burst_window: std::collections::VecDeque<std::time::Instant>,
     learned_ceiling_rpm: Option<u32>,
     success_streak: u32,
     step_up: u32,
@@ -2775,17 +3055,33 @@ impl AdaptiveRateLimiter {
         max_rpm: u32,
         ceiling_rpm: Option<u32>,
     ) -> Self {
+        Self::with_burst(initial_rpm, min_rpm, max_rpm, ceiling_rpm, 60, 12, 2, 80)
+    }
+
+    pub fn with_burst(
+        initial_rpm: u32,
+        min_rpm: u32,
+        max_rpm: u32,
+        ceiling_rpm: Option<u32>,
+        min_spacing_ms: u64,
+        max_burst_per_sec: u32,
+        step_up: u32,
+        ceiling_probe_threshold: u32,
+    ) -> Self {
         let clamped_ceiling = ceiling_rpm.map(|c| c.clamp(min_rpm, max_rpm));
         let effective_max = clamped_ceiling.unwrap_or(max_rpm);
         Self {
             current_rpm: initial_rpm.clamp(min_rpm, effective_max),
             min_rpm,
             max_rpm,
+            min_spacing_ms,
+            max_burst_per_sec,
+            burst_window: std::collections::VecDeque::new(),
             learned_ceiling_rpm: clamped_ceiling,
             success_streak: 0,
-            step_up: 2,
+            step_up,
             success_threshold: 8,
-            ceiling_probe_threshold: 80,
+            ceiling_probe_threshold,
             last_request_start: None,
             last_backoff_at: None,
         }
@@ -2808,16 +3104,48 @@ impl AdaptiveRateLimiter {
 
     /// Atomically gates the next request across all workers and returns `(current_rpm, request_started_at)`.
     pub async fn pace_next_tagged(&mut self) -> (u32, std::time::Instant) {
-        let interval = self.interval();
-        if let Some(prev_start) = self.last_request_start {
-            let elapsed = prev_start.elapsed();
-            if elapsed < interval {
-                tokio::time::sleep(interval - elapsed).await;
+        loop {
+            let now = std::time::Instant::now();
+            let mut wait = Duration::ZERO;
+
+            if let Some(prev_start) = self.last_request_start {
+                let spacing = Duration::from_millis(self.min_spacing_ms);
+                let elapsed = now.saturating_duration_since(prev_start);
+                if elapsed < spacing {
+                    wait = wait.max(spacing - elapsed);
+                }
+
+                let sustained = self.interval();
+                if elapsed < sustained {
+                    wait = wait.max(sustained - elapsed);
+                }
             }
+
+            let one_sec_ago = now.checked_sub(Duration::from_secs(1)).unwrap_or(now);
+            while let Some(&front) = self.burst_window.front() {
+                if front <= one_sec_ago {
+                    self.burst_window.pop_front();
+                } else {
+                    break;
+                }
+            }
+            if self.burst_window.len() >= self.max_burst_per_sec as usize {
+                if let Some(&oldest) = self.burst_window.front() {
+                    let burst_wait = Duration::from_secs(1)
+                        .saturating_sub(now.saturating_duration_since(oldest));
+                    wait = wait.max(burst_wait);
+                }
+            }
+
+            if wait.is_zero() {
+                let started_at = std::time::Instant::now();
+                self.last_request_start = Some(started_at);
+                self.burst_window.push_back(started_at);
+                return (self.current_rpm, started_at);
+            }
+
+            tokio::time::sleep(wait).await;
         }
-        let started_at = std::time::Instant::now();
-        self.last_request_start = Some(started_at);
-        (self.current_rpm, started_at)
     }
 
     /// Atomically gates the next request across all workers and returns current RPM.
@@ -2826,9 +3154,9 @@ impl AdaptiveRateLimiter {
     }
 
     /// Records a successful request.
-    /// - When no ceiling is known yet, increases RPM by `step_up` (+2) every `success_threshold` (8) successes.
+    /// - When no ceiling is known yet, increases RPM by `step_up` (+2 or +5) every `success_threshold` (8) successes.
     /// - When below a learned ceiling, steps up cautiously (+1 RPM) every `success_threshold` (8) successes up to the ceiling.
-    /// - Once at the learned ceiling, holds steady and only probes +1 RPM after `ceiling_probe_threshold` (80) consecutive successes.
+    /// - Once at the learned ceiling, holds steady and only probes +2 RPM after `ceiling_probe_threshold` (16) consecutive successes.
     pub fn record_success(&mut self) -> Option<u32> {
         self.success_streak += 1;
         match self.learned_ceiling_rpm {
@@ -2836,7 +3164,7 @@ impl AdaptiveRateLimiter {
                 if self.success_streak >= self.ceiling_probe_threshold {
                     self.success_streak = 0;
                     if self.current_rpm < self.max_rpm {
-                        let next_rpm = (self.current_rpm + 1).min(self.max_rpm);
+                        let next_rpm = (self.current_rpm + 2).min(self.max_rpm);
                         self.current_rpm = next_rpm;
                         self.learned_ceiling_rpm = Some(next_rpm);
                         return Some(self.current_rpm);
@@ -2937,6 +3265,7 @@ fn load_route_rate_limit(
         )
         .ok()
         .and_then(|v| v.parse::<u32>().ok())
+        .filter(|&v| v >= default_rpm)
         .map(|v| v.clamp(min_rpm, max_rpm));
 
     let saved_ceiling = conn
@@ -2947,10 +3276,10 @@ fn load_route_rate_limit(
         )
         .ok()
         .and_then(|v| v.parse::<u32>().ok())
+        .filter(|&v| v > default_rpm)
         .map(|v| v.clamp(min_rpm, max_rpm));
 
     let initial_rpm = saved_rpm
-        .or(saved_ceiling)
         .unwrap_or(default_rpm)
         .clamp(min_rpm, saved_ceiling.unwrap_or(max_rpm));
     (initial_rpm, saved_ceiling)
@@ -3004,7 +3333,7 @@ impl CrawlerCircuitBreaker {
         Self {
             consecutive_errors: 0,
             cooldown_until: None,
-            current_backoff_secs: 60, // 1 minute initial backoff
+            current_backoff_secs: 2, // 2 seconds initial backoff instead of 60s
             last_error_at: None,
         }
     }
@@ -3027,6 +3356,7 @@ impl CrawlerCircuitBreaker {
     fn record_failure_for_request(
         &mut self,
         is_429: bool,
+        retry_after: Option<Duration>,
         request_started_at: std::time::Instant,
     ) -> CooldownOutcome {
         if let Some(remaining) = self.is_in_cooldown() {
@@ -3044,7 +3374,7 @@ impl CrawlerCircuitBreaker {
 
         self.last_error_at = Some(std::time::Instant::now());
         if is_429 {
-            let cooldown = self. record_rate_limit(60);
+            let cooldown = self.record_rate_limit(retry_after);
             CooldownOutcome::Triggered {
                 streak: self.consecutive_errors,
                 cooldown_secs: cooldown,
@@ -3061,14 +3391,17 @@ impl CrawlerCircuitBreaker {
         }
     }
 
-    fn record_rate_limit(&mut self, cooldown_secs: u64) -> u64 {
+    fn record_rate_limit(&mut self, retry_after: Option<Duration>) -> u64 {
         if let Some(remaining) = self.is_in_cooldown() {
             return remaining.as_secs().max(1);
         }
         self.consecutive_errors += 1;
-        let cooldown = cooldown_secs.max(self.current_backoff_secs);
+        let cooldown = match retry_after {
+            Some(dur) => dur.as_secs().max(1),
+            None => self.current_backoff_secs.max(2),
+        };
         self.cooldown_until = Some(std::time::Instant::now() + Duration::from_secs(cooldown));
-        self.current_backoff_secs = (cooldown * 2).min(900);
+        self.current_backoff_secs = (cooldown * 2).clamp(2, 60);
         cooldown
     }
 
@@ -3081,7 +3414,7 @@ impl CrawlerCircuitBreaker {
         if self.consecutive_errors >= 4 {
             let cooldown = self.current_backoff_secs;
             self.cooldown_until = Some(std::time::Instant::now() + Duration::from_secs(cooldown));
-            let next_backoff = (self.current_backoff_secs * 2).min(900);
+            let next_backoff = (self.current_backoff_secs * 2).min(60);
             self.current_backoff_secs = next_backoff;
             Some((self.consecutive_errors, cooldown, next_backoff))
         } else {
@@ -3092,7 +3425,7 @@ impl CrawlerCircuitBreaker {
     fn record_success(&mut self) {
         if self.consecutive_errors > 0 {
             self.consecutive_errors = 0;
-            self.current_backoff_secs = 60;
+            self.current_backoff_secs = 2;
             self.cooldown_until = None;
         }
     }
@@ -3108,6 +3441,7 @@ async fn run_global_aram_worker(
     circuit_breaker: Arc<tokio::sync::Mutex<CrawlerCircuitBreaker>>,
     matches_limiter: Arc<tokio::sync::Mutex<AdaptiveRateLimiter>>,
     games_limiter: Arc<tokio::sync::Mutex<AdaptiveRateLimiter>>,
+    matches_gate: Arc<tokio::sync::Mutex<()>>,
 ) {
     logger::info(
         "agent.global-aram",
@@ -3123,7 +3457,12 @@ async fn run_global_aram_worker(
             );
             break;
         }
-        if runtime.read().await.collector_state.starts_with("game_in_progress") {
+        if runtime
+            .read()
+            .await
+            .collector_state
+            .starts_with("game_in_progress")
+        {
             tokio::time::sleep(Duration::from_secs(5)).await;
             continue;
         }
@@ -3202,25 +3541,32 @@ async fn run_global_aram_worker(
                 }
             };
 
-        // Shared adaptive rate limiter for the `/matches` route across all workers
-        let (_, req_started_at) = matches_limiter.lock().await.pace_next_tagged().await;
+        let (history_res, req_started_at) = {
+            let _matches_guard = matches_gate.lock().await;
 
-        // Re-check circuit breaker after waiting on the pacer in case a sibling worker just triggered cooldown
-        if let Some(dur) = circuit_breaker.lock().await.is_in_cooldown() {
-            let mark_path = path.clone();
-            let mark_puuid = account_puuid.clone();
-            let _ = tokio::task::spawn_blocking(move || {
-                mark_global_account(&mark_path, &mark_puuid, "queued")
-            })
-            .await;
-            tokio::time::sleep(dur).await;
-            continue;
-        }
+            // Shared adaptive rate limiter for the `/matches` route across all workers
+            let (_, req_started_at) = matches_limiter.lock().await.pace_next_tagged().await;
 
-        let route = format!(
-            "/lol-match-history/v1/products/lol/{account_puuid}/matches?begIndex=0&endIndex=19"
-        );
-        let history = match client.get_json::<Value>(&route).await {
+            // Re-check circuit breaker after waiting on the pacer in case a sibling worker just triggered cooldown
+            if let Some(dur) = circuit_breaker.lock().await.is_in_cooldown() {
+                let mark_path = path.clone();
+                let mark_puuid = account_puuid.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    mark_global_account(&mark_path, &mark_puuid, "queued")
+                })
+                .await;
+                tokio::time::sleep(dur).await;
+                continue;
+            }
+
+            let route = format!(
+                "/lol-match-history/v1/products/lol/{account_puuid}/matches?begIndex=0&endIndex=19"
+            );
+            let resp = client.get_json_response::<Value>(&route).await;
+            (resp, req_started_at)
+        };
+
+        let history = match history_res {
             Ok(history) => {
                 circuit_breaker.lock().await.record_success();
                 let maybe_update = {
@@ -3251,7 +3597,8 @@ async fn run_global_aram_worker(
                 let mark_path = path.clone();
                 let mark_puuid = account_puuid.clone();
 
-                let is_rate_limited = error.contains("429");
+                let is_rate_limited = error.status == Some(429);
+                let retry_after = error.retry_after;
                 let maybe_backoff = {
                     let mut rl = matches_limiter.lock().await;
                     rl.record_backoff_for_request(is_rate_limited, req_started_at)
@@ -3272,10 +3619,11 @@ async fn run_global_aram_worker(
                     );
                 }
 
-                let outcome = circuit_breaker
-                    .lock()
-                    .await
-                    .record_failure_for_request(is_rate_limited, req_started_at);
+                let outcome = circuit_breaker.lock().await.record_failure_for_request(
+                    is_rate_limited,
+                    retry_after,
+                    req_started_at,
+                );
 
                 match outcome {
                     CooldownOutcome::Triggered {
@@ -3298,8 +3646,7 @@ async fn run_global_aram_worker(
                         );
                         {
                             let mut state = runtime.write().await;
-                            state.collector_state =
-                                format!("global-aram:paused (backoff {mins}m)");
+                            state.collector_state = format!("global-aram:paused (backoff {mins}m)");
                         }
                         // Re-queue this account so it is not permanently lost due to the LCU outage
                         let _ = tokio::task::spawn_blocking(move || {
@@ -3338,8 +3685,7 @@ async fn run_global_aram_worker(
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        let all_aram_summaries: Vec<Value> =
-            summaries.into_iter().filter(is_aram_mayhem).collect();
+        let all_aram_summaries: Vec<Value> = summaries.into_iter().filter(is_aram_mayhem).collect();
         let aram_summaries: Vec<Value> = all_aram_summaries
             .iter()
             .filter(|summary| is_game_summary_on_patch(summary, active_patch.as_deref()))
@@ -3352,9 +3698,8 @@ async fn run_global_aram_worker(
             if global_game_count(&path).unwrap_or(0) == 0
                 && global_queued_account_count(&path).unwrap_or(0) == 0
             {
-                if let Some(seed_game_id) = all_aram_summaries[0]
-                    .get("gameId")
-                    .and_then(Value::as_i64)
+                if let Some(seed_game_id) =
+                    all_aram_summaries[0].get("gameId").and_then(Value::as_i64)
                 {
                     games_limiter.lock().await.pace_next().await;
                     if let Ok(detail) = client
@@ -3441,7 +3786,7 @@ async fn run_global_aram_worker(
             }
 
             let result = client
-                .get_json::<Value>(&format!("/lol-match-history/v1/games/{game_id}"))
+                .get_json_response::<Value>(&format!("/lol-match-history/v1/games/{game_id}"))
                 .await;
 
             match result {
@@ -3488,16 +3833,7 @@ async fn run_global_aram_worker(
                             (global_game_count(&path), global_game_limit(&path))
                         {
                             let mut state = runtime.write().await;
-                            state.collector_state = format!("global-aram:{count}/{live_limit}");
-                            if let Some(operation) = state
-                                .operations
-                                .iter_mut()
-                                .find(|operation| operation.id == "global-database")
-                            {
-                                operation.current = Some(count);
-                                operation.total = Some(live_limit);
-                                operation.message = "Updating global game database".to_string();
-                            }
+                            state.update_crawler_progress(count, live_limit);
                             logger::info(
                                 "agent.global-aram",
                                 &format!("Worker #{worker_id} stored game {game_id}; dataset is {count}/{live_limit}"),
@@ -3555,16 +3891,25 @@ async fn run_global_aram_worker(
                     }
                 }
                 Err(error) => {
+                    if error.status == Some(404) {
+                        logger::info(
+                            "agent.global-aram",
+                            &format!("Worker #{worker_id}: Game {game_id} returned 404 (expired match); skipping"),
+                        );
+                        in_flight_games.lock().await.remove(&game_id);
+                        continue;
+                    }
+
                     logger::warn(
                         "agent.global-aram",
                         &format!("Worker #{worker_id} failed fetching game {game_id}: {error}"),
                     );
 
-                    let is_rate_limited = error.contains("429");
-                    let is_transient = error.contains("timed out")
-                        || error.contains("503")
-                        || error.contains("504")
-                        || error.contains("error sending request");
+                    let is_rate_limited = error.status == Some(429);
+                    let retry_after = error.retry_after;
+                    let is_transient = error.status.is_none()
+                        || error.status.map(|s| s >= 500).unwrap_or(false)
+                        || error.message.contains("timed out");
                     let maybe_backoff = {
                         let mut rl = games_limiter.lock().await;
                         rl.record_backoff_for_request(is_rate_limited, game_req_started_at)
@@ -3586,10 +3931,11 @@ async fn run_global_aram_worker(
                     }
 
                     let outcome = if is_rate_limited || is_transient {
-                        circuit_breaker
-                            .lock()
-                            .await
-                            .record_failure_for_request(is_rate_limited, game_req_started_at)
+                        circuit_breaker.lock().await.record_failure_for_request(
+                            is_rate_limited,
+                            retry_after,
+                            game_req_started_at,
+                        )
                     } else {
                         CooldownOutcome::NoCooldown
                     };
@@ -3668,7 +4014,7 @@ async fn collect_global_aram(
         .map_err(|error| format!("global database initialization failed: {error}"))??;
     let current = global_game_count(&path)?;
     let limit = global_game_limit(&path)?;
-    let worker_count = global_worker_count(&path).unwrap_or(3);
+    let worker_count = global_worker_count(&path).unwrap_or(4);
     {
         let mut state = runtime.write().await;
         state
@@ -3704,12 +4050,12 @@ async fn collect_global_aram(
     let rate_path = path.clone();
     let ((matches_rpm, matches_ceiling), (games_rpm, games_ceiling)) =
         tokio::task::spawn_blocking(move || {
-            let matches_cfg = load_route_rate_limit(&rate_path, "matches", 30, 12, 90);
-            let games_cfg = load_route_rate_limit(&rate_path, "games", 48, 15, 120);
+            let matches_cfg = load_route_rate_limit(&rate_path, "matches", 10, 8, 15);
+            let games_cfg = load_route_rate_limit(&rate_path, "games", 120, 30, 480);
             (matches_cfg, games_cfg)
         })
         .await
-        .unwrap_or(((30, None), (48, None)));
+        .unwrap_or(((10, None), (120, None)));
 
     logger::info(
         "agent.global-aram",
@@ -3721,18 +4067,29 @@ async fn collect_global_aram(
 
     let in_flight_games = Arc::new(tokio::sync::Mutex::new(HashSet::new()));
     let circuit_breaker = Arc::new(tokio::sync::Mutex::new(CrawlerCircuitBreaker::new()));
-    // Separate adaptive rate limiters per route, initialized from cached rate limits in SQLite config.
-    let matches_limiter = Arc::new(tokio::sync::Mutex::new(AdaptiveRateLimiter::with_ceiling(
+    let matches_gate = Arc::new(tokio::sync::Mutex::new(()));
+    // Separate adaptive rate limiters per route, with burst limits:
+    // matches: min spacing 5500ms (5.5s), max burst 1/sec
+    // games: min spacing 60ms, max burst 12/sec
+    let matches_limiter = Arc::new(tokio::sync::Mutex::new(AdaptiveRateLimiter::with_burst(
         matches_rpm,
-        12,
-        90,
-        matches_ceiling,
-    )));
-    let games_limiter = Arc::new(tokio::sync::Mutex::new(AdaptiveRateLimiter::with_ceiling(
-        games_rpm,
+        8,
         15,
-        120,
+        matches_ceiling,
+        5500,
+        1,
+        1,
+        60,
+    )));
+    let games_limiter = Arc::new(tokio::sync::Mutex::new(AdaptiveRateLimiter::with_burst(
+        games_rpm,
+        30,
+        480,
         games_ceiling,
+        60,
+        12,
+        5,
+        16,
     )));
     let mut handles = Vec::new();
 
@@ -3744,9 +4101,10 @@ async fn collect_global_aram(
         let cb = circuit_breaker.clone();
         let ml = matches_limiter.clone();
         let gl = games_limiter.clone();
+        let mg = matches_gate.clone();
         handles.push(tokio::spawn(async move {
             run_global_aram_worker(
-                worker_id, generation, client, path, runtime, in_flight, cb, ml, gl,
+                worker_id, generation, client, path, runtime, in_flight, cb, ml, gl, mg,
             )
             .await;
         }));
@@ -3882,45 +4240,21 @@ fn set_global_game_limit(path: &PathBuf, limit: usize) -> Result<(), String> {
     ).map(|_| ()).map_err(|error| format!("failed storing global ARAM game limit: {error}"))
 }
 
-fn global_worker_count(path: &PathBuf) -> Result<usize, String> {
-    let connection = open_connection(path)
-        .map_err(|error| format!("failed opening global ARAM config: {error}"))?;
-    let val: Option<String> = connection
-        .query_row(
-            "SELECT value FROM config WHERE key = 'worker_count'",
-            [],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|error| format!("failed reading global ARAM worker count: {error}"))?;
-    let count = val
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(3)
-        .clamp(1, 16);
-    Ok(count)
+fn global_worker_count(_path: &PathBuf) -> Result<usize, String> {
+    Ok(4)
 }
 
-fn set_global_worker_count(path: &PathBuf, count: usize) -> Result<(), String> {
-    let count = count.clamp(1, 16);
+fn set_global_worker_count(path: &PathBuf, _count: usize) -> Result<(), String> {
     let connection = open_connection(path)
         .map_err(|error| format!("failed opening global ARAM config: {error}"))?;
     connection
         .execute(
-            "INSERT INTO config (key, value, updated_at) VALUES ('worker_count', ?1, CURRENT_TIMESTAMP)
+            "INSERT INTO config (key, value, updated_at) VALUES ('worker_count', '4', CURRENT_TIMESTAMP)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
-            rusqlite::params![count.to_string()],
+            [],
         )
         .map(|_| ())
         .map_err(|error| format!("failed storing global ARAM worker count: {error}"))
-}
-
-async fn request_delay() {
-    let millis = 500
-        + (std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| (d.subsec_nanos() % 501) as u64)
-            .unwrap_or(250));
-    sleep(Duration::from_millis(millis)).await;
 }
 
 fn sync_state_value(path: &PathBuf, key: &str) -> Result<Option<String>, String> {
@@ -4351,7 +4685,9 @@ pub async fn collector_loop(path: PathBuf, runtime: Arc<RwLock<RuntimeState>>) {
 
         {
             let mut state = runtime.write().await;
-            if state.collector_state != "event_pending" && !state.collector_state.starts_with("game_in_progress") {
+            if state.collector_state != "event_pending"
+                && !state.collector_state.starts_with("game_in_progress")
+            {
                 state.collector_state = "live".to_string();
             }
         }
@@ -4442,7 +4778,10 @@ pub async fn websocket_loop(runtime: Arc<RwLock<RuntimeState>>) {
                     let mut state = runtime.write().await;
                     if phase == "InProgress" {
                         state.collector_state = "game_in_progress".to_string();
-                        logger::info("agent.websocket", "Gameflow phase InProgress: pausing background crawler");
+                        logger::info(
+                            "agent.websocket",
+                            "Gameflow phase InProgress: pausing background crawler",
+                        );
                     } else if phase == "EndOfGame" || phase == "WaitingForStats" {
                         state.collector_state = "event_pending".to_string();
                         COLLECTOR_WAKEUP.notify_one();
@@ -4642,26 +4981,26 @@ mod tests {
         assert!(cb.record_error().is_none());
         assert!(cb.is_in_cooldown().is_none());
 
-        // 4th error triggers cooldown (initial backoff 60s, next 120s)
+        // 4th error triggers cooldown (initial backoff 2s, next 4s)
         let action = cb.record_error();
-        assert_eq!(action, Some((4, 60, 120)));
+        assert_eq!(action, Some((4, 2, 4)));
         assert!(cb.is_in_cooldown().is_some());
 
         // Concurrent in-flight request failing while cooldown is ALREADY active must NOT escalate backoff!
         let stale_req_start = std::time::Instant::now() - Duration::from_secs(5);
-        let joined = cb.record_failure_for_request(false, stale_req_start);
+        let joined = cb.record_failure_for_request(false, None, stale_req_start);
         assert!(matches!(joined, CooldownOutcome::JoinedExisting { .. }));
         assert_eq!(cb.consecutive_errors, 4);
-        assert_eq!(cb.current_backoff_secs, 120);
+        assert_eq!(cb.current_backoff_secs, 4);
 
         // Success resets streak
         cb.record_success();
         assert!(cb.is_in_cooldown().is_none());
         assert_eq!(cb.consecutive_errors, 0);
 
-        // HTTP 429 triggers immediately on first error
-        let cooldown = cb.record_rate_limit(60);
-        assert_eq!(cooldown, 60); // max of 60 and initial backoff 60
+        // HTTP 429 triggers immediately on first error and respects Retry-After if provided
+        let cooldown = cb.record_rate_limit(Some(Duration::from_secs(5)));
+        assert_eq!(cooldown, 5);
         assert!(cb.is_in_cooldown().is_some());
     }
 
@@ -4717,5 +5056,22 @@ mod tests {
         assert_eq!(clamped, 20);
         assert_eq!(limiter.current_rpm(), 20);
     }
-}
 
+    #[tokio::test]
+    async fn test_adaptive_rate_limiter_burst_and_spacing() {
+        let mut limiter = AdaptiveRateLimiter::with_burst(600, 60, 600, None, 20, 3, 5, 16);
+        assert_eq!(limiter.current_rpm(), 600);
+
+        let t0 = std::time::Instant::now();
+        // 1st request
+        limiter.pace_next().await;
+        // 2nd request - must be spaced at least 20ms
+        limiter.pace_next().await;
+        let t2 = t0.elapsed();
+        assert!(t2 >= Duration::from_millis(18));
+
+        // 3rd request - reaches burst limit of 3
+        limiter.pace_next().await;
+        assert_eq!(limiter.burst_window.len(), 3);
+    }
+}

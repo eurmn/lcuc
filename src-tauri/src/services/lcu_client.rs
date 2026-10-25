@@ -18,6 +18,39 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System, UpdateKind};
 
+#[derive(Debug, Clone)]
+pub struct LcuResponseError {
+    pub status: Option<u16>,
+    pub retry_after: Option<Duration>,
+    pub message: String,
+}
+
+impl std::fmt::Display for LcuResponseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(status) = self.status {
+            if let Some(dur) = self.retry_after {
+                write!(
+                    f,
+                    "LCU request failed with status {} (retry-after: {}s): {}",
+                    status,
+                    dur.as_secs(),
+                    self.message
+                )
+            } else {
+                write!(
+                    f,
+                    "LCU request failed with status {}: {}",
+                    status, self.message
+                )
+            }
+        } else {
+            write!(f, "LCU network/client error: {}", self.message)
+        }
+    }
+}
+
+impl std::error::Error for LcuResponseError {}
+
 /// Credentials required to authenticate with the local League Client Update (LCU) API.
 #[derive(Debug, Clone)]
 pub struct LcuCredentials {
@@ -75,7 +108,7 @@ impl LcuClient {
         let client = Client::builder()
             .danger_accept_invalid_certs(true)
             .default_headers(headers)
-            .timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(30))
             .build()
             .map_err(|e| format!("Failed to build reqwest client: {}", e))?;
 
@@ -207,6 +240,48 @@ impl LcuClient {
         Self::new(creds)
     }
 
+    /// Performs an authenticated HTTP GET request against the local LCU API returning detailed error metadata.
+    pub async fn get_json_response<T: DeserializeOwned>(
+        &self,
+        path: &str,
+    ) -> Result<T, LcuResponseError> {
+        let url = format!("{}{}", self.credentials.base_url(), path);
+        let resp = self.client.get(&url).send().await.map_err(|e| {
+            let is_timeout = e.is_timeout();
+            LcuResponseError {
+                status: None,
+                retry_after: None,
+                message: if is_timeout {
+                    format!("LCU GET {path} timed out: {e}")
+                } else {
+                    format!("LCU GET {path} failed: {e}")
+                },
+            }
+        })?;
+
+        let status = resp.status();
+        let retry_after = resp
+            .headers()
+            .get("retry-after")
+            .and_then(|h| h.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(Duration::from_secs);
+
+        if !status.is_success() {
+            return Err(LcuResponseError {
+                status: Some(status.as_u16()),
+                retry_after,
+                message: format!("LCU GET {path} returned HTTP {status}"),
+            });
+        }
+
+        resp.json::<T>().await.map_err(|e| LcuResponseError {
+            status: Some(status.as_u16()),
+            retry_after: None,
+            message: format!("Failed deserializing LCU JSON for {path}: {e}"),
+        })
+    }
+
     /// Performs an authenticated HTTP GET request against the local LCU API and deserializes the JSON response.
     ///
     /// # Arguments
@@ -215,25 +290,9 @@ impl LcuClient {
     /// # Errors
     /// Returns `Err(String)` on network error, non-2xx HTTP status, or JSON deserialization failure.
     pub async fn get_json<T: DeserializeOwned>(&self, path: &str) -> Result<T, String> {
-        let url = format!("{}{}", self.credentials.base_url(), path);
-        let resp = self
-            .client
-            .get(&url)
-            .send()
+        self.get_json_response(path)
             .await
-            .map_err(|e| format!("LCU GET {} failed: {}", path, e))?;
-
-        if !resp.status().is_success() {
-            return Err(format!(
-                "LCU GET {} returned error status: {}",
-                path,
-                resp.status()
-            ));
-        }
-
-        resp.json::<T>()
-            .await
-            .map_err(|e| format!("Failed deserializing LCU JSON for {}: {}", path, e))
+            .map_err(|e| e.to_string())
     }
 
     /// Performs an authenticated HTTP POST request with a JSON payload against the local LCU API.

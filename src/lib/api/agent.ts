@@ -134,6 +134,8 @@ export interface GlobalAramConfig {
   outdated_games?: number;
   has_patch_mismatch?: boolean;
   operations: AgentOperation[];
+  crawler_rate_text?: string;
+  crawler_mpm?: number;
 }
 
 export interface AgentOperation {

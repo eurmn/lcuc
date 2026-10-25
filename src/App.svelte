@@ -60,7 +60,6 @@
   let statisticsScope = $state<"personal" | "compare">("personal");
   let statisticsConfigOpen = $state(false);
   let globalLimit = $state(1000);
-  let globalWorkers = $state(3);
   let globalGames = $state(0);
   let globalCollectorState = $state("unknown");
   let globalQueuedJobs = $state(0);
@@ -76,7 +75,6 @@
   let hideLowPickrate = $state(false);
   let crawlerMpm = $state(0);
   let crawlerRateText = $state("0.0 match/min");
-  let countHistory: Array<{ count: number; time: number }> = [];
 
   let currentTree = $state<RuneTreePayload | null>(null);
   let sidebarLoading = $state(true);
@@ -112,7 +110,6 @@
         const config = await getGlobalAramConfig();
         if (!statisticsConfigOpen) {
           globalLimit = config.limit;
-          globalWorkers = config.workers ?? 3;
         }
         globalGames = config.games;
         globalCollectorState = config.collector_state;
@@ -122,6 +119,8 @@
         globalOutdatedGames = config.outdated_games ?? 0;
         globalHasPatchMismatch = Boolean(config.has_patch_mismatch);
         agentOperations = config.operations ?? [];
+        crawlerRateText = config.crawler_rate_text ?? "0.0 match/min";
+        crawlerMpm = config.crawler_mpm ?? 0;
         if (syncStatisticsCachePatch(globalCurrentPatch)) {
           statisticsRefreshKey += 1;
         }
@@ -132,45 +131,6 @@
             globalCollectorState !== "sleeping" &&
             globalCollectorState !== "unknown" &&
             !globalCollectorState.includes("paused"));
-
-        const crawlerOp = agentOperations.find((op) => op.id === "global-database");
-        const currentCount = crawlerOp?.current ?? globalGames;
-        const now = Date.now();
-
-        if (hasActiveWork && currentCount > 0) {
-          countHistory.push({ count: currentCount, time: now });
-          // Dynamic cutoff window adapting to processing rate:
-          // Low rate (<1 match/min) -> wider window up to 300s to avoid zero-step noise
-          // Normal/fast rate (>10 match/min) -> 60s responsive window
-          const dynamicWindowMs = crawlerMpm < 1 ? 300_000 : crawlerMpm < 10 ? 120_000 : 60_000;
-          const cutoff = now - dynamicWindowMs;
-          countHistory = countHistory.filter((item) => item.time >= cutoff);
-
-          if (countHistory.length >= 2) {
-            const oldest = countHistory[0];
-            const newest = countHistory[countHistory.length - 1];
-            const timeDeltaSec = (newest.time - oldest.time) / 1000;
-            const countDelta = newest.count - oldest.count;
-            if (timeDeltaSec >= 2.0 && countDelta >= 0) {
-              const ratePerSec = countDelta / timeDeltaSec;
-              crawlerMpm = ratePerSec * 60;
-
-              // Auto-scale unit based on rate: matches/sec, matches/min, matches/hr
-              if (ratePerSec >= 1.0) {
-                crawlerRateText = `${ratePerSec.toFixed(1)} match/s`;
-              } else if (crawlerMpm >= 1.0) {
-                crawlerRateText = `${crawlerMpm.toFixed(1)} match/min`;
-              } else {
-                const perHour = crawlerMpm * 60;
-                crawlerRateText = `${perHour.toFixed(0)} match/h`;
-              }
-            }
-          }
-        } else {
-          countHistory = [];
-          crawlerMpm = 0;
-          crawlerRateText = "0.0 match/min";
-        }
       } catch (error) {
         logger.warn("frontend.app", "Global statistics config unavailable", error);
       }
@@ -212,12 +172,10 @@
   async function saveGlobalStatisticsLimit() {
     savingGlobalLimit = true;
     try {
-      const [limitResult, workersResult] = await Promise.all([
-        setGlobalAramLimit(Math.max(1, Math.min(100000, Math.floor(globalLimit)))),
-        setGlobalAramWorkers(Math.max(1, Math.min(16, Math.floor(globalWorkers)))),
-      ]);
+      const limitResult = await setGlobalAramLimit(
+        Math.max(1, Math.min(100000, Math.floor(globalLimit)))
+      );
       globalLimit = limitResult.limit;
-      globalWorkers = workersResult.workers;
       confirmingGlobalReset = false;
       statisticsConfigOpen = false;
     } catch (error) {
@@ -238,7 +196,6 @@
       globalOutdatedGames = 0;
       globalHasPatchMismatch = false;
       globalCollectorState = `global-aram:0/${result.limit} (reset)`;
-      countHistory = [];
       crawlerMpm = 0;
       crawlerRateText = "0.0 match/min";
       confirmingGlobalReset = false;
@@ -752,10 +709,8 @@
 
                         <label class="text-[11px] uppercase tracking-wider text-gray-500" for="global-aram-limit">Global ARAM game limit</label>
                         <input id="global-aram-limit" type="number" min="1" max="100000" bind:value={globalLimit} class="mt-1 w-full rounded border border-gray-700 bg-gray-950 px-2 py-1.5 text-xs text-gray-100" />
-                        <label class="mt-2 block text-[11px] uppercase tracking-wider text-gray-500" for="global-aram-workers">Crawler worker agents</label>
-                        <input id="global-aram-workers" type="number" min="1" max="16" bind:value={globalWorkers} class="mt-1 w-full rounded border border-gray-700 bg-gray-950 px-2 py-1.5 text-xs text-gray-100" />
                         <p class="mt-1 text-[10px] text-gray-400">
-                          {globalGames.toLocaleString()}/{globalLimit.toLocaleString()} games · {globalWorkers} workers{#if globalCurrentPatch} · Patch v{globalCurrentPatch}{/if}
+                          {globalGames.toLocaleString()}/{globalLimit.toLocaleString()} games{#if globalCurrentPatch} · Patch v{globalCurrentPatch}{/if}
                         </p>
                         <p class="mt-1 break-words text-[10px] text-cyan-300">Status: {globalCollectorState}{#if globalQueuedJobs > 0} · {globalQueuedJobs.toLocaleString()} queued{/if}</p>
                         <label class="mt-3 flex items-center gap-2 text-[11px] text-gray-300">
