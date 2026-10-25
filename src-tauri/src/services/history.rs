@@ -29,8 +29,6 @@ const CDRAGON_STRINGTABLE_URL: &str =
     "https://raw.communitydragon.org/latest/game/en_us/data/menu/en_us/lol.stringtable.json";
 const CDRAGON_MAPS_URL: &str =
     "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/maps.json";
-const CDRAGON_CHERRY_AUGMENT_ICON_BASE: &str =
-    "https://raw.communitydragon.org/latest/game/assets/ux/cherry/augments/icons";
 
 fn history_data_dir() -> PathBuf {
     dirs::data_local_dir()
@@ -120,14 +118,14 @@ fn augment_resolution_cache_path() -> PathBuf {
     history_data_dir()
         .join("cache")
         .join("match-history")
-        .join("augments_v8.json")
+        .join("augments_v9.json")
 }
 
 fn augment_catalog_cache_path() -> PathBuf {
     history_data_dir()
         .join("cache")
         .join("match-history")
-        .join("augment_catalog_v9.json")
+        .join("augment_catalog_v10.json")
 }
 
 /// Clears all in-memory and on-disk item, map, and augment caches (triggered on patch updates).
@@ -308,7 +306,13 @@ async fn get_maps_by_id() -> HashMap<u16, String> {
     maps
 }
 
-fn classify_item(name: &str, price_total: i64, from_count: usize, categories: &[String], desc: &str) -> Option<String> {
+fn classify_item(
+    name: &str,
+    price_total: i64,
+    from_count: usize,
+    categories: &[String],
+    desc: &str,
+) -> Option<String> {
     if categories.iter().any(|c| c.eq_ignore_ascii_case("boots")) {
         return Some("boot".to_string());
     }
@@ -318,11 +322,17 @@ fn classify_item(name: &str, price_total: i64, from_count: usize, categories: &[
     if name.contains("Doran")
         || name.contains("Guardian's")
         || name.contains("Tear of the Goddess")
-        || (price_total <= 500 && categories.iter().any(|c| c.eq_ignore_ascii_case("lane") || c.eq_ignore_ascii_case("jungle")))
+        || (price_total <= 500
+            && categories
+                .iter()
+                .any(|c| c.eq_ignore_ascii_case("lane") || c.eq_ignore_ascii_case("jungle")))
     {
         return Some("starter".to_string());
     }
-    if categories.iter().any(|c| c.eq_ignore_ascii_case("consumable") || c.eq_ignore_ascii_case("trinket")) {
+    if categories
+        .iter()
+        .any(|c| c.eq_ignore_ascii_case("consumable") || c.eq_ignore_ascii_case("trinket"))
+    {
         return Some("other".to_string());
     }
     if from_count > 0 && price_total >= 2200 {
@@ -379,7 +389,11 @@ async fn get_items_by_id() -> Result<HashMap<i32, CachedItemInfo>, String> {
         };
 
         let price_total = item.get("priceTotal").and_then(Value::as_i64).unwrap_or(0);
-        let from_count = item.get("from").and_then(Value::as_array).map(|a| a.len()).unwrap_or(0);
+        let from_count = item
+            .get("from")
+            .and_then(Value::as_array)
+            .map(|a| a.len())
+            .unwrap_or(0);
         let categories: Vec<String> = item
             .get("categories")
             .and_then(Value::as_array)
@@ -387,7 +401,10 @@ async fn get_items_by_id() -> Result<HashMap<i32, CachedItemInfo>, String> {
             .flatten()
             .filter_map(|c| c.as_str().map(str::to_string))
             .collect();
-        let raw_desc = item.get("description").and_then(Value::as_str).unwrap_or("");
+        let raw_desc = item
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         let item_class = classify_item(&name, price_total, from_count, &categories, raw_desc);
         let description = if raw_desc.is_empty() {
             None
@@ -548,7 +565,7 @@ fn format_kiwi_calculation(
                 }
                 "NamedDataValueCalculationPart" => {
                     if let Some(dv_name) = p_obj.get("mDataValue").and_then(Value::as_str) {
-                        if let Some(& raw_val) = val_map.get(&dv_name.to_lowercase()) {
+                        if let Some(&raw_val) = val_map.get(&dv_name.to_lowercase()) {
                             let val = if is_pct { raw_val * 100.0 } else { raw_val };
                             let suffix = if is_pct { "%" } else { "" };
                             base_parts.push(format!("{}{suffix}", clean_num_str(val)));
@@ -647,7 +664,11 @@ fn replace_math_tokens_in_tooltip(
                         .chars()
                         .all(|c| c.is_ascii_digit() || c == '.' || c == '*')
                 {
-                    i = if trailing_pct { end_idx + 2 } else { end_idx + 1 };
+                    i = if trailing_pct {
+                        end_idx + 2
+                    } else {
+                        end_idx + 1
+                    };
                     continue;
                 }
 
@@ -657,7 +678,10 @@ fn replace_math_tokens_in_tooltip(
                     .skip(1)
                     .find(|&(_, c)| c == '*' || c == '/' || c == '+' || c == '-');
                 let (param, op_and_num) = if let Some((pos, op)) = op_pos {
-                    (&expr[..pos], Some((op, expr[pos + 1..].parse::<f64>().ok())))
+                    (
+                        &expr[..pos],
+                        Some((op, expr[pos + 1..].parse::<f64>().ok())),
+                    )
                 } else {
                     (expr.as_str(), None)
                 };
@@ -679,9 +703,8 @@ fn replace_math_tokens_in_tooltip(
                     let pct_str = if trailing_pct { "%" } else { "" };
                     replaced = Some(format!("{}{pct_str}", clean_num_str(val)));
                 } else if let Some(calcs_map) = calcs {
-                    if let Some((_, calc_obj)) = calcs_map
-                        .iter()
-                        .find(|(k, _)| k.to_lowercase() == p_lower)
+                    if let Some((_, calc_obj)) =
+                        calcs_map.iter().find(|(k, _)| k.to_lowercase() == p_lower)
                     {
                         let formatted = format_kiwi_calculation(calc_obj, val_map, calcs_map, 0);
                         if !formatted.is_empty() {
@@ -697,7 +720,11 @@ fn replace_math_tokens_in_tooltip(
 
                 if let Some(rep) = replaced {
                     result.push_str(&rep);
-                    i = if trailing_pct { end_idx + 2 } else { end_idx + 1 };
+                    i = if trailing_pct {
+                        end_idx + 2
+                    } else {
+                        end_idx + 1
+                    };
                     continue;
                 }
             }
@@ -773,6 +800,15 @@ fn resolve_live_kiwi_tooltip(
     if raw_tooltip.is_empty() {
         if let Some(desc) = cherry_desc.filter(|s| !s.trim().is_empty()) {
             raw_tooltip = desc.to_string();
+        }
+    }
+
+    if raw_tooltip.contains("<mainText>") {
+        if let Some(start) = raw_tooltip.find("<mainText>") {
+            let rest = &raw_tooltip[start + 10..];
+            if let Some(end) = rest.find("</mainText>") {
+                raw_tooltip = rest[..end].to_string();
+            }
         }
     }
 
@@ -900,11 +936,33 @@ async fn get_augment_catalog_map() -> Result<HashMap<String, AugmentCatalogEntry
     );
 
     let mut stringtable_entries: HashMap<String, String> = HashMap::new();
+    let mut stringtable_titles: HashMap<String, String> = HashMap::new();
     if let Some(st_val) = stringtable_res {
         if let Some(entries_obj) = st_val.get("entries").and_then(Value::as_object) {
             for (k, v) in entries_obj {
                 if let Some(s) = v.as_str() {
                     stringtable_entries.insert(k.to_lowercase(), s.to_string());
+                    if s.contains("<titleLeft>") && s.contains("<mainText>") {
+                        if let Some(start_title) = s.find("<titleLeft>") {
+                            let title_slice = &s[start_title + 11..];
+                            if let Some(end_title) = title_slice.find("</titleLeft>") {
+                                let clean_title = title_slice[..end_title]
+                                    .replace("&nbsp;", " ")
+                                    .trim()
+                                    .to_string();
+                                if let Some(start_main) = s.find("<mainText>") {
+                                    let main_slice = &s[start_main + 10..];
+                                    if let Some(end_main) = main_slice.find("</mainText>") {
+                                        let desc = main_slice[..end_main].trim().to_string();
+                                        if !desc.is_empty() {
+                                            stringtable_titles
+                                                .insert(clean_title.to_lowercase(), desc);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -913,7 +971,7 @@ async fn get_augment_catalog_map() -> Result<HashMap<String, AugmentCatalogEntry
     // 1. Primary: cherry-augments.json (Contains official localized names and paths for Arena and ARAM Mayhem)
     if let Some(entries) = cherry_res {
         for entry in entries {
-            let name = entry
+            let mut name = entry
                 .get("nameTRA")
                 .or_else(|| entry.get("name"))
                 .or_else(|| entry.get("simpleNameTRA"))
@@ -921,8 +979,30 @@ async fn get_augment_catalog_map() -> Result<HashMap<String, AugmentCatalogEntry
                 .unwrap_or("")
                 .trim()
                 .to_string();
+
+            let id_str = entry
+                .get("id")
+                .and_then(Value::as_i64)
+                .map(|id| id.to_string());
+            let name_id_str = entry.get("augmentNameId").and_then(Value::as_str);
+
             if name.is_empty() {
-                continue;
+                if let Some(nid) = name_id_str {
+                    if nid == "GoH_PentakillAug_Generic" {
+                        name = "Gifts of Heavy Metal".to_string();
+                    } else if let Some(stripped) = nid
+                        .strip_prefix("ARAM_")
+                        .or_else(|| nid.strip_prefix("GoH_"))
+                    {
+                        name = stripped.replace('_', " ");
+                    } else {
+                        name = nid.replace('_', " ");
+                    }
+                } else if let Some(ref id) = id_str {
+                    name = format!("Augment #{id}");
+                } else {
+                    continue;
+                }
             }
 
             let icon_path = entry
@@ -939,33 +1019,29 @@ async fn get_augment_catalog_map() -> Result<HashMap<String, AugmentCatalogEntry
                 _ => None,
             };
 
-            let id_str = entry
-                .get("id")
-                .and_then(Value::as_i64)
-                .map(|id| id.to_string());
-            let name_id_str = entry.get("augmentNameId").and_then(Value::as_str);
             let cherry_desc = entry
                 .get("desc")
                 .or_else(|| entry.get("tooltip"))
                 .and_then(Value::as_str);
 
             let live_tooltip = name_id_str.and_then(|nid| {
-                resolve_live_kiwi_tooltip(
-                    nid,
-                    cherry_desc,
-                    kiwi_res.as_ref(),
-                    &stringtable_entries,
-                )
+                resolve_live_kiwi_tooltip(nid, cherry_desc, kiwi_res.as_ref(), &stringtable_entries)
             });
             let bundled_tooltip = get_bundled_tooltip(id_str.as_deref(), name_id_str);
-            // Prefer live CDragon tooltip if it resolved cleanly without unresolved @ tokens; otherwise fallback to bundled
-            let tooltip = match (&live_tooltip, &bundled_tooltip) {
-                (Some(live), _) if !live.contains('@') && !live.contains("{{") => {
+            let title_tooltip = stringtable_titles
+                .get(&name.to_lowercase())
+                .or_else(|| name_id_str.and_then(|nid| stringtable_titles.get(&nid.to_lowercase())))
+                .cloned();
+
+            // Prefer live CDragon tooltip if it resolved cleanly without unresolved @ tokens; otherwise fallback to bundled, title map, or cherry_desc
+            let tooltip = match (&live_tooltip, &bundled_tooltip, &title_tooltip) {
+                (Some(live), _, _) if !live.contains('@') && !live.contains("{{") => {
                     Some(live.clone())
                 }
-                (_, Some(bundled)) => Some(bundled.clone()),
-                (Some(live), None) => Some(live.clone()),
-                (None, None) => cherry_desc.map(str::to_string),
+                (_, Some(bundled), _) => Some(bundled.clone()),
+                (Some(live), None, _) if !live.trim().is_empty() => Some(live.clone()),
+                (_, _, Some(t_desc)) => Some(t_desc.clone()),
+                _ => cherry_desc.map(str::to_string),
             };
 
             let parsed_entry = AugmentCatalogEntry {
@@ -998,6 +1074,7 @@ async fn get_augment_catalog_map() -> Result<HashMap<String, AugmentCatalogEntry
             kiwi_val,
             kiwi_val,
             &stringtable_entries,
+            &stringtable_titles,
             &mut catalog_map,
             &tooltips_map,
         );
@@ -1021,6 +1098,7 @@ fn populate_kiwi_catalog(
     val: &Value,
     kiwi_root: &Value,
     stringtable: &HashMap<String, String>,
+    stringtable_titles: &HashMap<String, String>,
     map: &mut HashMap<String, AugmentCatalogEntry>,
     tooltips_map: &HashMap<String, Value>,
 ) {
@@ -1028,6 +1106,7 @@ fn populate_kiwi_catalog(
         Value::Object(obj) => {
             let has_id = obj
                 .get("id")
+                .or_else(|| obj.get("AugmentPlatformId"))
                 .or_else(|| obj.get("mName"))
                 .or_else(|| obj.get("AugmentNameId"));
             if let Some(id_val) = has_id {
@@ -1035,6 +1114,7 @@ fn populate_kiwi_catalog(
                 if !id_str.is_empty() && !map.contains_key(&id_str) {
                     let display_name_key = obj
                         .get("DisplayNameTra")
+                        .or_else(|| obj.get("NameTra"))
                         .and_then(Value::as_str)
                         .unwrap_or("")
                         .to_lowercase();
@@ -1046,7 +1126,13 @@ fn populate_kiwi_catalog(
                                 .or_else(|| obj.get("mName"))
                                 .or_else(|| obj.get("AugmentNameId"))
                                 .and_then(Value::as_str)
-                                .map(str::to_string)
+                                .map(|s| {
+                                    if s == "GoH_PentakillAug_Generic" {
+                                        "Gifts of Heavy Metal".to_string()
+                                    } else {
+                                        s.to_string()
+                                    }
+                                })
                         })
                         .unwrap_or_else(|| id_str.clone());
                     let icon_path = obj
@@ -1064,24 +1150,61 @@ fn populate_kiwi_catalog(
                         .and_then(Value::as_str)
                         .filter(|s| !s.is_empty())
                         .map(str::to_string);
-                    let tooltip = live_tooltip.or(bundled_tooltip);
+                    let title_tooltip = stringtable_titles.get(&name.to_lowercase()).cloned();
+                    let tooltip = live_tooltip.or(bundled_tooltip).or(title_tooltip);
+                    let rarity = obj.get("rarity").and_then(|r| match r {
+                        Value::Number(n) => match n.as_i64() {
+                            Some(0) => Some("silver".to_string()),
+                            Some(1) => Some("gold".to_string()),
+                            Some(2) => Some("prismatic".to_string()),
+                            _ => None,
+                        },
+                        Value::String(s) => match s.to_lowercase().as_str() {
+                            "ksilver" | "silver" => Some("silver".to_string()),
+                            "kgold" | "gold" => Some("gold".to_string()),
+                            "kprismatic" | "prismatic" => Some("prismatic".to_string()),
+                            _ => None,
+                        },
+                        _ => None,
+                    });
                     let entry = AugmentCatalogEntry {
                         name,
                         icon_url,
-                        rarity: None,
+                        rarity,
                         tooltip,
                     };
                     map.insert(id_str.clone(), entry.clone());
-                    map.insert(id_str.to_lowercase(), entry);
+                    map.insert(id_str.to_lowercase(), entry.clone());
+                    if let Some(pid) = obj.get("AugmentPlatformId").and_then(value_to_id) {
+                        map.insert(pid.clone(), entry.clone());
+                    }
+                    if let Some(nid) = obj.get("AugmentNameId").and_then(Value::as_str) {
+                        map.insert(nid.to_string(), entry.clone());
+                        map.insert(nid.to_lowercase(), entry);
+                    }
                 }
             }
             for child in obj.values() {
-                populate_kiwi_catalog(child, kiwi_root, stringtable, map, tooltips_map);
+                populate_kiwi_catalog(
+                    child,
+                    kiwi_root,
+                    stringtable,
+                    stringtable_titles,
+                    map,
+                    tooltips_map,
+                );
             }
         }
         Value::Array(arr) => {
             for child in arr {
-                populate_kiwi_catalog(child, kiwi_root, stringtable, map, tooltips_map);
+                populate_kiwi_catalog(
+                    child,
+                    kiwi_root,
+                    stringtable,
+                    stringtable_titles,
+                    map,
+                    tooltips_map,
+                );
             }
         }
         _ => {}
@@ -1493,15 +1616,12 @@ pub async fn get_current_summoner_match_history(
                     }
                 }
 
-                let raw_version = game
-                    .get("gameVersion")
-                    .and_then(Value::as_str)
-                    .or_else(|| {
-                        details_by_game_id
-                            .get(&game_id)
-                            .and_then(|d| d.get("gameVersion"))
-                            .and_then(Value::as_str)
-                    });
+                let raw_version = game.get("gameVersion").and_then(Value::as_str).or_else(|| {
+                    details_by_game_id
+                        .get(&game_id)
+                        .and_then(|d| d.get("gameVersion"))
+                        .and_then(Value::as_str)
+                });
                 let patch = raw_version.and_then(crate::services::patch_manager::normalize_patch);
                 let map_name = maps_by_id.get(&map_id).cloned();
 
@@ -1674,13 +1794,17 @@ pub async fn enrich_statistics_response(mut response: Value) -> Result<Value, St
             }
             ids
         })
-        .map(Value::String)
         .collect::<Vec<_>>();
-    let augment_map = resolve_augments(Some(&Value::Array(augment_ids)))
-        .await
-        .into_iter()
-        .map(|augment| (augment.id.clone(), augment))
-        .collect::<HashMap<_, _>>();
+    let mut unique_augment_ids = augment_ids;
+    unique_augment_ids.sort();
+    unique_augment_ids.dedup();
+    let augment_map = resolve_augments(Some(&Value::Array(
+        unique_augment_ids.into_iter().map(Value::String).collect(),
+    )))
+    .await
+    .into_iter()
+    .map(|augment| (augment.id.clone(), augment))
+    .collect::<HashMap<_, _>>();
 
     for row in rows {
         let Some(object) = row.as_object_mut() else {
@@ -1704,14 +1828,20 @@ pub async fn enrich_statistics_response(mut response: Value) -> Result<Value, St
         {
             if let Some(item_info) = items.get(&item_id) {
                 object.insert("name".to_string(), Value::String(item_info.name.clone()));
-                object.insert("icon_url".to_string(), Value::String(item_info.icon_url.clone()));
+                object.insert(
+                    "icon_url".to_string(),
+                    Value::String(item_info.icon_url.clone()),
+                );
                 if let Some(item_class) = &item_info.item_class {
                     object.insert("item_class".to_string(), Value::String(item_class.clone()));
                 }
                 if let Some(desc) = &item_info.description {
                     object.insert("description".to_string(), Value::String(desc.clone()));
                 }
-                object.insert("price_total".to_string(), Value::Number(item_info.price_total.into()));
+                object.insert(
+                    "price_total".to_string(),
+                    Value::Number(item_info.price_total.into()),
+                );
                 object.insert(
                     "categories".to_string(),
                     serde_json::to_value(&item_info.categories).unwrap_or_else(|_| json!([])),
@@ -1757,65 +1887,124 @@ pub async fn enrich_statistics_response(mut response: Value) -> Result<Value, St
                 let Some(comp_obj) = component.as_object_mut() else {
                     continue;
                 };
-                let comp_kind = comp_obj.get("kind").and_then(Value::as_str).unwrap_or_default();
-                let comp_id_str = comp_obj.get("id").and_then(|v| {
-                    v.as_str().map(ToString::to_string).or_else(|| v.as_i64().map(|n| n.to_string()))
-                }).unwrap_or_default();
+                let comp_kind = comp_obj
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let comp_id_str = comp_obj
+                    .get("id")
+                    .and_then(|v| {
+                        v.as_str()
+                            .map(ToString::to_string)
+                            .or_else(|| v.as_i64().map(|n| n.to_string()))
+                    })
+                    .unwrap_or_default();
 
                 match comp_kind {
                     "champion" => {
                         if let Ok(champ_id) = comp_id_str.parse::<i64>() {
                             if let Some(champion) = champions_by_id.get(&champ_id) {
-                                comp_obj.insert("name".to_string(), Value::String(champion.name.clone()));
-                                comp_obj.insert("icon_url".to_string(), Value::String(champion.square_icon_url.clone()));
+                                comp_obj.insert(
+                                    "name".to_string(),
+                                    Value::String(champion.name.clone()),
+                                );
+                                comp_obj.insert(
+                                    "icon_url".to_string(),
+                                    Value::String(champion.square_icon_url.clone()),
+                                );
                                 component_names.push(champion.name.clone());
                             } else {
-                                component_names.push(comp_obj.get("name").and_then(Value::as_str).unwrap_or("Champion").to_string());
+                                component_names.push(
+                                    comp_obj
+                                        .get("name")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("Champion")
+                                        .to_string(),
+                                );
                             }
                         }
                     }
                     "item" => {
                         if let Ok(item_id) = comp_id_str.parse::<i32>() {
                             if let Some(item_info) = items.get(&item_id) {
-                                comp_obj.insert("name".to_string(), Value::String(item_info.name.clone()));
-                                comp_obj.insert("icon_url".to_string(), Value::String(item_info.icon_url.clone()));
+                                comp_obj.insert(
+                                    "name".to_string(),
+                                    Value::String(item_info.name.clone()),
+                                );
+                                comp_obj.insert(
+                                    "icon_url".to_string(),
+                                    Value::String(item_info.icon_url.clone()),
+                                );
                                 if let Some(item_class) = &item_info.item_class {
-                                    comp_obj.insert("item_class".to_string(), Value::String(item_class.clone()));
+                                    comp_obj.insert(
+                                        "item_class".to_string(),
+                                        Value::String(item_class.clone()),
+                                    );
                                 }
                                 if let Some(desc) = &item_info.description {
-                                    comp_obj.insert("description".to_string(), Value::String(desc.clone()));
+                                    comp_obj.insert(
+                                        "description".to_string(),
+                                        Value::String(desc.clone()),
+                                    );
                                 }
-                                comp_obj.insert("price_total".to_string(), Value::Number(item_info.price_total.into()));
+                                comp_obj.insert(
+                                    "price_total".to_string(),
+                                    Value::Number(item_info.price_total.into()),
+                                );
                                 comp_obj.insert(
                                     "categories".to_string(),
-                                    serde_json::to_value(&item_info.categories).unwrap_or_else(|_| json!([])),
+                                    serde_json::to_value(&item_info.categories)
+                                        .unwrap_or_else(|_| json!([])),
                                 );
                                 component_names.push(item_info.name.clone());
                             } else {
-                                component_names.push(comp_obj.get("name").and_then(Value::as_str).unwrap_or("Item").to_string());
+                                component_names.push(
+                                    comp_obj
+                                        .get("name")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("Item")
+                                        .to_string(),
+                                );
                             }
                         }
                     }
                     "augment" => {
                         if let Some(augment) = augment_map.get(&comp_id_str) {
-                            comp_obj.insert("name".to_string(), Value::String(augment.name.clone()));
-                            comp_obj.insert("icon_url".to_string(), Value::String(augment.icon_url.clone()));
+                            comp_obj
+                                .insert("name".to_string(), Value::String(augment.name.clone()));
+                            comp_obj.insert(
+                                "icon_url".to_string(),
+                                Value::String(augment.icon_url.clone()),
+                            );
                             if let Some(rarity) = &augment.rarity {
-                                comp_obj.insert("rarity".to_string(), Value::String(rarity.clone()));
+                                comp_obj
+                                    .insert("rarity".to_string(), Value::String(rarity.clone()));
                             }
                             if let Some(tooltip) = &augment.tooltip {
-                                comp_obj.insert("description".to_string(), Value::String(tooltip.clone()));
+                                comp_obj.insert(
+                                    "description".to_string(),
+                                    Value::String(tooltip.clone()),
+                                );
                             }
                             component_names.push(augment.name.clone());
                         } else {
-                            component_names.push(comp_obj.get("name").and_then(Value::as_str).unwrap_or("Augment").to_string());
+                            component_names.push(
+                                comp_obj
+                                    .get("name")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("Augment")
+                                    .to_string(),
+                            );
                         }
                     }
                     _ => {}
                 }
             }
             if !component_names.is_empty() {
-                object.insert("name".to_string(), Value::String(component_names.join(" + ")));
+                object.insert(
+                    "name".to_string(),
+                    Value::String(component_names.join(" + ")),
+                );
             }
         }
         if let Some(contexts) = object.get_mut("champions").and_then(Value::as_array_mut) {
@@ -1849,16 +2038,26 @@ pub async fn enrich_statistics_response(mut response: Value) -> Result<Value, St
                     .and_then(|id| id.parse::<i32>().ok())
                 {
                     if let Some(item_info) = items.get(&item_id) {
-                        context_object.insert("name".to_string(), Value::String(item_info.name.clone()));
                         context_object
-                            .insert("icon_url".to_string(), Value::String(item_info.icon_url.clone()));
+                            .insert("name".to_string(), Value::String(item_info.name.clone()));
+                        context_object.insert(
+                            "icon_url".to_string(),
+                            Value::String(item_info.icon_url.clone()),
+                        );
                         if let Some(item_class) = &item_info.item_class {
-                            context_object.insert("item_class".to_string(), Value::String(item_class.clone()));
+                            context_object.insert(
+                                "item_class".to_string(),
+                                Value::String(item_class.clone()),
+                            );
                         }
                         if let Some(desc) = &item_info.description {
-                            context_object.insert("description".to_string(), Value::String(desc.clone()));
+                            context_object
+                                .insert("description".to_string(), Value::String(desc.clone()));
                         }
-                        context_object.insert("price_total".to_string(), Value::Number(item_info.price_total.into()));
+                        context_object.insert(
+                            "price_total".to_string(),
+                            Value::Number(item_info.price_total.into()),
+                        );
                     }
                 } else if let Some(augment_id) = partner_id.strip_prefix("augment:") {
                     if let Some(augment) = augment_map.get(augment_id) {
@@ -1869,10 +2068,12 @@ pub async fn enrich_statistics_response(mut response: Value) -> Result<Value, St
                             Value::String(augment.icon_url.clone()),
                         );
                         if let Some(rarity) = &augment.rarity {
-                            context_object.insert("rarity".to_string(), Value::String(rarity.clone()));
+                            context_object
+                                .insert("rarity".to_string(), Value::String(rarity.clone()));
                         }
                         if let Some(tooltip) = &augment.tooltip {
-                            context_object.insert("description".to_string(), Value::String(tooltip.clone()));
+                            context_object
+                                .insert("description".to_string(), Value::String(tooltip.clone()));
                         }
                     }
                 }

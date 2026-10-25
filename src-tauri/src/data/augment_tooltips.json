@@ -8778,5 +8778,35 @@
     "name": "Zhonya's Epiphany",
     "rarity": "kPrismatic",
     "tooltip": "Puts you in Stasis for 3 seconds, rendering you Untargetable and Invulnerable for the duration but also unable to act, and resetting your basic ability cooldowns."
+  },
+  "3176": {
+    "name": "Gifts of Heavy Metal",
+    "rarity": "kGold",
+    "tooltip": "Cast Abilities or score takedowns to trigger heavy metal chords that deal bonus damage to enemies."
+  },
+  "GoH_PentakillAug_Generic": {
+    "name": "Gifts of Heavy Metal",
+    "rarity": "kGold",
+    "tooltip": "Cast Abilities or score takedowns to trigger heavy metal chords that deal bonus damage to enemies."
+  },
+  "goh_pentakillaug_generic": {
+    "name": "Gifts of Heavy Metal",
+    "rarity": "kGold",
+    "tooltip": "Cast Abilities or score takedowns to trigger heavy metal chords that deal bonus damage to enemies."
+  },
+  "3016": {
+    "name": "Third Times the Harm",
+    "rarity": "kPrismatic",
+    "tooltip": "Attacking an enemy 3 times deals additional true damage."
+  },
+  "ThirdTimesTheHarm": {
+    "name": "Third Times the Harm",
+    "rarity": "kPrismatic",
+    "tooltip": "Attacking an enemy 3 times deals additional true damage."
+  },
+  "thirdtimestheharm": {
+    "name": "Third Times the Harm",
+    "rarity": "kPrismatic",
+    "tooltip": "Attacking an enemy 3 times deals additional true damage."
   }
 }

@@ -209,14 +209,10 @@ mod tests {
 
     #[test]
     fn test_normalize_patch() {
-        assert_eq!(
-            normalize_patch("16.20.623.6777"),
-            Some("16.20".to_string())
-        );
+        assert_eq!(normalize_patch("16.20.623.6777"), Some("16.20".to_string()));
         assert_eq!(normalize_patch("v15.8.1"), Some("15.8".to_string()));
         assert_eq!(normalize_patch("16.1"), Some("16.1".to_string()));
         assert_eq!(normalize_patch(""), None);
         assert_eq!(normalize_patch("invalid"), None);
     }
 }
-
