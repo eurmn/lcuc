@@ -139,48 +139,75 @@
       <span class="text-xs text-gray-500">{total || rows.length} champions · {sampleCount} games {#if refreshing}· refreshing{/if}</span>
     </div>
   {/if}
-  {#if loading && rows.length === 0}
-    <div class="mt-4 flex-1 animate-pulse rounded-lg border border-gray-800 bg-gray-900/50"></div>
-  {:else if error && rows.length === 0}
-    <div class="flex flex-1 items-center justify-center text-sm text-red-400">{error}</div>
-  {:else if rows.length === 0}
-    <div class="flex flex-1 items-center justify-center text-sm text-gray-500">No statistics available.</div>
-  {:else}
-    {#snippet partnerList(title: string, prefix: string, games: number, partners: ServerStatisticRow["partners"])}
-      <div class="min-w-0 border-l border-gray-800 pl-4">
-        <h3 class="mb-1.5 text-xs font-semibold uppercase tracking-wider text-gray-500">{title}</h3>
-        <div class="max-h-40 space-y-1.5 overflow-y-auto pr-1 scrollbar-thin scrollbar-thumb-gray-800">
-          {#each filterAndSortPartners(partners, prefix, games) as partner (partner.id)}
-            <div class="flex items-center justify-between gap-2 text-xs">
-              <div class="flex min-w-0 items-center gap-1.5">
-                {#if partner.icon_url}
-                  <img src={partner.icon_url} alt={partner.name} class="h-5 w-5 shrink-0 rounded object-cover" />
-                {/if}
-                <span class="truncate" title={partner.name}>{partner.name}</span>
-              </div>
-              <span class="shrink-0 text-right text-gray-400">{partner.games} games · {percent(partner.win_rate)} WR · <span class={partner.wpa >= 0 ? "text-emerald-300" : "text-red-300"}>{formatWpa(partner.wpa)} WPA</span></span>
+  {#snippet partnerList(title: string, prefix: string, games: number, partners: ServerStatisticRow["partners"])}
+    <div class="min-w-0 border-l border-gray-800 pl-4">
+      <h3 class="mb-1.5 text-xs font-semibold uppercase tracking-wider text-gray-500">{title}</h3>
+      <div class="max-h-40 space-y-1.5 overflow-y-auto pr-1 scrollbar-thin scrollbar-thumb-gray-800">
+        {#each filterAndSortPartners(partners, prefix, games) as partner (partner.id)}
+          <div class="flex items-center justify-between gap-2 text-xs">
+            <div class="flex min-w-0 items-center gap-1.5">
+              {#if partner.icon_url}
+                <img src={partner.icon_url} alt={partner.name} class="h-5 w-5 shrink-0 rounded object-cover" />
+              {/if}
+              <span class="truncate" title={partner.name}>{partner.name}</span>
             </div>
-          {/each}
-        </div>
-      </div>
-    {/snippet}
-    <div class="mt-3 flex min-h-0 flex-1 flex-col gap-3">
-      <aside class="shrink-0 rounded-lg border border-gray-800 bg-gray-900/40 p-3">
-        {#if selected}
-          <div class="grid grid-cols-[minmax(240px,1fr)_minmax(0,1.4fr)_minmax(0,1.4fr)] gap-4">
-            <div class="min-w-0">
-              <div class="flex items-center gap-2.5 pb-3">{#if selected.icon_url}<img src={selected.icon_url} alt={selected.name} class="h-10 w-10 rounded-full object-cover" />{/if}<div><h2 class="font-bold text-white">{selected.name}</h2>{#if scope === "compare"}<p class="text-xs text-gray-400">Mine: {selected.personal_games ? `${selected.personal_games} games · ${percent(selected.personal_win_rate ?? 0)} WR · ${formatWpaPoints(selected.personal_wpa ?? 0)} WPA` : "No personal observations yet"}</p><p class="text-xs text-gray-400">Database: {selected.global_observed ? `${selected.global_games ?? selected.games} games · ${percent(selected.global_win_rate ?? selected.win_rate)} WR · ${formatWpaPoints(selected.global_wpa ?? selected.wpa)} WPA` : "No database observations yet"}</p>{:else}<p class="text-xs text-gray-400">{selected.games} games · {percent(selected.win_rate)} WR · {formatWpaPoints(selected.wpa)} WPA</p>{/if}</div></div>
-              <dl class="grid grid-cols-3 gap-2 text-xs">
-                <div><dt class="text-gray-500">KDA</dt><dd>{averageKda(selected).toFixed(2)}</dd></div><div><dt class="text-gray-500">Damage/min</dt><dd>{Math.round(selected.damage_per_minute)}</dd></div>
-                <div><dt class="text-gray-500">Avg gold</dt><dd>{Math.round(selected.gold / Math.max(1, selected.games)).toLocaleString()}</dd></div><div><dt class="text-gray-500">{scope === "compare" ? "Mine WPA" : "WPA"}</dt><dd class={((scope === "compare" ? selected.personal_wpa ?? 0 : selected.wpa) >= 0) ? "text-emerald-300" : "text-red-300"}>{formatWpaPoints(scope === "compare" ? (selected.personal_wpa ?? 0) : selected.wpa)}</dd></div>{#if scope === "compare"}<div><dt class="text-gray-500">Global WPA</dt><dd class={(selected.global_wpa ?? 0) >= 0 ? "text-emerald-300" : "text-red-300"}>{selected.global_observed ? formatWpaPoints(selected.global_wpa ?? 0) : "—"}</dd></div>{/if}
-              </dl>
-            </div>
-            {@render partnerList("Associated items", "item:", selected.games, selected.partners)}
-            {@render partnerList("Associated augments", "augment:", selected.games, selected.partners)}
+            <span class="shrink-0 text-right text-gray-400">{partner.games} games · {percent(partner.win_rate)} WR · <span class={partner.wpa >= 0 ? "text-emerald-300" : "text-red-300"}>{formatWpa(partner.wpa)} WPA</span></span>
           </div>
-        {:else}<div class="py-4 text-center text-sm text-gray-500">Select a champion to inspect its statistics.</div>{/if}
-      </aside>
-      <section class="min-h-0 flex-1 overflow-auto rounded-lg border border-gray-800 bg-black/40 scrollbar-thin scrollbar-thumb-gray-800">
+        {/each}
+      </div>
+    </div>
+  {/snippet}
+  <div class="mt-3 flex min-h-0 flex-1 flex-col gap-3">
+    <aside class="shrink-0 rounded-lg border border-gray-800 bg-gray-900/40 p-3">
+      {#if selected}
+        <div class="grid grid-cols-[minmax(240px,1fr)_minmax(0,1.4fr)_minmax(0,1.4fr)] gap-4">
+          <div class="min-w-0">
+            <div class="flex items-center gap-2.5 pb-3">{#if selected.icon_url}<img src={selected.icon_url} alt={selected.name} class="h-10 w-10 rounded-full object-cover" />{/if}<div><h2 class="font-bold text-white">{selected.name}</h2>{#if scope === "compare"}<p class="text-xs text-gray-400">Mine: {selected.personal_games ? `${selected.personal_games} games · ${percent(selected.personal_win_rate ?? 0)} WR · ${formatWpaPoints(selected.personal_wpa ?? 0)} WPA` : "No personal observations yet"}</p><p class="text-xs text-gray-400">Database: {selected.global_observed ? `${selected.global_games ?? selected.games} games · ${percent(selected.global_win_rate ?? selected.win_rate)} WR · ${formatWpaPoints(selected.global_wpa ?? selected.wpa)} WPA` : "No database observations yet"}</p>{:else}<p class="text-xs text-gray-400">{selected.games} games · {percent(selected.win_rate)} WR · {formatWpaPoints(selected.wpa)} WPA</p>{/if}</div></div>
+            <dl class="grid grid-cols-3 gap-2 text-xs">
+              <div><dt class="text-gray-500">KDA</dt><dd>{averageKda(selected).toFixed(2)}</dd></div><div><dt class="text-gray-500">Damage/min</dt><dd>{Math.round(selected.damage_per_minute)}</dd></div>
+              <div><dt class="text-gray-500">Avg gold</dt><dd>{Math.round(selected.gold / Math.max(1, selected.games)).toLocaleString()}</dd></div><div><dt class="text-gray-500">{scope === "compare" ? "Mine WPA" : "WPA"}</dt><dd class={((scope === "compare" ? selected.personal_wpa ?? 0 : selected.wpa) >= 0) ? "text-emerald-300" : "text-red-300"}>{formatWpaPoints(scope === "compare" ? (selected.personal_wpa ?? 0) : selected.wpa)}</dd></div>{#if scope === "compare"}<div><dt class="text-gray-500">Global WPA</dt><dd class={(selected.global_wpa ?? 0) >= 0 ? "text-emerald-300" : "text-red-300"}>{selected.global_observed ? formatWpaPoints(selected.global_wpa ?? 0) : "—"}</dd></div>{/if}
+            </dl>
+          </div>
+          {@render partnerList("Associated items", "item:", selected.games, selected.partners)}
+          {@render partnerList("Associated augments", "augment:", selected.games, selected.partners)}
+        </div>
+      {:else if loading && rows.length === 0}
+        <div class="grid grid-cols-[minmax(240px,1fr)_minmax(0,1.4fr)_minmax(0,1.4fr)] gap-4 animate-pulse">
+          <div class="min-w-0">
+            <div class="flex items-center gap-2.5 pb-3">
+              <div class="h-10 w-10 rounded-full bg-gray-800 shrink-0"></div>
+              <div class="space-y-1.5 flex-1">
+                <div class="h-4 w-28 rounded bg-gray-800"></div>
+                <div class="h-3 w-40 rounded bg-gray-800/60"></div>
+              </div>
+            </div>
+            <div class="grid grid-cols-3 gap-2">
+              {#each Array(6) as _}
+                <div class="h-8 rounded bg-gray-800/40"></div>
+              {/each}
+            </div>
+          </div>
+          <div class="border-l border-gray-800 pl-4 space-y-2">
+            <div class="h-3 w-24 rounded bg-gray-800/60 mb-2"></div>
+            {#each Array(3) as _}
+              <div class="flex items-center gap-2"><div class="h-5 w-5 rounded bg-gray-800 shrink-0"></div><div class="h-3 w-32 rounded bg-gray-800/50"></div></div>
+            {/each}
+          </div>
+          <div class="border-l border-gray-800 pl-4 space-y-2">
+            <div class="h-3 w-24 rounded bg-gray-800/60 mb-2"></div>
+            {#each Array(3) as _}
+              <div class="flex items-center gap-2"><div class="h-5 w-5 rounded bg-gray-800 shrink-0"></div><div class="h-3 w-32 rounded bg-gray-800/50"></div></div>
+            {/each}
+          </div>
+        </div>
+      {:else}<div class="py-4 text-center text-sm text-gray-500">Select a champion to inspect its statistics.</div>{/if}
+    </aside>
+      <section class="relative min-h-0 flex-1 overflow-auto rounded-lg border border-gray-800 bg-black/40 scrollbar-thin scrollbar-thumb-gray-800">
+        {#if refreshing}
+          <div class="pointer-events-none absolute left-0 right-0 top-0 z-30 h-0.5 overflow-hidden bg-purple-950">
+            <div class="h-full w-full bg-purple-500 animate-[pulse_1s_infinite]"></div>
+          </div>
+        {/if}
         <div class="sticky top-0 z-10 flex justify-end border-b border-gray-800 bg-gray-900 px-3 py-2">
           <input value={search} oninput={handleSearchInput} type="search" placeholder="Search champions..." class="w-40 rounded-md border border-gray-700 bg-gray-950 px-2 py-1.5 text-[11px] text-gray-100 outline-none placeholder:text-gray-600 focus:border-purple-500" />
         </div>
@@ -197,19 +224,45 @@
             <th class="cursor-pointer px-3 py-2 text-right" onclick={() => setSort("damagePerMinute")}>Damage/min {sortIndicator("damagePerMinute")}</th>
           </tr></thead>
           <tbody class="divide-y divide-gray-800">
-            {#each visibleRows as row (row.id)}
-              {@const localWpa = scope === "compare" ? row.personal_wpa ?? 0 : row.wpa}
-              {@const globalWpa = row.global_wpa ?? row.wpa}
-              <tr class="cursor-pointer hover:bg-gray-800/60 {selected?.id === row.id ? 'bg-purple-950/40' : ''}" onclick={() => (selectedId = row.id)}>
-                <td class="flex items-center gap-2 px-3 py-2">{#if row.icon_url}<img src={row.icon_url} alt={row.name} class="h-7 w-7 rounded-full object-cover" />{/if}<span>{row.name}</span></td>
-                <td class="px-3 py-2 text-right">{scope === "compare" ? `${row.personal_games ?? 0}/${row.global_observed ? row.global_games ?? row.games : "—"}` : row.games}</td><td class="px-3 py-2 text-right">{percent(row.pick_rate)}</td><td class="px-3 py-2 text-right">{scope === "compare" ? (row.personal_games ? percent(row.personal_win_rate ?? 0) : "—") : percent(row.win_rate)}</td>{#if scope === "compare"}<td class="px-3 py-2 text-right">{row.global_observed ? percent(row.global_win_rate ?? row.win_rate) : "—"}</td>{/if}<td class="px-3 py-2 text-right {localWpa >= 0 ? 'text-emerald-300' : 'text-red-300'}">{scope === "compare" && !row.personal_games ? "—" : formatWpaPoints(localWpa)}</td>{#if scope === "compare"}<td class="px-3 py-2 text-right {globalWpa >= 0 ? 'text-emerald-300' : 'text-red-300'}">{row.global_observed ? formatWpaPoints(globalWpa) : "—"}</td>{/if}<td class="px-3 py-2 text-right">{averageKda(row).toFixed(2)}</td><td class="px-3 py-2 text-right">{row.damage_per_minute ? Math.round(row.damage_per_minute) : "—"}</td>
+            {#if loading && rows.length === 0}
+              {#each Array(10) as _}
+                <tr class="animate-pulse">
+                  <td class="flex items-center gap-2 px-3 py-2.5">
+                    <div class="h-7 w-7 rounded-full bg-gray-800 shrink-0"></div>
+                    <div class="h-3.5 w-28 rounded bg-gray-800"></div>
+                  </td>
+                  <td class="px-3 py-2.5 text-right"><div class="h-3 w-10 rounded bg-gray-800 ml-auto"></div></td>
+                  <td class="px-3 py-2.5 text-right"><div class="h-3 w-10 rounded bg-gray-800 ml-auto"></div></td>
+                  <td class="px-3 py-2.5 text-right"><div class="h-3 w-12 rounded bg-gray-800 ml-auto"></div></td>
+                  {#if scope === "compare"}
+                    <td class="px-3 py-2.5 text-right"><div class="h-3 w-12 rounded bg-gray-800 ml-auto"></div></td>
+                  {/if}
+                  <td class="px-3 py-2.5 text-right"><div class="h-3 w-12 rounded bg-gray-800 ml-auto"></div></td>
+                  {#if scope === "compare"}
+                    <td class="px-3 py-2.5 text-right"><div class="h-3 w-12 rounded bg-gray-800 ml-auto"></div></td>
+                  {/if}
+                  <td class="px-3 py-2.5 text-right"><div class="h-3 w-8 rounded bg-gray-800 ml-auto"></div></td>
+                  <td class="px-3 py-2.5 text-right"><div class="h-3 w-12 rounded bg-gray-800 ml-auto"></div></td>
+                </tr>
+              {/each}
+            {:else if error && rows.length === 0}
+              <tr>
+                <td colspan={scope === "compare" ? 9 : 7} class="px-3 py-12 text-center text-sm text-red-400">{error}</td>
               </tr>
             {:else}
-              <tr><td colspan={scope === "compare" ? 9 : 7} class="px-3 py-6 text-center text-gray-500">No matching champions found.</td></tr>
-            {/each}
+              {#each visibleRows as row (row.id)}
+                {@const localWpa = scope === "compare" ? row.personal_wpa ?? 0 : row.wpa}
+                {@const globalWpa = row.global_wpa ?? row.wpa}
+                <tr class="cursor-pointer hover:bg-gray-800/60 {selected?.id === row.id ? 'bg-purple-950/40' : ''}" onclick={() => (selectedId = row.id)}>
+                  <td class="flex items-center gap-2 px-3 py-2">{#if row.icon_url}<img src={row.icon_url} alt={row.name} class="h-7 w-7 rounded-full object-cover" />{/if}<span>{row.name}</span></td>
+                  <td class="px-3 py-2 text-right">{scope === "compare" ? `${row.personal_games ?? 0}/${row.global_observed ? row.global_games ?? row.games : "—"}` : row.games}</td><td class="px-3 py-2 text-right">{percent(row.pick_rate)}</td><td class="px-3 py-2 text-right">{scope === "compare" ? (row.personal_games ? percent(row.personal_win_rate ?? 0) : "—") : percent(row.win_rate)}</td>{#if scope === "compare"}<td class="px-3 py-2 text-right">{row.global_observed ? percent(row.global_win_rate ?? row.win_rate) : "—"}</td>{/if}<td class="px-3 py-2 text-right {localWpa >= 0 ? 'text-emerald-300' : 'text-red-300'}">{scope === "compare" && !row.personal_games ? "—" : formatWpaPoints(localWpa)}</td>{#if scope === "compare"}<td class="px-3 py-2 text-right {globalWpa >= 0 ? 'text-emerald-300' : 'text-red-300'}">{row.global_observed ? formatWpaPoints(globalWpa) : "—"}</td>{/if}<td class="px-3 py-2 text-right">{averageKda(row).toFixed(2)}</td><td class="px-3 py-2 text-right">{row.damage_per_minute ? Math.round(row.damage_per_minute) : "—"}</td>
+                </tr>
+              {:else}
+                <tr><td colspan={scope === "compare" ? 9 : 7} class="px-3 py-6 text-center text-gray-500">No matching champions found.</td></tr>
+              {/each}
+            {/if}
           </tbody>
         </table>
       </section>
     </div>
-  {/if}
 </div>

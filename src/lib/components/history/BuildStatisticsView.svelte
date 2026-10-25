@@ -162,6 +162,25 @@
     localStorage.setItem("lcu-builds-sort-desc", String(sortDescending));
     void load();
   }
+
+  function switchKind(newKind: StatisticsKind) {
+    if (kind === newKind) return;
+    kind = newKind;
+    selectedId = null;
+    const currentQuery = query();
+    const cached = getCachedStatistics(currentQuery);
+    if (cached) {
+      rows = cached.rows;
+      sampleCount = cached.sample_count;
+      baseline = cached.baseline;
+      loading = false;
+      refreshing = false;
+    } else {
+      rows = [];
+      loading = true;
+      refreshing = false;
+    }
+  }
   function percent(value: number) { return `${Math.round(value * 100)}%`; }
   function formatWpa(value: number) { return `${value >= 0 ? "+" : ""}${(value * 100).toFixed(1)}`; }
   function formatWpaPoints(value: number) { return `${value >= 0 ? "+" : ""}${(value * 100).toFixed(1)}`; }
@@ -285,14 +304,7 @@
 </script>
 
 <div class="flex h-full min-h-0 flex-col overflow-hidden bg-gray-950 p-4 text-gray-200">
-  {#if loading && rows.length === 0}
-    <div class="mt-3 flex flex-1 flex-col animate-pulse gap-3"><div class="h-44 rounded-lg border border-gray-800 bg-gray-900/50"></div><div class="flex-1 rounded-lg border border-gray-800 bg-gray-900/50"></div></div>
-  {:else if error && rows.length === 0}
-    <div class="flex flex-1 items-center justify-center text-sm text-red-400">{error}</div>
-  {:else if rows.length === 0}
-    <div class="flex flex-1 items-center justify-center text-sm text-gray-500">No build statistics available.</div>
-  {:else}
-    <div class="mt-3 flex min-h-0 flex-1 flex-col gap-3">
+  <div class="mt-3 flex min-h-0 flex-1 flex-col gap-3">
       <!-- Horizontal Inspector Grid (On Top of the Table) -->
       {#if selected}
         {@const pairedChampions = sortBestMatchChampions(selected.champions)}
@@ -525,10 +537,67 @@
             </div>
           </div>
         </section>
+      {:else if loading && rows.length === 0}
+        <!-- Skeleton Inspector Card matching the exact shape -->
+        <section class="rounded-lg border border-gray-800 bg-gray-900/50 p-3 shadow-lg shrink-0 max-h-[300px] overflow-hidden animate-pulse">
+          <div class="flex flex-col lg:flex-row gap-3">
+            <!-- 1. Build Details Skeleton -->
+            <div class="w-full lg:w-[calc(33.333%-4rem)] shrink-0 flex flex-col justify-between rounded-lg border border-gray-800/80 bg-gray-950/60 p-2.5 min-h-[140px]">
+              <div>
+                <div class="flex items-start gap-2.5">
+                  <div class="h-10 w-10 rounded-lg bg-gray-800 shrink-0"></div>
+                  <div class="min-w-0 flex-1 space-y-2">
+                    <div class="h-4 w-28 rounded bg-gray-800"></div>
+                    <div class="h-3 w-16 rounded bg-gray-800/70"></div>
+                  </div>
+                </div>
+                <div class="mt-3 space-y-1.5">
+                  <div class="h-3 w-full rounded bg-gray-800/50"></div>
+                  <div class="h-3 w-3/4 rounded bg-gray-800/40"></div>
+                </div>
+              </div>
+              <div class="mt-3 flex items-center justify-between border-t border-gray-800/80 pt-2">
+                <div class="h-4 w-16 rounded bg-gray-800/60"></div>
+                <div class="h-4 w-14 rounded bg-gray-800/60"></div>
+                <div class="h-4 w-14 rounded bg-gray-800/60"></div>
+                <div class="h-4 w-16 rounded bg-gray-800/60"></div>
+              </div>
+            </div>
+
+            <!-- 2. Best Matches Skeleton -->
+            <div class="w-full lg:flex-1 min-w-0 flex flex-col rounded-lg border border-gray-800/80 bg-gray-950/60 p-3">
+              <div class="flex items-center justify-between pb-2 border-b border-gray-800/80">
+                <div class="h-3.5 w-24 rounded bg-gray-800"></div>
+                <div class="h-3 w-20 rounded bg-gray-800/50"></div>
+              </div>
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-0 pt-2 flex-1 min-h-[120px] divide-y sm:divide-y-0 sm:divide-x divide-gray-800/60">
+                {#each [0, 1, 2] as col}
+                  <div class="space-y-2 {col > 0 ? 'sm:pl-2' : ''} {col < 2 ? 'sm:pr-2' : ''}">
+                    <div class="h-3 w-16 rounded bg-gray-800/60 mb-2"></div>
+                    {#each [0, 1] as item}
+                      <div class="flex items-center gap-2">
+                        <div class="h-7 w-7 rounded-full bg-gray-800 shrink-0"></div>
+                        <div class="flex-1 space-y-1">
+                          <div class="h-3 w-20 rounded bg-gray-800"></div>
+                          <div class="h-2.5 w-28 rounded bg-gray-800/50"></div>
+                        </div>
+                      </div>
+                    {/each}
+                  </div>
+                {/each}
+              </div>
+            </div>
+          </div>
+        </section>
       {/if}
 
       <!-- Main Table Section (Spanning 100% Width) -->
-      <section onscroll={handleTableScroll} class="min-h-0 flex-1 overflow-auto rounded-lg border border-gray-800 bg-black/40 scrollbar-thin scrollbar-thumb-gray-800">
+      <section onscroll={handleTableScroll} class="relative min-h-0 flex-1 overflow-auto rounded-lg border border-gray-800 bg-black/40 scrollbar-thin scrollbar-thumb-gray-800">
+        {#if refreshing}
+          <div class="pointer-events-none absolute left-0 right-0 top-0 z-30 h-0.5 overflow-hidden bg-purple-950">
+            <div class="h-full w-full bg-purple-500 animate-[pulse_1s_infinite]"></div>
+          </div>
+        {/if}
         <div class="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-2 border-b border-gray-800 bg-gray-900 px-3 py-2">
           <div>
             <h2 class="text-sm font-semibold text-white">Build performance</h2>
@@ -614,7 +683,7 @@
                 <button
                   type="button"
                   class="rounded-md px-2 py-1 {kind === option[0] ? 'bg-purple-600 text-white' : 'text-gray-400 hover:text-white'}"
-                  onclick={() => { kind = option[0] as StatisticsKind; selectedId = null; }}
+                  onclick={() => switchKind(option[0] as StatisticsKind)}
                 >
                   {option[1]}
                 </button>
@@ -646,7 +715,46 @@
             </tr>
           </thead>
           <tbody class="divide-y divide-gray-800">
-            {#each renderedRows as row (row.id)}
+            {#if loading && rows.length === 0}
+              {#each Array(10) as _, i}
+                <tr class="animate-pulse">
+                  <td class="flex items-center gap-2 px-3 py-2.5">
+                    <div class="h-7 w-7 rounded bg-gray-800 shrink-0"></div>
+                    <div class="h-3.5 w-32 rounded bg-gray-800"></div>
+                  </td>
+                  {#if kind === "augment"}
+                    <td class="px-3 py-2.5">
+                      <div class="h-4 w-14 rounded bg-gray-800/60"></div>
+                    </td>
+                  {/if}
+                  <td class="px-3 py-2.5">
+                    <div class="flex items-center -space-x-2">
+                      <div class="h-6 w-6 rounded-full bg-gray-800 border-2 border-gray-900"></div>
+                      <div class="h-6 w-6 rounded-full bg-gray-800/80 border-2 border-gray-900"></div>
+                      <div class="h-6 w-6 rounded-full bg-gray-800/60 border-2 border-gray-900"></div>
+                    </div>
+                  </td>
+                  <td class="px-3 py-2.5 text-right"><div class="h-3 w-10 rounded bg-gray-800 ml-auto"></div></td>
+                  <td class="px-3 py-2.5 text-right"><div class="h-3 w-10 rounded bg-gray-800 ml-auto"></div></td>
+                  <td class="px-3 py-2.5 text-right"><div class="h-3 w-12 rounded bg-gray-800 ml-auto"></div></td>
+                  {#if scope === "compare"}
+                    <td class="px-3 py-2.5 text-right"><div class="h-3 w-12 rounded bg-gray-800 ml-auto"></div></td>
+                  {/if}
+                  <td class="px-3 py-2.5 text-right"><div class="h-3 w-12 rounded bg-gray-800 ml-auto"></div></td>
+                  {#if scope === "compare"}
+                    <td class="px-3 py-2.5 text-right"><div class="h-3 w-12 rounded bg-gray-800 ml-auto"></div></td>
+                  {/if}
+                  <td class="px-3 py-2.5 text-right"><div class="h-3 w-8 rounded bg-gray-800 ml-auto"></div></td>
+                </tr>
+              {/each}
+            {:else if error && rows.length === 0}
+              <tr>
+                <td colspan={kind === "augment" ? (scope === "compare" ? 10 : 8) : (scope === "compare" ? 9 : 7)} class="px-3 py-12 text-center text-sm text-red-400">
+                  {error}
+                </td>
+              </tr>
+            {:else}
+              {#each renderedRows as row (row.id)}
               {@const localWpa = scope === "compare" ? row.personal_wpa ?? 0 : row.wpa}
               {@const globalWpa = row.global_wpa ?? row.wpa}
               {@const topChamps = getTopChampions(row, 3)}
@@ -768,6 +876,7 @@
             {:else}
               <tr><td colspan={kind === "augment" ? (scope === "compare" ? 10 : 8) : (scope === "compare" ? 9 : 7)} class="px-3 py-6 text-center text-gray-500">No matching builds found.</td></tr>
             {/each}
+            {/if}
             {#if visibleRows.length > displayLimit}
               <tr class="border-t border-gray-800">
                 <td colspan={kind === "augment" ? (scope === "compare" ? 10 : 8) : (scope === "compare" ? 9 : 7)} class="py-2.5 text-center">
@@ -785,7 +894,6 @@
         </table>
       </section>
     </div>
-  {/if}
 
   {#if activeHover && (activeHover.description || activeHover.name)}
     {@const normRarity = (activeHover.rarity ?? "").toLowerCase()}
