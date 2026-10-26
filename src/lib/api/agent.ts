@@ -136,6 +136,10 @@ export interface GlobalAramConfig {
   operations: AgentOperation[];
   crawler_rate_text?: string;
   crawler_mpm?: number;
+  crawler_rate?: number;
+  crawler_progress?: number;
+  crawler_paused?: boolean;
+  crawler_eta_text?: string;
 }
 
 export interface AgentOperation {
@@ -143,6 +147,13 @@ export interface AgentOperation {
   message: string;
   current: number | null;
   total: number | null;
+}
+
+export interface LogEntry {
+  timestamp: string;
+  level: string;
+  target: string;
+  message: string;
 }
 
 export function getGlobalAramConfig(): Promise<GlobalAramConfig> {
@@ -155,6 +166,18 @@ export function setGlobalAramLimit(limit: number): Promise<{ limit: number }> {
 
 export function setGlobalAramWorkers(workers: number): Promise<{ workers: number }> {
   return invoke<{ workers: number }>('api_set_global_aram_workers', { workers });
+}
+
+export function pauseGlobalAramCrawler(paused: boolean): Promise<{ paused: boolean }> {
+  return invoke<{ paused: boolean }>('api_pause_global_aram_crawler', { paused });
+}
+
+export function stopGlobalAramCrawler(): Promise<{ stopped: boolean }> {
+  return invoke<{ stopped: boolean }>('api_stop_global_aram_crawler');
+}
+
+export function getLogs(limit: number = 200): Promise<LogEntry[]> {
+  return invoke<LogEntry[]>('api_get_logs', { limit });
 }
 
 export function resetGlobalAramDatabase(): Promise<{

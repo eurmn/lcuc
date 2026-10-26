@@ -1,13 +1,28 @@
+use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tauri::Emitter;
 
 const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024;
 const RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 static LOG_FILE: OnceLock<Mutex<Option<File>>> = OnceLock::new();
+static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+pub fn init_app_handle(handle: tauri::AppHandle) {
+    let _ = APP_HANDLE.set(handle);
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogEntry {
+    pub timestamp: String,
+    pub level: String,
+    pub source: String,
+    pub message: String,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum Level {
@@ -18,7 +33,7 @@ pub enum Level {
 }
 
 impl Level {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Debug => "DEBUG",
             Self::Info => "INFO",
@@ -169,9 +184,10 @@ pub fn write(level: Level, source: &str, message: &str, context: Option<&str>) {
         .filter(|value| !value.is_empty())
         .map(|value| format!(" | {}", redact(value)))
         .unwrap_or_default();
+    let ts = timestamp();
     let line = format!(
         "[{}] [{}] [{}] {}{}\n",
-        timestamp(),
+        ts,
         level.as_str(),
         source,
         message,
@@ -194,8 +210,66 @@ pub fn write(level: Level, source: &str, message: &str, context: Option<&str>) {
                     }
                 }
             }
+            if let Some(handle) = APP_HANDLE.get() {
+                let _ = handle.emit("log_entry", LogEntry {
+                    timestamp: ts,
+                    level: level.as_str().to_string(),
+                    source: source.to_string(),
+                    message: format!("{}{}", message, suffix),
+                });
+            }
         }
     }
+}
+
+pub fn parse_log_line(line: &str) -> Option<LogEntry> {
+    let line = line.trim();
+    if !line.starts_with('[') {
+        return None;
+    }
+    let mut parts = line.splitn(4, ']');
+    let ts_part = parts.next()?.strip_prefix('[')?;
+    let level_part = parts.next()?.trim().strip_prefix('[')?;
+    let source_part = parts.next()?.trim().strip_prefix('[')?;
+    let message_part = parts.next()?.trim();
+    Some(LogEntry {
+        timestamp: ts_part.to_string(),
+        level: level_part.to_string(),
+        source: source_part.to_string(),
+        message: message_part.to_string(),
+    })
+}
+
+pub fn read_recent_logs(max_lines: usize) -> Vec<LogEntry> {
+    let mut entries = Vec::new();
+    let dir = log_dir();
+    let mut files = Vec::new();
+    for i in (1..=6).rev() {
+        let p = dir.join(format!("application.{i}.log"));
+        if p.exists() {
+            files.push(p);
+        }
+    }
+    let main_log = log_path();
+    if main_log.exists() {
+        files.push(main_log);
+    }
+
+    for file_path in files {
+        if let Ok(content) = fs::read_to_string(&file_path) {
+            for line in content.lines() {
+                if let Some(entry) = parse_log_line(line) {
+                    entries.push(entry);
+                }
+            }
+        }
+    }
+
+    if entries.len() > max_lines {
+        let start = entries.len() - max_lines;
+        entries.drain(..start);
+    }
+    entries
 }
 
 pub fn debug(source: &str, message: &str) {

@@ -305,6 +305,31 @@ pub async fn api_reset_global_aram(
 }
 
 #[tauri::command]
+pub async fn api_pause_global_aram_crawler(
+    paused: bool,
+    supervisor: tauri::State<'_, AgentSupervisor>,
+) -> Result<serde_json::Value, String> {
+    supervisor
+        .request_with_args(
+            "pause_global_aram_crawler",
+            serde_json::json!({ "paused": paused }),
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn api_stop_global_aram_crawler(
+    supervisor: tauri::State<'_, AgentSupervisor>,
+) -> Result<serde_json::Value, String> {
+    supervisor.request("stop_global_aram_crawler").await
+}
+
+#[tauri::command]
+pub fn api_get_logs(limit: Option<usize>) -> Result<Vec<crate::logger::LogEntry>, String> {
+    Ok(crate::logger::read_recent_logs(limit.unwrap_or(300)))
+}
+
+#[tauri::command]
 pub fn api_log(
     level: String,
     source: String,

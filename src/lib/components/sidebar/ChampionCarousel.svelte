@@ -11,6 +11,7 @@
     isRuneMismatch = false,
     activeRuneChampionId = null,
     showAllChampions = true,
+    pinSelectedFirst = false,
     onSelectChampion,
   }: {
     searchedChampions: ChampionSummary[];
@@ -21,6 +22,7 @@
     isRuneMismatch: boolean;
     activeRuneChampionId: number | null;
     showAllChampions?: boolean;
+    pinSelectedFirst?: boolean;
     onSelectChampion: (champ: ChampionSummary | null) => void;
   } = $props();
 
@@ -105,8 +107,30 @@
         </div>
       {/each}
     {:else}
+      <!-- Pinned Selected Champion (When pinSelectedFirst is enabled) -->
+      {#if pinSelectedFirst && selectedChampion}
+        <div class="relative flex shrink-0 items-center justify-center">
+          <button
+            type="button"
+            title={`${selectedChampion.name}${selectedChampion.is_favorite ? " (Favorite)" : ""} (Selected)`}
+            onclick={() => onSelectChampion(selectedChampion)}
+            class="relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border-2 border-purple-500 ring-2 ring-purple-400/80 shadow-[0_0_12px_rgba(168,85,247,0.6)] bg-gray-900 p-0 opacity-100 scale-105 cursor-pointer transition-all z-10"
+          >
+            {#if selectedChampion.square_icon_url}
+              <img
+                src={selectedChampion.square_icon_url}
+                alt={selectedChampion.name}
+                class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-[calc(100%+4px)] w-[calc(100%+4px)] object-cover rounded-full"
+              />
+            {:else}
+              <div class="h-full w-full rounded-full bg-gray-800"></div>
+            {/if}
+          </button>
+        </div>
+      {/if}
+
       <!-- Favorites List -->
-      {#each favoriteChampions as champ (champ.id)}
+      {#each (pinSelectedFirst && selectedChampion ? favoriteChampions.filter((c) => c.id !== selectedChampion.id) : favoriteChampions) as champ (champ.id)}
         {@const isSelected = selectedChampion && selectedChampion.id === champ.id}
         <div class="relative flex shrink-0 items-center justify-center">
           <button
@@ -163,7 +187,7 @@
       {/if}
 
       <!-- Non-Favorite Champions List -->
-      {#each nonFavoriteChampions as champ (champ.id)}
+      {#each (pinSelectedFirst && selectedChampion ? nonFavoriteChampions.filter((c) => c.id !== selectedChampion.id) : nonFavoriteChampions) as champ (champ.id)}
         {@const isSelected = selectedChampion && selectedChampion.id === champ.id}
         <div class="relative flex shrink-0 items-center justify-center">
           <button

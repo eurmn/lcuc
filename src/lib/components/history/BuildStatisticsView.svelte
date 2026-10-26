@@ -6,6 +6,7 @@
   import * as dom from "@floating-ui/dom";
   import { createPopoverMiddlewares } from "../../utils/popoverPlacement";
   import AugmentIcon from "../common/AugmentIcon.svelte";
+  import GameEntityPopover from "../common/GameEntityPopover.svelte";
 
   let { scope = "personal", hideLowPickrate = false, refreshKey = 0 }: { scope?: StatisticsScope; hideLowPickrate?: boolean; refreshKey?: number } = $props();
   let lastRefreshKey = 0;
@@ -192,13 +193,20 @@
     return activeKey === key ? (sortDescending ? "↓" : "↑") : "";
   }
 
+  type AssociatedSortMode = "picked" | "wr" | "wpa";
+  let associatedItemSort = $state<AssociatedSortMode>("picked");
+  let associatedAugmentSort = $state<AssociatedSortMode>("picked");
+
   function filterAndSortPartnersByKind(
     partners: ServerStatisticRow["partners"],
     targetKind: "item" | "augment",
     parentGames: number,
+    sortMode: AssociatedSortMode = "picked",
   ) {
     const list = partners.filter((p) => {
-      const isAug = String(p.id).startsWith("augment:") || Boolean(p.rarity);
+      const pid = String(p.id);
+      if (pid === "item:2050" || pid === "item:2052" || pid === "2050" || pid === "2052") return false;
+      const isAug = pid.startsWith("augment:") || Boolean(p.rarity);
       return targetKind === "augment" ? isAug : !isAug;
     });
     const minGames = parentGames >= 4 ? 2 : 1;
@@ -209,11 +217,19 @@
     return filtered
       .slice()
       .sort((a, b) => {
-        if (b.pick_rate !== a.pick_rate) return b.pick_rate - a.pick_rate;
-        if (b.games !== a.games) return b.games - a.games;
-        return b.wpa - a.wpa;
+        if (sortMode === "wr") {
+          if (b.win_rate !== a.win_rate) return b.win_rate - a.win_rate;
+          return b.games - a.games;
+        } else if (sortMode === "wpa") {
+          if (b.wpa !== a.wpa) return b.wpa - a.wpa;
+          return b.games - a.games;
+        } else {
+          if (b.pick_rate !== a.pick_rate) return b.pick_rate - a.pick_rate;
+          if (b.games !== a.games) return b.games - a.games;
+          return b.wpa - a.wpa;
+        }
       })
-      .slice(0, 6);
+      .slice(0, 15);
   }
 
   function sortBestMatchChampions(
@@ -308,8 +324,8 @@
       <!-- Horizontal Inspector Grid (On Top of the Table) -->
       {#if selected}
         {@const pairedChampions = sortBestMatchChampions(selected.champions)}
-        {@const pairedItems = filterAndSortPartnersByKind(selected.partners, "item", selected.games)}
-        {@const pairedAugments = filterAndSortPartnersByKind(selected.partners, "augment", selected.games)}
+        {@const pairedItems = filterAndSortPartnersByKind(selected.partners, "item", selected.games, associatedItemSort)}
+        {@const pairedAugments = filterAndSortPartnersByKind(selected.partners, "augment", selected.games, associatedAugmentSort)}
         <section class="rounded-lg border border-gray-800 bg-gray-900/50 p-3 shadow-lg shrink-0 max-h-[300px] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-800">
           <div class="flex flex-col lg:flex-row gap-3">
             <!-- 1. Selected Build Details & Description (Reduced width by 4rem) -->
@@ -466,15 +482,22 @@
 
                 <!-- Items Column -->
                 <div class="flex flex-col min-h-0 sm:pl-1.5 sm:pr-0">
-                  <h4 class="text-[10px] font-semibold uppercase tracking-wider text-amber-400 mb-1.5 flex items-center gap-1">
-                    <span class="icon-[heroicons--archive-box] h-3 w-3"></span> Items
-                  </h4>
+                  <div class="flex items-center justify-between mb-1.5">
+                    <h4 class="text-[10px] font-semibold uppercase tracking-wider text-amber-400 flex items-center gap-1">
+                      <span class="icon-[heroicons--archive-box] h-3 w-3"></span> Items
+                    </h4>
+                    <div class="flex items-center bg-gray-900 border border-gray-800 rounded p-0.5 text-[9px]">
+                      <button type="button" class="px-1 py-0.5 rounded transition-colors {associatedItemSort === 'picked' ? 'bg-amber-500/20 text-amber-300 font-bold' : 'text-gray-400 hover:text-gray-200'}" onclick={() => associatedItemSort = 'picked'}>Pick</button>
+                      <button type="button" class="px-1 py-0.5 rounded transition-colors {associatedItemSort === 'wr' ? 'bg-amber-500/20 text-amber-300 font-bold' : 'text-gray-400 hover:text-gray-200'}" onclick={() => associatedItemSort = 'wr'}>WR</button>
+                      <button type="button" class="px-1 py-0.5 rounded transition-colors {associatedItemSort === 'wpa' ? 'bg-amber-500/20 text-amber-300 font-bold' : 'text-gray-400 hover:text-gray-200'}" onclick={() => associatedItemSort = 'wpa'}>WPA</button>
+                    </div>
+                  </div>
                   <div class="space-y-1.5 overflow-y-auto max-h-[180px] scrollbar-thin scrollbar-thumb-gray-800 pr-0 flex-1">
-                    {#each pairedItems.slice(0, 5) as partner (partner.id)}
+                    {#each pairedItems.slice(0, 15) as partner (partner.id)}
+                      {@const itemDomId = `inspector-item-${String(partner.id).replace(/[^a-zA-Z0-9_-]/g, "_")}`}
                       <div
+                        id={itemDomId}
                         class="flex items-center gap-2 p-1 rounded-md hover:bg-gray-800/50 transition-colors cursor-help"
-                        onmouseenter={(e) => triggerHover(e, { name: partner.name, iconUrl: partner.icon_url, description: partner.description, itemClass: partner.item_class, priceTotal: partner.price_total }, "bottom")}
-                        onmouseleave={clearHover}
                       >
                         {#if partner.icon_url}
                           <img src={partner.icon_url} alt={partner.name} class="h-7 w-7 shrink-0 rounded-md object-cover border border-gray-700 shadow-sm" />
@@ -496,6 +519,15 @@
                           </p>
                         </div>
                       </div>
+                      <GameEntityPopover
+                        targetId={itemDomId}
+                        name={partner.name}
+                        iconUrl={partner.icon_url}
+                        description={partner.description}
+                        itemClass={partner.item_class}
+                        priceTotal={partner.price_total}
+                        placement="bottom"
+                      />
                     {:else}
                       <span class="text-gray-600 text-[11px] italic py-2">No item matches</span>
                     {/each}
@@ -504,15 +536,22 @@
 
                 <!-- Augments Column -->
                 <div class="flex flex-col min-h-0 sm:pl-1.5 sm:pr-0">
-                  <h4 class="text-[10px] font-semibold uppercase tracking-wider text-purple-400 mb-1.5 flex items-center gap-1">
-                    <span class="icon-[heroicons--sparkles] h-3 w-3"></span> Augments
-                  </h4>
+                  <div class="flex items-center justify-between mb-1.5">
+                    <h4 class="text-[10px] font-semibold uppercase tracking-wider text-purple-400 flex items-center gap-1">
+                      <span class="icon-[heroicons--sparkles] h-3 w-3"></span> Augments
+                    </h4>
+                    <div class="flex items-center bg-gray-900 border border-gray-800 rounded p-0.5 text-[9px]">
+                      <button type="button" class="px-1 py-0.5 rounded transition-colors {associatedAugmentSort === 'picked' ? 'bg-purple-500/20 text-purple-300 font-bold' : 'text-gray-400 hover:text-gray-200'}" onclick={() => associatedAugmentSort = 'picked'}>Pick</button>
+                      <button type="button" class="px-1 py-0.5 rounded transition-colors {associatedAugmentSort === 'wr' ? 'bg-purple-500/20 text-purple-300 font-bold' : 'text-gray-400 hover:text-gray-200'}" onclick={() => associatedAugmentSort = 'wr'}>WR</button>
+                      <button type="button" class="px-1 py-0.5 rounded transition-colors {associatedAugmentSort === 'wpa' ? 'bg-purple-500/20 text-purple-300 font-bold' : 'text-gray-400 hover:text-gray-200'}" onclick={() => associatedAugmentSort = 'wpa'}>WPA</button>
+                    </div>
+                  </div>
                   <div class="space-y-1.5 overflow-y-auto max-h-[180px] scrollbar-thin scrollbar-thumb-gray-800 pr-0 flex-1">
-                    {#each pairedAugments.slice(0, 5) as partner (partner.id)}
+                    {#each pairedAugments.slice(0, 15) as partner (partner.id)}
+                      {@const augDomId = `inspector-aug-${String(partner.id).replace(/[^a-zA-Z0-9_-]/g, "_")}`}
                       <div
+                        id={augDomId}
                         class="flex items-center gap-2 p-1 rounded-md hover:bg-gray-800/50 transition-colors cursor-help"
-                        onmouseenter={(e) => triggerHover(e, { name: partner.name, iconUrl: partner.icon_url, description: partner.description, rarity: partner.rarity }, "bottom")}
-                        onmouseleave={clearHover}
                       >
                         <AugmentIcon src={partner.icon_url} name={partner.name} rarity={partner.rarity} class="h-7 w-7" />
                         <div class="min-w-0 flex-1">
@@ -528,6 +567,14 @@
                           </p>
                         </div>
                       </div>
+                      <GameEntityPopover
+                        targetId={augDomId}
+                        name={partner.name}
+                        iconUrl={partner.icon_url}
+                        description={partner.description}
+                        rarity={partner.rarity}
+                        placement="bottom"
+                      />
                     {:else}
                       <span class="text-gray-600 text-[11px] italic py-2">No augment matches</span>
                     {/each}

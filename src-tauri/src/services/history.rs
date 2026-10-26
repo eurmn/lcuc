@@ -787,9 +787,14 @@ fn replace_math_tokens_in_tooltip(
                 };
 
                 let p_lower = param.to_lowercase();
+                let var_name = if let Some((_, sub)) = p_lower.split_once(':') {
+                    sub
+                } else {
+                    &p_lower
+                };
                 let mut replaced: Option<String> = None;
 
-                if let Some(&base_val) = val_map.get(&p_lower) {
+                if let Some(&base_val) = val_map.get(&p_lower).or_else(|| val_map.get(var_name)) {
                     let mut val = base_val;
                     if let Some((op, Some(operand))) = op_and_num {
                         match op {
@@ -803,9 +808,10 @@ fn replace_math_tokens_in_tooltip(
                     let pct_str = if trailing_pct { "%" } else { "" };
                     replaced = Some(format!("{}{pct_str}", clean_num_str(val)));
                 } else if let Some(calcs_map) = calcs {
-                    if let Some((_, calc_obj)) =
-                        calcs_map.iter().find(|(k, _)| k.to_lowercase() == p_lower)
-                    {
+                    if let Some((_, calc_obj)) = calcs_map.iter().find(|(k, _)| {
+                        let kl = k.to_lowercase();
+                        kl == p_lower || kl == var_name
+                    }) {
                         let formatted = format_kiwi_calculation(calc_obj, val_map, calcs_map, 0);
                         if !formatted.is_empty() {
                             if formatted.ends_with('%') && trailing_pct {
@@ -2718,32 +2724,36 @@ pub async fn compute_mayhem_champion_build(
             }
         }
 
-        // B. Starter item (shown separately above 6 items)
+        // B. Starter item (shown separately above 6 items; omitted if pick rate is negligible)
         let starter_item = if let Some(&(id, _, agg)) = starters.first() {
-            let item_info = items_catalog.get(&(id as i32));
-            let name = item_info
-                .map(|i| i.name.clone())
-                .unwrap_or_else(|| format!("Starter #{id}"));
-            let raw_icon = item_info.map(|i| i.icon_url.clone()).unwrap_or_default();
-            let icon_url = get_cached_asset_data_uri(&raw_icon).await;
-            let price_total = item_info.map(|i| i.price_total).unwrap_or(0);
-            let item_class = item_info.and_then(|i| i.item_class.clone());
-            let description = item_info.and_then(|i| i.description.clone());
-            let wr = agg.wins as f64 / agg.games.max(1) as f64;
-            let wpa = wr - champion_win_rate;
             let pick_rate = calc_item_pick_rate(agg.games as usize, total_games, false);
-            Some(MayhemBuildItem {
-                id,
-                name,
-                icon_url,
-                price_total,
-                item_class,
-                description,
-                win_rate: wr,
-                wpa,
-                games: agg.games as usize,
-                pick_rate,
-            })
+            if agg.games < min_item_games || pick_rate < 0.05 {
+                None
+            } else {
+                let item_info = items_catalog.get(&(id as i32));
+                let name = item_info
+                    .map(|i| i.name.clone())
+                    .unwrap_or_else(|| format!("Starter #{id}"));
+                let raw_icon = item_info.map(|i| i.icon_url.clone()).unwrap_or_default();
+                let icon_url = get_cached_asset_data_uri(&raw_icon).await;
+                let price_total = item_info.map(|i| i.price_total).unwrap_or(0);
+                let item_class = item_info.and_then(|i| i.item_class.clone());
+                let description = item_info.and_then(|i| i.description.clone());
+                let wr = agg.wins as f64 / agg.games.max(1) as f64;
+                let wpa = wr - champion_win_rate;
+                Some(MayhemBuildItem {
+                    id,
+                    name,
+                    icon_url,
+                    price_total,
+                    item_class,
+                    description,
+                    win_rate: wr,
+                    wpa,
+                    games: agg.games as usize,
+                    pick_rate,
+                })
+            }
         } else {
             None
         };
@@ -2782,17 +2792,73 @@ pub async fn compute_mayhem_champion_build(
             }
         }
 
-        // D. Select summoner spells
+        // D. Select summoner spells (Optimal Pair with Bayesian credibility and individual spell sanity check)
+        let min_pair_games = if total_games <= 15 {
+            1
+        } else if total_games <= 50 {
+            2
+        } else {
+            ((total_games as f64 * 0.02).ceil() as i64).clamp(5, 50)
+        };
+
         let mut sorted_spells: Vec<((u64, u64), f64, &MetricAggregate)> = spells_agg
             .iter()
-            .filter(|(_, agg)| agg.games >= min_item_games || agg.games >= 5)
-            .map(|(&pair, agg)| (pair, score_metric(agg, strat_id, champion_win_rate), agg))
+            .filter(|(pair, agg)| {
+                if agg.games < min_pair_games {
+                    return false;
+                }
+                // Check individual WPA: penalize pairs containing spells with significantly negative performance
+                let sp1_wpa = individual_spells_agg
+                    .get(&pair.0)
+                    .map(|(g, w)| *w as f64 / (*g).max(1) as f64 - champion_win_rate)
+                    .unwrap_or(0.0);
+                let sp2_wpa = individual_spells_agg
+                    .get(&pair.1)
+                    .map(|(g, w)| *w as f64 / (*g).max(1) as f64 - champion_win_rate)
+                    .unwrap_or(0.0);
+                // If either spell has a strong negative WPA (< -1.5%) while viable alternatives exist, skip it
+                if sp1_wpa < -0.015 || sp2_wpa < -0.015 {
+                    return false;
+                }
+                true
+            })
+            .map(|(&pair, agg)| {
+                // High Bayesian shrinkage (M=40.0) so small-sample flukes never beat proven pairings
+                let m_pair = 40.0;
+                let wr_score = (agg.wins as f64 + m_pair * champion_win_rate) / (agg.games as f64 + m_pair);
+                let strat_score = score_metric(agg, strat_id, champion_win_rate);
+                let final_score = if strat_id == "win_rate" {
+                    wr_score
+                } else {
+                    // Blend win rate (60%) with strategy metric (40%) to anchor on reliable performance
+                    wr_score * 0.6 + strat_score * 0.4
+                };
+                (pair, final_score, agg)
+            })
             .collect();
         sorted_spells.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // If no pair passed the filter, pick top 2 individual spells by Bayesian credibility
         let chosen_spells = sorted_spells
             .first()
             .map(|(pair, _, _)| *pair)
-            .unwrap_or((4, 32)); // Flash + Mark fallback
+            .unwrap_or_else(|| {
+                let mut top_indiv: Vec<(u64, f64)> = individual_spells_agg
+                    .iter()
+                    .filter(|(_, (g, _))| *g >= min_pair_games.min(2))
+                    .map(|(&sp_id, &(g, w))| {
+                        let m = 20.0;
+                        let bayes_score = (w as f64 + m * champion_win_rate) / (g as f64 + m);
+                        (sp_id, bayes_score)
+                    })
+                    .collect();
+                top_indiv.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                if top_indiv.len() >= 2 {
+                    (top_indiv[0].0.min(top_indiv[1].0), top_indiv[0].0.max(top_indiv[1].0))
+                } else {
+                    (4, 32) // Flash + Mark fallback
+                }
+            });
 
         // E. Select augments (target top 3 silver, top 3 gold, top 3 prismatic)
         let mut silver_augs: Vec<(&String, f64)> = Vec::new();

@@ -85,6 +85,8 @@ pub struct RuntimeState {
     pub operations: Vec<ProgressOperation>,
     pub crawler_rate_text: String,
     pub crawler_mpm: f64,
+    pub crawler_paused: bool,
+    pub crawler_eta_text: String,
     pub crawler_speed_history: std::collections::VecDeque<(std::time::Instant, usize)>,
 }
 
@@ -100,6 +102,8 @@ impl Default for RuntimeState {
             operations: Vec::new(),
             crawler_rate_text: "0.0 match/min".to_string(),
             crawler_mpm: 0.0,
+            crawler_paused: false,
+            crawler_eta_text: String::new(),
             crawler_speed_history: std::collections::VecDeque::new(),
         }
     }
@@ -146,6 +150,27 @@ impl RuntimeState {
                     self.crawler_rate_text = format!("{:.0} match/h", mpm * 60.0);
                 }
             }
+        }
+
+        let remaining = live_limit.saturating_sub(current_count);
+        if remaining == 0 {
+            self.crawler_eta_text = "Done".to_string();
+        } else if self.crawler_mpm > 0.05 {
+            let eta_minutes = remaining as f64 / self.crawler_mpm;
+            let total_seconds = (eta_minutes * 60.0).round() as u64;
+            if total_seconds < 60 {
+                self.crawler_eta_text = format!("{}s", total_seconds);
+            } else if total_seconds < 3600 {
+                let mins = total_seconds / 60;
+                let secs = total_seconds % 60;
+                self.crawler_eta_text = format!("{}m {}s", mins, secs);
+            } else {
+                let hours = total_seconds / 3600;
+                let mins = (total_seconds % 3600) / 60;
+                self.crawler_eta_text = format!("{}h {}m", hours, mins);
+            }
+        } else {
+            self.crawler_eta_text = "--".to_string();
         }
     }
 }
@@ -461,11 +486,14 @@ fn statistic_row(
     let mut augments = Vec::new();
     for p in partner_rows {
         let pid = p.get("id").and_then(Value::as_str).unwrap_or("");
+        if pid == "item:2050" || pid == "item:2052" {
+            continue;
+        }
         if pid.starts_with("augment:") {
-            if augments.len() < 10 {
+            if augments.len() < 30 {
                 augments.push(p);
             }
-        } else if items.len() < 10 {
+        } else if items.len() < 30 {
             items.push(p);
         }
     }
@@ -678,11 +706,14 @@ fn compact_row_for_projection(row: &Value) -> Value {
                 let mut augments = Vec::new();
                 for p in partners.drain(..) {
                     let pid = p.get("id").and_then(Value::as_str).unwrap_or("");
+                    if pid == "item:2050" || pid == "item:2052" {
+                        continue;
+                    }
                     if pid.starts_with("augment:") {
-                        if augments.len() < 10 {
+                        if augments.len() < 30 {
                             augments.push(p);
                         }
-                    } else if items.len() < 10 {
+                    } else if items.len() < 30 {
                         items.push(p);
                     }
                 }
@@ -1406,6 +1437,9 @@ fn build_statistics_response(
             }
             if kind != "combo" {
                 for item_id in &fact.item_ids {
+                    if *item_id == 2050 || *item_id == 2052 {
+                        continue;
+                    }
                     let partner = format!("item:{item_id}");
                     if partner != id {
                         let context = aggregate.partners.entry(partner).or_default();
@@ -2396,6 +2430,8 @@ pub async fn handle_command(
                 "has_patch_mismatch": has_patch_mismatch,
                 "crawler_rate_text": state.crawler_rate_text,
                 "crawler_mpm": state.crawler_mpm,
+                "crawler_paused": state.crawler_paused,
+                "crawler_eta_text": state.crawler_eta_text,
                 "operations": state.operations.iter().map(|operation| json!({
                     "id": operation.id,
                     "message": operation.message,
@@ -2496,6 +2532,45 @@ pub async fn handle_command(
                 }
                 Ok(Err(error)) => response_error(error),
                 Err(error) => response_error(format!("set limit worker failed: {error}")),
+            }
+        }
+        "pause_global_aram_crawler" => {
+            let paused = args.get("paused").and_then(Value::as_bool).unwrap_or(true);
+            let mut state = runtime.write().await;
+            state.crawler_paused = paused;
+            let collector_msg = if paused { "paused" } else { "resumed" };
+            logger::info("agent.crawler", &format!("Crawler {collector_msg} by user"));
+            response_ok(json!({ "paused": paused }))
+        }
+        "stop_global_aram_crawler" => {
+            let global_path = global_aram_database_path();
+            let path_clone = global_path.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                initialize_global_aram_database(&path_clone)?;
+                let count = global_game_count(&path_clone)?;
+                set_global_game_limit(&path_clone, count)?;
+                Ok::<_, String>(count)
+            })
+            .await;
+            match result {
+                Ok(Ok(count)) => {
+                    let mut state = runtime.write().await;
+                    state.crawler_paused = false;
+                    state.collector_state = format!("global-aram:{count}/{count} (completed)");
+                    state.crawler_eta_text = "Completed".to_string();
+                    if let Some(op) = state
+                        .operations
+                        .iter_mut()
+                        .find(|op| op.id == "global-database")
+                    {
+                        op.current = Some(count);
+                        op.total = Some(count);
+                    }
+                    logger::info("agent.crawler", &format!("Crawler stopped at {count} games"));
+                    response_ok(json!({ "limit": count, "games": count }))
+                }
+                Ok(Err(error)) => response_error(error),
+                Err(error) => response_error(format!("stop crawler failed: {error}")),
             }
         }
         "set_global_aram_workers" => {
@@ -3615,6 +3690,11 @@ async fn run_global_aram_worker(
             .starts_with("game_in_progress")
         {
             tokio::time::sleep(Duration::from_secs(5)).await;
+            continue;
+        }
+
+        if runtime.read().await.crawler_paused {
+            tokio::time::sleep(Duration::from_millis(1000)).await;
             continue;
         }
 

@@ -21,11 +21,28 @@
   import { getSummonerProfile } from "../../api/profile";
   import { logger } from "../../utils/logger";
 
+  let {
+    selectedChampion = null,
+    onSelectChampion,
+  }: {
+    selectedChampion?: ChampionSummary | null;
+    onSelectChampion?: (champ: ChampionSummary | null) => void;
+  } = $props();
+
   let session = $state<ChampSelectSession | null>(null);
   let isLcuConnected = $state(false);
   let teamBuilds = $state<Record<number, MayhemChampionBuildSummary>>({});
   let allChampions = $state<ChampionSummary[]>([]);
-  let selectedChampionId = $state<number>(22); // Default to Ashe or picked champ
+  let selectedChampionId = $state<number>(22);
+
+  $effect(() => {
+    if (selectedChampion && selectedChampion.id > 0 && selectedChampion.id !== selectedChampionId) {
+      selectedChampionId = selectedChampion.id;
+      if (!teamBuilds[selectedChampion.id]) {
+        void loadSingleChampionBuild(selectedChampion.id);
+      }
+    }
+  });
   let selectedStrategyId = $state<string>("win_rate");
   let manualChampionBuild = $state<MayhemChampionBuildSummary | null>(null);
   let loadingBuild = $state(false);
@@ -284,6 +301,10 @@
   function handleSelectChampion(champId: number) {
     selectedChampionId = champId;
     searchQuery = "";
+    const champObj = allChampions.find((c) => c.id === champId) ?? null;
+    if (champObj) {
+      onSelectChampion?.(champObj);
+    }
     if (!teamBuilds[champId]) {
       void loadSingleChampionBuild(champId);
     } else {
@@ -581,6 +602,7 @@
           isRuneMismatch={false}
           activeRuneChampionId={null}
           showAllChampions={false}
+          pinSelectedFirst={true}
           onSelectChampion={(champ) => champ && handleSelectChampion(champ.id)}
         />
       </div>

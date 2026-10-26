@@ -237,10 +237,21 @@ export function parseGameDescription(raw?: string | null): string {
     return String(Math.round(parseFloat(n) * 100) / 100);
   });
 
-  // Remove leftover @Param@ variables cleanly if any weren't substituted
-  html = html.replace(/@([a-zA-Z0-9_]+)(?:[*+/-]-?[0-9.]*)?@(%?)/g, (_m, param, trailingPct) => {
+  // 4b. Parse inline %i:token% icons (e.g. %i:scaleAP%, %i:scaleAD%)
+  html = html.replace(/%i:([a-zA-Z0-9_]+)%/gi, (_match, token) => {
+    const key = token.toLowerCase();
+    const def = TAG_DEFINITIONS[key];
+    if (def?.iconUrl) {
+      return `<img src="${def.iconUrl}" alt="" class="inline-block h-[1em] w-[1em] align-[-0.15em] mr-0.5 object-contain select-none pointer-events-none" />`;
+    }
+    return "";
+  });
+
+  // Remove leftover @Param@ variables cleanly if any weren't substituted (including cross-spell tokens like @Spell.Name:Var@)
+  html = html.replace(/@([a-zA-Z0-9_.:]+)(?:[*+/-]-?[0-9.]*)?@(%?)/g, (_m, param, trailingPct) => {
     if (/^f[0-9.]*$/i.test(param)) return "";
-    return `<span class="text-amber-300 font-semibold">${param}</span>${trailingPct}`;
+    const varName = param.includes(":") ? param.split(":").pop() ?? param : param;
+    return `<span class="text-amber-300 font-semibold">${varName}</span>${trailingPct}`;
   });
 
   // Clean unresolved {{...}} templates
