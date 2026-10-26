@@ -10,6 +10,7 @@
     activeTab = "runes",
     tabs = [
       { id: "builds", label: "Builds", icon: "icon-[heroicons--sparkles]" },
+      { id: "mayhem", label: "Mayhem", icon: "icon-[heroicons--fire]" },
       { id: "profile", label: "Profile", icon: "icon-[heroicons--user]" },
     ],
     onTabChange,

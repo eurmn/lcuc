@@ -10,6 +10,7 @@
     searchQuery = "",
     isRuneMismatch = false,
     activeRuneChampionId = null,
+    showAllChampions = true,
     onSelectChampion,
   }: {
     searchedChampions: ChampionSummary[];
@@ -19,6 +20,7 @@
     searchQuery: string;
     isRuneMismatch: boolean;
     activeRuneChampionId: number | null;
+    showAllChampions?: boolean;
     onSelectChampion: (champ: ChampionSummary | null) => void;
   } = $props();
 
@@ -66,17 +68,20 @@
   <div
     bind:this={scrollContainer}
     onscroll={updateScrollArrows}
-    class="flex items-center gap-1.5 overflow-x-auto py-0.5 px-0.5 scrollbar-none scroll-smooth w-full select-none"
+    class="flex items-center gap-2 overflow-x-auto py-1.5 px-2 scrollbar-none scroll-smooth w-full select-none"
   >
     {#if searchQuery.trim()}
       <!-- Search Results -->
       {#each searchedChampions as champ (champ.id)}
+        {@const isSelected = selectedChampion && selectedChampion.id === champ.id}
         <div class="relative flex shrink-0 items-center justify-center">
           <button
             type="button"
             title={`${champ.name}${champ.is_favorite ? " (Favorite)" : ""}`}
             onclick={() => onSelectChampion(champ)}
-            class={champ.is_favorite
+            class={isSelected
+              ? "relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border-2 border-purple-500 ring-2 ring-purple-400/80 shadow-[0_0_12px_rgba(168,85,247,0.6)] bg-gray-900 p-0 opacity-100 scale-105 cursor-pointer transition-all z-10"
+              : champ.is_favorite
               ? "relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border-2 border-yellow-400 bg-gray-900 p-0 shadow-sm shadow-yellow-950/40 opacity-90 hover:opacity-100 hover:scale-105 cursor-pointer transition-all"
               : "relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border border-gray-700/80 bg-gray-900 p-0 opacity-70 hover:opacity-100 hover:border-gray-500 hover:scale-105 cursor-pointer transition-all"}
           >
@@ -102,12 +107,15 @@
     {:else}
       <!-- Favorites List -->
       {#each favoriteChampions as champ (champ.id)}
+        {@const isSelected = selectedChampion && selectedChampion.id === champ.id}
         <div class="relative flex shrink-0 items-center justify-center">
           <button
             type="button"
             title={`${champ.name} (Favorite)`}
             onclick={() => onSelectChampion(champ)}
-            class="relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border-2 border-yellow-400 bg-gray-900 p-0 shadow-sm shadow-yellow-950/40 opacity-90 hover:opacity-100 hover:scale-105 cursor-pointer transition-all"
+            class={isSelected
+              ? "relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border-2 border-purple-500 ring-2 ring-purple-400/80 shadow-[0_0_12px_rgba(168,85,247,0.6)] bg-gray-900 p-0 opacity-100 scale-105 cursor-pointer transition-all z-10"
+              : "relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border-2 border-yellow-400 bg-gray-900 p-0 shadow-sm shadow-yellow-950/40 opacity-90 hover:opacity-100 hover:scale-105 cursor-pointer transition-all"}
           >
             {#if champ.square_icon_url}
               <img
@@ -130,7 +138,7 @@
       {/each}
 
       <!-- All Champions button -->
-      {#if selectedChampion !== null}
+      {#if showAllChampions && selectedChampion !== null}
         <div class="relative flex shrink-0 items-center justify-center">
           <button
             type="button"
@@ -156,12 +164,15 @@
 
       <!-- Non-Favorite Champions List -->
       {#each nonFavoriteChampions as champ (champ.id)}
+        {@const isSelected = selectedChampion && selectedChampion.id === champ.id}
         <div class="relative flex shrink-0 items-center justify-center">
           <button
             type="button"
             title={champ.name}
             onclick={() => onSelectChampion(champ)}
-            class="relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border border-gray-700/80 bg-gray-900 p-0 opacity-70 hover:opacity-100 hover:border-gray-500 hover:scale-105 cursor-pointer transition-all"
+            class={isSelected
+              ? "relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border-2 border-purple-500 ring-2 ring-purple-400/80 shadow-[0_0_12px_rgba(168,85,247,0.6)] bg-gray-900 p-0 opacity-100 scale-105 cursor-pointer transition-all z-10"
+              : "relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border border-gray-700/80 bg-gray-900 p-0 opacity-70 hover:opacity-100 hover:border-gray-500 hover:scale-105 cursor-pointer transition-all"}
           >
             {#if champ.square_icon_url}
               <img

@@ -476,17 +476,71 @@ fn statistic_row(
     } else {
         champion_baseline
     };
-    // Bayesian shrinkage for combos: WR_adj = (wins + M * p0) / (games + M) with M = 10.0
-    // ponytail: M=10 prior weight; upgrade to empirical Bayes variance estimation when sample exceeds 100k
-    let (win_rate, wpa) = if kind == "combo" {
-        let m = 10.0;
-        let adj_win_rate = (aggregate.wins as f64 + m * baseline) / (games + m);
-        let adj_wpa = adj_win_rate - baseline;
-        (adj_win_rate, adj_wpa)
-    } else {
-        let wr = aggregate.wins as f64 / games;
-        (wr, wr - effective_baseline)
+    // Bayesian shrinkage for credibility:
+    // With small samples (1 to 4 games), raw win rate (100%) and WPA contain no valuable information compared
+    // to large samples (e.g. 140 games +6% WPA or 64 games +11% WPA).
+    // We shrink estimates toward baseline based on sample size:
+    let m_wr = match kind {
+        "combo" => 10.0,
+        _ => 25.0,
     };
+    let adj_win_rate = (aggregate.wins as f64 + m_wr * effective_baseline) / (games + m_wr);
+    let adj_wpa = adj_win_rate - effective_baseline;
+    let raw_win_rate = aggregate.wins as f64 / games;
+    let raw_wpa = raw_win_rate - effective_baseline;
+
+    // Slot accounting:
+    // - Champions: 1 slot per player (S = 1)
+    // - Items: 5 regular slots, 1 exclusive boot slot (S = 1 for boots, S = 5 for others)
+    // - Augments: 4 slots given at levels 3, 7, 11, 15; cannot be repeated, choosing once is picked for the whole game (S = 4)
+    // - Combos: 1 slot (S = 1)
+    let is_boot = if kind == "item" {
+        let lower = name.to_lowercase();
+        lower.contains("boot")
+            || lower.contains("greaves")
+            || lower.contains("shoes")
+            || lower.contains("steelcaps")
+            || lower.contains("treads")
+            || matches!(
+                id.strip_prefix("item:").and_then(|s| s.parse::<i64>().ok()),
+                Some(1001 | 3005 | 3006 | 3009 | 3020 | 3047 | 3111 | 3117 | 3158)
+            )
+    } else {
+        false
+    };
+
+    let slots: f64 = match kind {
+        "item" => {
+            if is_boot {
+                1.0
+            } else {
+                5.0
+            }
+        }
+        "augment" => 4.0,
+        _ => 1.0,
+    };
+
+    let p0_slot = match kind {
+        "champion" => 1.0 / 168.0,
+        "item" => {
+            if is_boot {
+                1.0 / 7.0
+            } else {
+                1.0 / 150.0
+            }
+        }
+        "augment" => 1.0 / 250.0,
+        "combo" => 1.0 / 500.0,
+        _ => 1.0 / 100.0,
+    };
+
+    let n = population_count.max(1) as f64;
+    let total_slots = n * slots;
+    let m_slots = 20.0f64; // Bayesian pseudo-slots prior weight for small-sample shrinkage
+    let slot_pick_rate = (aggregate.games as f64 + m_slots * p0_slot) / (total_slots + m_slots);
+    let pick_rate = (slot_pick_rate * slots).clamp(0.0, 1.0);
+
     let components = if kind == "combo" {
         id.strip_prefix("combo:")
             .unwrap_or(&id)
@@ -539,10 +593,12 @@ fn statistic_row(
         "damage": aggregate.damage,
         "gold": aggregate.gold,
         "duration": aggregate.duration,
-        "win_rate": win_rate,
-        "raw_win_rate": aggregate.wins as f64 / games,
-        "wpa": wpa,
-        "pick_rate": aggregate.games as f64 / (population_count.max(1) as f64),
+        "win_rate": adj_win_rate,
+        "raw_win_rate": raw_win_rate,
+        "wpa": adj_wpa,
+        "raw_wpa": raw_wpa,
+        "pick_rate": pick_rate,
+        "slot_pick_rate": slot_pick_rate,
         "damage_per_minute": aggregate.damage as f64 / (duration / 60.0),
         "champions": champion_rows,
         "partners": partner_rows,
@@ -674,6 +730,18 @@ fn store_statistics_projection(
     Ok(())
 }
 
+fn matches_pick_rate_filter(kind: &str, pick_rate: f64, hide_low_pickrate: bool) -> bool {
+    if !hide_low_pickrate {
+        return true;
+    }
+    match kind {
+        "augment" => pick_rate >= 0.005, // 0.5% threshold for slot-adjusted augments (4 slots)
+        "item" => pick_rate >= 0.005,    // 0.5% threshold for slot-adjusted items (5 slots)
+        "combo" => true,                 // Combos are already guarded by min_combo_games
+        _ => pick_rate >= 0.01,          // 1.0% threshold for champions and others
+    }
+}
+
 fn render_statistics_response(
     args: &Value,
     scope: &str,
@@ -717,8 +785,11 @@ fn render_statistics_response(
                 .unwrap_or("")
                 .to_ascii_lowercase()
                 .contains(&search);
-        let matches_pick_rate = !hide_low_pickrate
-            || row.get("pick_rate").and_then(Value::as_f64).unwrap_or(0.0) >= 0.01;
+        let matches_pick_rate = matches_pick_rate_filter(
+            kind,
+            row.get("pick_rate").and_then(Value::as_f64).unwrap_or(0.0),
+            hide_low_pickrate,
+        );
         matches_search && matches_pick_rate
     });
     rows.sort_by(|left, right| {
@@ -962,8 +1033,11 @@ fn build_statistics_response(
                     .unwrap_or("")
                     .to_ascii_lowercase()
                     .contains(&search);
-            let matches_pick_rate = !hide_low_pickrate
-                || row.get("pick_rate").and_then(Value::as_f64).unwrap_or(0.0) >= 0.01;
+            let matches_pick_rate = matches_pick_rate_filter(
+                kind,
+                row.get("pick_rate").and_then(Value::as_f64).unwrap_or(0.0),
+                hide_low_pickrate,
+            );
             matches_search && matches_pick_rate
         });
         rows.sort_by(|left, right| {
@@ -1378,8 +1452,11 @@ fn build_statistics_response(
             }
         })
         .filter(|row| {
-            !hide_low_pickrate
-                || row.get("pick_rate").and_then(Value::as_f64).unwrap_or(0.0) >= 0.01
+            matches_pick_rate_filter(
+                kind,
+                row.get("pick_rate").and_then(Value::as_f64).unwrap_or(0.0),
+                hide_low_pickrate,
+            )
         })
         .collect::<Vec<_>>();
     rows.sort_by(|left, right| {
@@ -1633,6 +1710,38 @@ fn initialize_global_aram_database(path: &PathBuf) -> Result<(), String> {
     let _ = connection.execute("ALTER TABLE aram_games ADD COLUMN patch TEXT", []);
     let _ = connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_aram_games_patch ON aram_games(patch)",
+        [],
+    );
+    let _ = connection.execute(
+        "ALTER TABLE aram_participants ADD COLUMN spell1_id INTEGER DEFAULT 0",
+        [],
+    );
+    let _ = connection.execute(
+        "ALTER TABLE aram_participants ADD COLUMN spell2_id INTEGER DEFAULT 0",
+        [],
+    );
+    let _ = connection.execute(
+        "ALTER TABLE aram_participants ADD COLUMN damage_taken INTEGER DEFAULT 0",
+        [],
+    );
+    let _ = connection.execute(
+        "ALTER TABLE aram_participants ADD COLUMN true_damage INTEGER DEFAULT 0",
+        [],
+    );
+    let _ = connection.execute(
+        "ALTER TABLE aram_participants ADD COLUMN damage_mitigated INTEGER DEFAULT 0",
+        [],
+    );
+    let _ = connection.execute(
+        "ALTER TABLE aram_participants ADD COLUMN total_heal INTEGER DEFAULT 0",
+        [],
+    );
+    let _ = connection.execute(
+        "ALTER TABLE aram_participants ADD COLUMN turret_damage INTEGER DEFAULT 0",
+        [],
+    );
+    let _ = connection.execute(
+        "ALTER TABLE aram_participants ADD COLUMN game_duration INTEGER DEFAULT 0",
         [],
     );
     let cleanup_needed = connection
@@ -2924,11 +3033,45 @@ fn store_global_detail(
                 .collect(),
         );
         let augment_ids = participant_augment_ids(&participant);
+        let spell1_id = participant
+            .get("spell1Id")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let spell2_id = participant
+            .get("spell2Id")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let damage_taken = stats
+            .and_then(|s| s.get("totalDamageTaken"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let true_damage = stats
+            .and_then(|s| s.get("trueDamageDealtToChampions"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let damage_mitigated = stats
+            .and_then(|s| s.get("damageSelfMitigated"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let total_heal = stats
+            .and_then(|s| s.get("totalHeal"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let turret_damage = stats
+            .and_then(|s| s.get("damageDealtToTurrets"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let duration = detail
+            .get("gameDuration")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+
         tx.execute(
             "INSERT OR REPLACE INTO aram_participants (
             game_id, participant_id, puuid, champion_id, win,
-            item_ids_json, augment_ids_json, kills, deaths, assists, damage, gold
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            item_ids_json, augment_ids_json, kills, deaths, assists, damage, gold,
+            spell1_id, spell2_id, damage_taken, true_damage, damage_mitigated, total_heal, turret_damage, game_duration
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
             rusqlite::params![
                 game_id,
                 participant_id,
@@ -2959,6 +3102,14 @@ fn store_global_detail(
                     .and_then(|value| value.get("goldEarned"))
                     .and_then(Value::as_i64)
                     .unwrap_or(0),
+                spell1_id,
+                spell2_id,
+                damage_taken,
+                true_damage,
+                damage_mitigated,
+                total_heal,
+                turret_damage,
+                duration,
             ],
         )
         .map_err(|error| {

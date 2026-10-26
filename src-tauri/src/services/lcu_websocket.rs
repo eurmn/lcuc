@@ -155,6 +155,28 @@ impl LcuWsWatcher {
                 if uri == "/lol-perks/v1/pages" || uri == "/lol-perks/v1/currentpage" {
                     let _ = app.emit("lcu:runes-changed", ());
                 }
+
+                // Check for gameflow phase events
+                if uri == "/lol-gameflow/v1/gameflow-phase" {
+                    let phase = payload.get("data").and_then(Value::as_str).unwrap_or("");
+                    let _ = app.emit("lcu:gameflow-phase", phase);
+                    if phase != "ChampSelect" {
+                        let _ = app.emit("lcu:champ-select-session", Value::Null);
+                    }
+                }
+
+                // Check for champion select events
+                if uri == "/lol-champ-select/v1/session" {
+                    let event_type = payload
+                        .get("eventType")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    if event_type == "Delete" {
+                        let _ = app.emit("lcu:champ-select-session", Value::Null);
+                    } else if let Some(session_data) = payload.get("data") {
+                        let _ = app.emit("lcu:champ-select-session", session_data);
+                    }
+                }
             }
         }
     }

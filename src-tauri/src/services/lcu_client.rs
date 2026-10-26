@@ -386,6 +386,48 @@ impl LcuClient {
         Ok(resp.status().as_u16())
     }
 
+    /// Performs an authenticated HTTP PATCH request with a JSON payload against the local LCU API.
+    pub async fn patch_json<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &Value,
+    ) -> Result<T, String> {
+        let url = format!("{}{}", self.credentials.base_url(), path);
+        let resp = self
+            .client
+            .patch(&url)
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| format!("LCU PATCH {} failed: {}", path, e))?;
+
+        if !resp.status().is_success() {
+            return Err(format!(
+                "LCU PATCH {} returned error status: {}",
+                path,
+                resp.status()
+            ));
+        }
+
+        resp.json::<T>()
+            .await
+            .map_err(|e| format!("Failed deserializing LCU PATCH JSON for {}: {}", path, e))
+    }
+
+    /// Performs an authenticated HTTP PATCH request with a JSON payload and returns the HTTP status code.
+    pub async fn patch_json_status(&self, path: &str, body: &Value) -> Result<u16, String> {
+        let url = format!("{}{}", self.credentials.base_url(), path);
+        let resp = self
+            .client
+            .patch(&url)
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| format!("LCU PATCH {} failed: {}", path, e))?;
+
+        Ok(resp.status().as_u16())
+    }
+
     /// Performs an authenticated HTTP DELETE request and returns the HTTP status code.
     ///
     /// # Arguments

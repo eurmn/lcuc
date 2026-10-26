@@ -6,8 +6,8 @@
     activeTab = "builds",
     onTabChange,
   }: {
-    activeTab?: "builds" | "profile";
-    onTabChange?: (tab: "builds" | "profile") => void;
+    activeTab?: "builds" | "mayhem" | "profile";
+    onTabChange?: (tab: "builds" | "mayhem" | "profile") => void;
   } = $props();
 
   const appWindow = getCurrentWindow();

@@ -13,3 +13,6 @@ pub use runes::*;
 
 pub mod history;
 pub use history::*;
+
+pub mod champ_select;
+pub use champ_select::*;

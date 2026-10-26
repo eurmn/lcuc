@@ -8,6 +8,7 @@
   import MatchHistoryView from "./lib/components/history/MatchHistoryView.svelte";
   import ProfileStatisticsView from "./lib/components/history/ProfileStatisticsView.svelte";
   import BuildStatisticsView from "./lib/components/history/BuildStatisticsView.svelte";
+  import MayhemChampSelectView from "./lib/components/history/MayhemChampSelectView.svelte";
   import {
     deleteRuneset,
     exportSavedRunePage,
@@ -39,7 +40,6 @@
     getGlobalAramConfig,
     resetGlobalAramDatabase,
     setGlobalAramLimit,
-    setGlobalAramWorkers,
     type AgentOperation,
     type GlobalAramPatchBreakdown,
   } from "./lib/api/agent";
@@ -54,8 +54,8 @@
   let selectedKey = $state<string>("");
   let selectedChampion = $state<ChampionSummary | null>(null);
   let allChampions = $state<ChampionSummary[]>([]);
-  let activeTab = $state<"builds" | "profile">("builds");
-  let profileTab = $state<"history" | "statistics">("history");
+  let activeTab = $state<"builds" | "mayhem" | "profile">("builds");
+  let mayhemTab = $state<"statistics" | "builds">("statistics");
   let statisticsPerspective = $state<"champions" | "builds">("champions");
   let statisticsScope = $state<"personal" | "compare">("personal");
   let statisticsConfigOpen = $state(false);
@@ -73,7 +73,6 @@
   let agentOperations = $state<AgentOperation[]>([]);
   let savingGlobalLimit = $state(false);
   let hideLowPickrate = $state(false);
-  let crawlerMpm = $state(0);
   let crawlerRateText = $state("0.0 match/min");
 
   let currentTree = $state<RuneTreePayload | null>(null);
@@ -84,12 +83,20 @@
 
   onMount(() => {
     const savedTab = localStorage.getItem("lcu-active-tab");
-    if (savedTab === "builds" || savedTab === "profile") {
+    if (savedTab === "builds" || savedTab === "mayhem" || savedTab === "profile") {
       activeTab = savedTab;
     }
     const savedProfileTab = localStorage.getItem("lcu-profile-tab");
-    if (savedProfileTab === "history" || savedProfileTab === "statistics") {
-      profileTab = savedProfileTab;
+    if (savedProfileTab === "statistics") {
+      // Migrate legacy profile statistics to Mayhem tab
+      activeTab = "mayhem";
+      mayhemTab = "statistics";
+      localStorage.setItem("lcu-active-tab", "mayhem");
+      localStorage.removeItem("lcu-profile-tab");
+    }
+    const savedMayhemTab = localStorage.getItem("lcu-mayhem-tab");
+    if (savedMayhemTab === "statistics" || savedMayhemTab === "builds") {
+      mayhemTab = savedMayhemTab;
     }
     const savedStatisticsPerspective = localStorage.getItem("lcu-statistics-perspective");
     if (savedStatisticsPerspective === "champions" || savedStatisticsPerspective === "builds") {
@@ -120,7 +127,6 @@
         globalHasPatchMismatch = Boolean(config.has_patch_mismatch);
         agentOperations = config.operations ?? [];
         crawlerRateText = config.crawler_rate_text ?? "0.0 match/min";
-        crawlerMpm = config.crawler_mpm ?? 0;
         if (syncStatisticsCachePatch(globalCurrentPatch)) {
           statisticsRefreshKey += 1;
         }
@@ -149,14 +155,14 @@
     };
   });
 
-  function handleTabChange(tab: "builds" | "profile") {
+  function handleTabChange(tab: "builds" | "mayhem" | "profile") {
     activeTab = tab;
     localStorage.setItem("lcu-active-tab", tab);
   }
 
-  function handleProfileTabChange(tab: "history" | "statistics") {
-    profileTab = tab;
-    localStorage.setItem("lcu-profile-tab", tab);
+  function handleMayhemTabChange(tab: "statistics" | "builds") {
+    mayhemTab = tab;
+    localStorage.setItem("lcu-mayhem-tab", tab);
   }
 
   function handleStatisticsPerspectiveChange(perspective: "champions" | "builds") {
@@ -196,7 +202,6 @@
       globalOutdatedGames = 0;
       globalHasPatchMismatch = false;
       globalCollectorState = `global-aram:0/${result.limit} (reset)`;
-      crawlerMpm = 0;
       crawlerRateText = "0.0 match/min";
       confirmingGlobalReset = false;
       statisticsRefreshKey += 1;
@@ -508,29 +513,32 @@
         onImport={handleImportPage}
         onSelectChampion={handleSelectChampionFilter}
       />
-    {:else}
+    {:else if activeTab === "mayhem"}
       <div class="flex min-h-0 flex-1 overflow-hidden">
         <nav class="flex w-16 shrink-0 flex-col items-center gap-2 border-r border-gray-800 bg-gray-950 py-4">
           <button
             type="button"
-            title="Match history"
-            aria-label="Match history"
-            onclick={() => handleProfileTabChange("history")}
-            class="flex h-11 w-11 items-center justify-center rounded-xl transition-colors {profileTab === 'history' ? 'bg-purple-600 text-white' : 'text-gray-500 hover:bg-gray-800 hover:text-gray-200'}"
-          >
-            <span class="icon-[heroicons--clock] h-5 w-5"></span>
-          </button>
-          <button
-            type="button"
             title="Statistics"
             aria-label="Statistics"
-            onclick={() => handleProfileTabChange("statistics")}
-            class="flex h-11 w-11 items-center justify-center rounded-xl transition-colors {profileTab === 'statistics' ? 'bg-purple-600 text-white' : 'text-gray-500 hover:bg-gray-800 hover:text-gray-200'}"
+            onclick={() => handleMayhemTabChange("statistics")}
+            class="flex h-11 w-11 items-center justify-center rounded-xl transition-colors {mayhemTab === 'statistics' ? 'bg-purple-600 text-white' : 'text-gray-500 hover:bg-gray-800 hover:text-gray-200'}"
           >
             <span class="icon-[heroicons--chart-bar] h-5 w-5"></span>
           </button>
+          <button
+            type="button"
+            title="Builds & Champion Selection"
+            aria-label="Builds & Champion Selection"
+            onclick={() => handleMayhemTabChange("builds")}
+            class="flex h-11 w-11 items-center justify-center rounded-xl transition-colors {mayhemTab === 'builds' ? 'bg-purple-600 text-white' : 'text-gray-500 hover:bg-gray-800 hover:text-gray-200'}"
+          >
+            <span class="icon-[heroicons--sparkles] h-5 w-5"></span>
+          </button>
         </nav>
         <div class="relative min-h-0 min-w-0 flex-1 flex flex-col bg-gray-950">
+          {#if mayhemTab === "builds"}
+            <MayhemChampSelectView />
+          {:else}
           <!-- Thin Crawler Topbar Loader when Crawler is Active (position absolute, right of sidebar) -->
           {#if globalCollectorState.startsWith("global-aram:") || globalCollectorState === "collecting" || agentOperations.some((op) => op.id === "global-database")}
             {@const crawlerOp = agentOperations.find((op) => op.id === "global-database")}
@@ -589,9 +597,6 @@
 
           <!-- Content container underneath loader with padding to accommodate the absolute bar -->
           <div class="min-h-0 min-w-0 flex-1 bg-gray-950 {globalCollectorState.startsWith('global-aram:') || globalCollectorState === 'collecting' || agentOperations.some((op) => op.id === 'global-database') ? 'pt-8' : ''}">
-            {#if profileTab === "history"}
-            <MatchHistoryView />
-          {:else}
             <div class="flex h-full min-h-0 flex-col">
               <div class="flex shrink-0 items-center justify-between border-b border-gray-800 bg-gray-950 px-4 pb-3 pt-4">
                 <h1 class="flex items-center gap-2 text-lg font-bold tracking-wide text-gray-100">
@@ -715,7 +720,7 @@
                         <p class="mt-1 break-words text-[10px] text-cyan-300">Status: {globalCollectorState}{#if globalQueuedJobs > 0} · {globalQueuedJobs.toLocaleString()} queued{/if}</p>
                         <label class="mt-3 flex items-center gap-2 text-[11px] text-gray-300">
                           <input type="checkbox" checked={hideLowPickrate} onchange={handleHideLowPickrateChange} class="rounded border-gray-700 bg-gray-950 text-purple-600 focus:ring-purple-500" />
-                          Hide low pick-rate options (&lt;1%)
+                          Hide low pick-rate options (&lt;1% champs, &lt;0.2% items)
                         </label>
                         <button type="button" class="mt-2 w-full cursor-pointer rounded bg-purple-600 px-2 py-1.5 text-xs font-medium text-white transition-colors hover:bg-purple-500 disabled:opacity-50" disabled={savingGlobalLimit || resettingGlobalDb} onclick={saveGlobalStatisticsLimit}>{savingGlobalLimit ? "Saving..." : "Save settings"}</button>
 
@@ -772,10 +777,27 @@
                 {/if}
               </div>
             </div>
-          {/if}
-        </div>
+          </div>
+        {/if}
       </div>
     </div>
-  {/if}
-</div>
+    {:else}
+      <!-- Profile tab view: Match History & Summoner Profile -->
+      <div class="flex min-h-0 flex-1 overflow-hidden">
+        <nav class="flex w-16 shrink-0 flex-col items-center gap-2 border-r border-gray-800 bg-gray-950 py-4">
+          <button
+            type="button"
+            title="Match history"
+            aria-label="Match history"
+            class="flex h-11 w-11 items-center justify-center rounded-xl bg-purple-600 text-white"
+          >
+            <span class="icon-[heroicons--clock] h-5 w-5"></span>
+          </button>
+        </nav>
+        <div class="min-h-0 min-w-0 flex-1 flex flex-col bg-gray-950">
+          <MatchHistoryView />
+        </div>
+      </div>
+    {/if}
+  </div>
 </div>

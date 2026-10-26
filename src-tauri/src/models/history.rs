@@ -50,3 +50,155 @@ pub struct MatchHistoryItem {
     #[serde(default)]
     pub patch: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MayhemBuildItem {
+    pub id: i64,
+    pub name: String,
+    pub icon_url: String,
+    pub price_total: i64,
+    #[serde(default)]
+    pub item_class: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub win_rate: f64,
+    #[serde(default)]
+    pub wpa: f64,
+    #[serde(default)]
+    pub games: usize,
+    #[serde(default)]
+    pub pick_rate: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MayhemBuildSpell {
+    pub id: u64,
+    pub name: String,
+    pub icon_url: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub win_rate: f64,
+    #[serde(default)]
+    pub wpa: f64,
+    #[serde(default)]
+    pub games: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MayhemBuildAugment {
+    pub id: String,
+    pub name: String,
+    pub icon_url: String,
+    #[serde(default)]
+    pub rarity: Option<String>,
+    #[serde(default)]
+    pub tooltip: Option<String>,
+    #[serde(default)]
+    pub win_rate: f64,
+    #[serde(default)]
+    pub wpa: f64,
+    #[serde(default)]
+    pub games: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MayhemBuildStrategy {
+    pub id: String,
+    pub label: String,
+    pub metric_name: String,
+    pub avg_metric_value: String,
+    pub raw_metric_value: f64,
+    pub build_win_rate: f64,
+    pub build_wpa: f64,
+    #[serde(default)]
+    pub starter_item: Option<MayhemBuildItem>,
+    pub items: Vec<MayhemBuildItem>,
+    #[serde(default)]
+    pub alternative_items: Vec<MayhemBuildItem>,
+    pub spells: Vec<MayhemBuildSpell>,
+    #[serde(default)]
+    pub all_spells: Vec<MayhemBuildSpell>,
+    pub augments: Vec<MayhemBuildAugment>,
+    pub sample_games: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MayhemChampionBuildSummary {
+    pub champion_id: i64,
+    pub champion_name: String,
+    pub icon_url: String,
+    pub champion_win_rate: f64,
+    pub champion_wpa: f64,
+    pub total_games: usize,
+    pub strategies: Vec<MayhemBuildStrategy>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MayhemAugmentItem {
+    pub id: String,
+    pub name: String,
+    pub icon_url: String,
+    #[serde(default)]
+    pub rarity: Option<String>,
+    #[serde(default)]
+    pub tooltip: Option<String>,
+    #[serde(default)]
+    pub categories: Vec<String>,
+    #[serde(default)]
+    pub games: usize,
+    #[serde(default)]
+    pub wins: usize,
+    #[serde(default)]
+    pub win_rate: f64,
+    #[serde(default)]
+    pub wpa: f64,
+    #[serde(default)]
+    pub pick_rate: f64,
+    #[serde(default)]
+    pub global_games: usize,
+    #[serde(default)]
+    pub global_win_rate: f64,
+    #[serde(default)]
+    pub global_wpa: f64,
+    #[serde(default)]
+    pub global_pick_rate: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MayhemAugmentsQuery {
+    pub champion_id: Option<i64>,
+    #[serde(default)]
+    pub tier: Option<String>,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub search: Option<String>,
+    #[serde(default)]
+    pub sort_key: Option<String>,
+    #[serde(default)]
+    pub descending: Option<bool>,
+    #[serde(default)]
+    pub page: Option<usize>,
+    #[serde(default)]
+    pub page_size: Option<usize>,
+    #[serde(default)]
+    pub only_sampled: Option<bool>,
+    #[serde(default)]
+    pub hide_low_pickrate: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MayhemAugmentsResponse {
+    pub total_items: usize,
+    pub total_pages: usize,
+    pub page: usize,
+    pub page_size: usize,
+    pub champion_id: Option<i64>,
+    pub champion_name: Option<String>,
+    pub champion_win_rate: f64,
+    #[serde(default)]
+    pub total_games: usize,
+    pub items: Vec<MayhemAugmentItem>,
+}

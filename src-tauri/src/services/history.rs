@@ -1,18 +1,21 @@
 use crate::logger;
 use crate::models::{
     ChampionSummary, MatchHistoryAugmentInfo, MatchHistoryItem, MatchHistoryItemInfo,
+    MayhemAugmentItem, MayhemAugmentsQuery, MayhemAugmentsResponse, MayhemBuildAugment,
+    MayhemBuildItem, MayhemBuildSpell, MayhemBuildStrategy, MayhemChampionBuildSummary,
 };
 use crate::services::asset_cache::get_cached_asset_data_uri;
 use crate::services::champions::get_all_champions;
 use crate::services::lcu_client::LcuClient;
 use futures_util::future::join_all;
 use lazy_static::lazy_static;
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 
 const CDRAGON_ITEMS_URL: &str =
@@ -29,6 +32,8 @@ const CDRAGON_STRINGTABLE_URL: &str =
     "https://raw.communitydragon.org/latest/game/en_us/data/menu/en_us/lol.stringtable.json";
 const CDRAGON_MAPS_URL: &str =
     "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/maps.json";
+const CDRAGON_SUMMONER_SPELLS_URL: &str =
+    "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/summoner-spells.json";
 
 fn history_data_dir() -> PathBuf {
     dirs::data_local_dir()
@@ -134,6 +139,8 @@ pub async fn invalidate_history_caches() {
     *MAPS_CACHE.write().await = None;
     *AUGMENTS_CATALOG_CACHE.write().await = None;
     *RESOLVED_AUGMENTS_CACHE.write().await = None;
+    *SPELLS_CACHE.write().await = None;
+    invalidate_mayhem_builds_cache();
     let _ = fs::remove_file(augment_resolution_cache_path());
     let _ = fs::remove_file(augment_catalog_cache_path());
 }
@@ -241,6 +248,14 @@ struct AugmentCatalogEntry {
     tooltip: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CachedSpellInfo {
+    pub id: u64,
+    pub name: String,
+    pub icon_url: String,
+    pub description: Option<String>,
+}
+
 lazy_static! {
     static ref ITEMS_CACHE: RwLock<Option<HashMap<i32, CachedItemInfo>>> = RwLock::new(None);
     static ref MAPS_CACHE: RwLock<Option<HashMap<u16, String>>> = RwLock::new(None);
@@ -248,6 +263,25 @@ lazy_static! {
         RwLock::new(None);
     static ref RESOLVED_AUGMENTS_CACHE: RwLock<Option<HashMap<String, MatchHistoryAugmentInfo>>> =
         RwLock::new(None);
+    static ref SPELLS_CACHE: RwLock<Option<HashMap<u64, CachedSpellInfo>>> = RwLock::new(None);
+    static ref MAYHEM_CHAMPION_BUILDS_CACHE: RwLock<HashMap<i64, (Instant, MayhemChampionBuildSummary)>> =
+        RwLock::new(HashMap::new());
+    static ref MAYHEM_CHAMPION_AUGMENTS_CACHE: RwLock<HashMap<i64, (Instant, f64, usize, HashMap<String, (usize, usize)>)>> =
+        RwLock::new(HashMap::new());
+    static ref MAYHEM_GLOBAL_AUGMENTS_CACHE: RwLock<Option<(Instant, usize, HashMap<String, (usize, f64, f64)>)>> =
+        RwLock::new(None);
+}
+
+pub fn invalidate_mayhem_builds_cache() {
+    if let Ok(mut cache) = MAYHEM_CHAMPION_BUILDS_CACHE.try_write() {
+        cache.clear();
+    }
+    if let Ok(mut cache) = MAYHEM_CHAMPION_AUGMENTS_CACHE.try_write() {
+        cache.clear();
+    }
+    if let Ok(mut cache) = MAYHEM_GLOBAL_AUGMENTS_CACHE.try_write() {
+        *cache = None;
+    }
 }
 
 fn default_map_name(map_id: u16) -> Option<String> {
@@ -304,6 +338,72 @@ async fn get_maps_by_id() -> HashMap<u16, String> {
     let mut cache = MAPS_CACHE.write().await;
     *cache = Some(maps.clone());
     maps
+}
+
+pub async fn get_spells_by_id() -> Result<HashMap<u64, CachedSpellInfo>, String> {
+    let _ = crate::services::patch_manager::ensure_patch_freshness(None).await;
+    {
+        let cache = SPELLS_CACHE.read().await;
+        if let Some(spells) = cache.as_ref() {
+            return Ok(spells.clone());
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(6))
+        .build()
+        .map_err(|e| format!("Failed building reqwest client for spells: {e}"))?;
+
+    let raw_spells: Vec<Value> = client
+        .get(CDRAGON_SUMMONER_SPELLS_URL)
+        .send()
+        .await
+        .map_err(|e| format!("Failed fetching summoner spells: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("Failed parsing summoner spells: {e}"))?;
+
+    let mut spells = HashMap::new();
+    for s in raw_spells {
+        let Some(id) = s.get("id").and_then(Value::as_u64) else {
+            continue;
+        };
+        let name = s
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        if name.trim().is_empty() {
+            continue;
+        }
+        let raw_icon = s.get("iconPath").and_then(Value::as_str).unwrap_or("");
+        let icon_file = raw_icon.rsplit('/').next().unwrap_or("").to_lowercase();
+        let icon_url = if !icon_file.is_empty() {
+            format!(
+                "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/data/spells/icons2d/{}",
+                icon_file
+            )
+        } else {
+            String::new()
+        };
+        let description = s
+            .get("description")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        spells.insert(
+            id,
+            CachedSpellInfo {
+                id,
+                name,
+                icon_url,
+                description,
+            },
+        );
+    }
+
+    let mut cache = SPELLS_CACHE.write().await;
+    *cache = Some(spells.clone());
+    Ok(spells)
 }
 
 fn classify_item(
@@ -2081,4 +2181,1420 @@ pub async fn enrich_statistics_response(mut response: Value) -> Result<Value, St
         }
     }
     Ok(response)
+}
+
+struct ParticipantFact {
+    win: bool,
+    item_ids: Vec<i64>,
+    augment_ids: Vec<String>,
+    spell1_id: u64,
+    spell2_id: u64,
+    damage: i64,
+    damage_taken: i64,
+    true_damage: i64,
+    damage_mitigated: i64,
+    total_heal: i64,
+    turret_damage: i64,
+    game_duration: i64,
+}
+
+#[derive(Default, Clone)]
+struct MetricAggregate {
+    games: i64,
+    wins: i64,
+    damage: i64,
+    damage_taken: i64,
+    true_damage: i64,
+    damage_mitigated: i64,
+    total_heal: i64,
+    turret_damage: i64,
+    dpm_sum: f64,
+}
+
+fn score_metric(agg: &MetricAggregate, strategy_id: &str, base_wr: f64) -> f64 {
+    let games = agg.games.max(1) as f64;
+    let m = 10.0;
+    match strategy_id {
+        "win_rate" => (agg.wins as f64 + m * base_wr) / (games + m),
+        "damage_dealt" => (agg.damage as f64 + m * 20000.0) / (games + m),
+        "damage_per_minute" => (agg.dpm_sum + m * 1500.0) / (games + m),
+        "true_damage" => (agg.true_damage as f64 + m * 2000.0) / (games + m),
+        "damage_taken" => (agg.damage_taken as f64 + m * 25000.0) / (games + m),
+        "damage_mitigated" => (agg.damage_mitigated as f64 + m * 20000.0) / (games + m),
+        "healing" => (agg.total_heal as f64 + m * 8000.0) / (games + m),
+        "turret_damage" => (agg.turret_damage as f64 + m * 3000.0) / (games + m),
+        _ => (agg.wins as f64 + m * base_wr) / (games + m),
+    }
+}
+
+fn is_excluded_mayhem_item(id: i64, item_info: Option<&CachedItemInfo>) -> bool {
+    if id == 0 || id == 2050 || id == 2052 || id == 220013 {
+        return true;
+    }
+    if let Some(info) = item_info {
+        if info.price_total == 6000 {
+            return true;
+        }
+        let lower = info.name.to_lowercase();
+        if lower.contains("spatula")
+            || lower.contains("ultra hydra")
+            || lower.contains("wooglet")
+            || lower.contains("void immolation")
+            || lower.contains("adaptive helm")
+            || lower.contains("poro-snax")
+        {
+            return true;
+        }
+        if info
+            .categories
+            .iter()
+            .any(|c| c.eq_ignore_ascii_case("consumable") || c.eq_ignore_ascii_case("trinket"))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_starter_item(id: i64, item_info: Option<&CachedItemInfo>) -> bool {
+    match id {
+        3177 | 3184 | 2051 | 3112 | 3070 | 1054 | 1055 | 1056 | 1082 | 1083 => true,
+        _ => {
+            if let Some(info) = item_info {
+                let lower = info.name.to_lowercase();
+                lower.starts_with("guardian's ")
+                    || lower.starts_with("doran's ")
+                    || lower == "tear of the goddess"
+            } else {
+                false
+            }
+        }
+    }
+}
+
+/// Identifies League of Legends item exclusivity groups (items that cannot be purchased together).
+/// Reference: CDragon item stringtable groups (item_unique_hydra, item_unique_lifeline, item_unique_lastwhisper, etc.).
+fn get_item_exclusive_group(id: i64, item_info: Option<&CachedItemInfo>) -> Option<&'static str> {
+    if let Some(info) = item_info {
+        let name_low = info.name.to_lowercase();
+        let desc = info.description.as_deref().unwrap_or("");
+
+        // 1. Hydra / Cleave items (e.g. Ravenous Hydra, Titanic Hydra, Profane Hydra, Stridebreaker, Tiamat)
+        if name_low.contains("hydra")
+            || name_low.contains("tiamat")
+            || name_low.contains("stridebreaker")
+            || desc.contains("<passive>Cleave</passive>")
+            || matches!(
+                id,
+                3074 | 3077 | 3748 | 6631 | 6698 | 223074 | 223748 | 226631 | 226668 | 226698 | 773074 | 773077
+            )
+        {
+            return Some("hydra");
+        }
+
+        // 2. Lifeline items (Sterak's Gage, Maw of Malmortius, Immortal Shieldbow, Seraph's Embrace, Hexdrinker)
+        if name_low.contains("sterak")
+            || name_low.contains("malmortius")
+            || name_low.contains("shieldbow")
+            || name_low.contains("hexdrinker")
+            || desc.contains("<passive>Lifeline</passive>")
+            || matches!(
+                id,
+                3053 | 3155 | 3156 | 6673 | 223053 | 223156 | 226673 | 773155 | 773156
+            )
+        {
+            return Some("lifeline");
+        }
+
+        // 3. Percent Armor Penetration / Last Whisper items (Lord Dominik's, Serylda's, Mortal Reminder, Terminus)
+        if name_low.contains("last whisper")
+            || name_low.contains("dominik")
+            || name_low.contains("serylda")
+            || name_low.contains("mortal reminder")
+            || name_low.contains("terminus")
+            || matches!(
+                id,
+                3033 | 3035 | 3036 | 3302 | 6694 | 223033 | 223036 | 223302 | 226694 | 773035
+            )
+        {
+            return Some("last_whisper");
+        }
+
+        // 4. Crit Modifier / Marksman Capstone items (Infinity Edge, Navori Flickerblade)
+        if name_low.contains("infinity edge")
+            || name_low.contains("navori")
+            || matches!(id, 3031 | 6675 | 223031 | 226675)
+        {
+            return Some("crit_modifier");
+        }
+
+        // 5. Spellblade items (Trinity Force, Lich Bane, Iceborn Gauntlet, Essence Reaver, Bloodsong, Sheen)
+        if name_low.contains("trinity force")
+            || name_low.contains("lich bane")
+            || name_low.contains("iceborn")
+            || name_low.contains("bloodsong")
+            || desc.contains("<passive>Spellblade</passive>")
+            || matches!(
+                id,
+                3057 | 3078 | 3100 | 3508 | 3869 | 6662 | 6901 | 223078 | 223100 | 223508 | 226662 | 773057
+            )
+        {
+            return Some("spellblade");
+        }
+
+        // 6. Tear / Mana Charge items (Manamune, Muramana, Archangel's, Seraph's, Winter's Approach, Fimbulwinter)
+        if name_low.contains("manamune")
+            || name_low.contains("muramana")
+            || name_low.contains("archangel")
+            || name_low.contains("seraph")
+            || name_low.contains("fimbulwinter")
+            || name_low.contains("winter's approach")
+            || name_low.contains("tear of the goddess")
+            || desc.contains("<passive>Mana Charge</passive>")
+            || matches!(
+                id,
+                3003 | 3004 | 3040 | 3042 | 3070 | 3119 | 3121 | 223003 | 223004 | 223040 | 223042 | 323040
+            )
+        {
+            return Some("tear");
+        }
+
+        // 7. Immolate items (Sunfire Aegis, Hollow Radiance, Bami's Cinder)
+        if name_low.contains("sunfire")
+            || name_low.contains("hollow radiance")
+            || name_low.contains("bami")
+            || desc.contains("<passive>Immolate</passive>")
+            || matches!(id, 3068 | 3751 | 6664 | 223068 | 226664)
+        {
+            return Some("immolate");
+        }
+
+        // 8. Glory items
+        if matches!(id, 1082 | 3041) || name_low.contains("mejai") || name_low.contains("dark seal") {
+            return Some("glory");
+        }
+
+        // 9. Boots (only 1 pair of boots can be bought)
+        if info.item_class.as_deref() == Some("boot")
+            || info.categories.iter().any(|c| c.eq_ignore_ascii_case("boots"))
+            || name_low.contains("greaves")
+            || name_low.contains("shoes")
+            || name_low.contains("steelcaps")
+            || name_low.contains("treads")
+            || matches!(
+                id,
+                1001 | 3005 | 3006 | 3009 | 3020 | 3047 | 3111 | 3117 | 3158
+            )
+        {
+            return Some("boot");
+        }
+    }
+    None
+}
+
+/// Computes slot-aware Bayesian-smoothed pick rate for items.
+/// In League of Legends / ARAM Mayhem: 1 exclusive boot slot, 5 regular item slots.
+fn calc_item_pick_rate(games: usize, total_games: usize, is_boot: bool) -> f64 {
+    if total_games == 0 {
+        return 0.0;
+    }
+    if is_boot {
+        let p0 = 0.125; // 1 out of ~8 viable boots
+        let m = 10.0;
+        let pr = (games as f64 + m * p0) / (total_games as f64 + m);
+        pr.clamp(0.0, 1.0)
+    } else {
+        let p0_slot = 0.007; // ~150 completed items
+        let m_slots = 25.0; // ~5 games worth of 5 item slots
+        let total_slots = (total_games * 5) as f64;
+        let slot_share = (games as f64 + m_slots * p0_slot) / (total_slots + m_slots);
+        (slot_share * 5.0).clamp(0.0, 1.0)
+    }
+}
+
+pub async fn compute_mayhem_champion_build(
+    champion_id: i64,
+) -> Result<MayhemChampionBuildSummary, String> {
+    // 1. Check in-memory cache
+    {
+        let cache = MAYHEM_CHAMPION_BUILDS_CACHE.read().await;
+        if let Some((created_at, summary)) = cache.get(&champion_id) {
+            if created_at.elapsed() < std::time::Duration::from_secs(120) {
+                return Ok(summary.clone());
+            }
+        }
+    }
+
+    let db_path = history_data_dir().join("global-aram.db");
+    if !db_path.exists() {
+        return Err("global-aram.db not found".to_string());
+    }
+
+    // 2. Query participant facts in blocking task
+    let facts_res = tokio::task::spawn_blocking(move || -> Result<(Vec<ParticipantFact>, f64), String> {
+        let connection = Connection::open(&db_path)
+            .map_err(|e| format!("failed opening global-aram.db: {e}"))?;
+        let _ = connection.busy_timeout(std::time::Duration::from_secs(5));
+        let _ = connection.pragma_update(None, "journal_mode", "WAL");
+
+        let global_baseline: f64 = connection
+            .query_row("SELECT AVG(win) FROM aram_participants", [], |row| row.get(0))
+            .unwrap_or(0.50);
+
+        let mut stmt = connection
+            .prepare(
+                "SELECT win, item_ids_json, augment_ids_json, spell1_id, spell2_id,
+                        damage, damage_taken, true_damage, damage_mitigated, total_heal, turret_damage,
+                        game_duration
+                 FROM aram_participants
+                 WHERE champion_id = ?1",
+            )
+            .map_err(|e| format!("failed preparing participants query: {e}"))?;
+
+        let rows = stmt
+            .query_map([champion_id], |row| {
+                let it_json: String = row.get(1)?;
+                let aug_json: String = row.get(2)?;
+                let item_ids: Vec<i64> = serde_json::from_str(&it_json).unwrap_or_default();
+                let augment_ids: Vec<String> = serde_json::from_str(&aug_json).unwrap_or_default();
+                Ok(ParticipantFact {
+                    win: row.get::<_, i64>(0)? != 0,
+                    item_ids,
+                    augment_ids,
+                    spell1_id: row.get::<_, i64>(3).unwrap_or(0) as u64,
+                    spell2_id: row.get::<_, i64>(4).unwrap_or(0) as u64,
+                    damage: row.get(5).unwrap_or(0),
+                    damage_taken: row.get(6).unwrap_or(0),
+                    true_damage: row.get(7).unwrap_or(0),
+                    damage_mitigated: row.get(8).unwrap_or(0),
+                    total_heal: row.get(9).unwrap_or(0),
+                    turret_damage: row.get(10).unwrap_or(0),
+                    game_duration: row.get(11).unwrap_or(1200),
+                })
+            })
+            .map_err(|e| format!("failed querying facts: {e}"))?;
+
+        let facts: Vec<ParticipantFact> = rows.filter_map(Result::ok).collect();
+        Ok((facts, global_baseline))
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking failed: {e}"))??;
+
+    let (facts, global_baseline) = facts_res;
+    let total_games = facts.len();
+
+    // 3. Resolve champion identity
+    let all_champs = get_all_champions().await.unwrap_or_default();
+    let champ_info = all_champs.iter().find(|c| c.id == champion_id);
+    let champion_name = champ_info
+        .map(|c| c.name.clone())
+        .unwrap_or_else(|| format!("Champion #{champion_id}"));
+    let champ_icon = champ_info
+        .map(|c| c.square_icon_url.clone())
+        .unwrap_or_default();
+    let icon_url = get_cached_asset_data_uri(&champ_icon).await;
+
+    if total_games == 0 {
+        return Ok(MayhemChampionBuildSummary {
+            champion_id,
+            champion_name,
+            icon_url,
+            champion_win_rate: 0.50,
+            champion_wpa: 0.0,
+            total_games: 0,
+            strategies: Vec::new(),
+        });
+    }
+
+    let wins_count = facts.iter().filter(|f| f.win).count();
+    let champion_win_rate = wins_count as f64 / total_games as f64;
+    let champion_wpa = champion_win_rate - global_baseline;
+
+    // 4. Aggregate items, augments, and spell pairs
+    let mut items_agg: HashMap<i64, MetricAggregate> = HashMap::new();
+    let mut augments_agg: HashMap<String, MetricAggregate> = HashMap::new();
+    let mut spells_agg: HashMap<(u64, u64), MetricAggregate> = HashMap::new();
+    let mut individual_spells_agg: HashMap<u64, (i64, i64)> = HashMap::new();
+
+    for f in &facts {
+        let dur_min = (f.game_duration.max(60) as f64) / 60.0;
+        let dpm = f.damage as f64 / dur_min;
+        let win_val = i64::from(f.win);
+
+        for &it in &f.item_ids {
+            if it == 0 || it == 2050 || it == 2052 || it == 220013 {
+                continue;
+            }
+            let entry = items_agg.entry(it).or_default();
+            entry.games += 1;
+            entry.wins += win_val;
+            entry.damage += f.damage;
+            entry.damage_taken += f.damage_taken;
+            entry.true_damage += f.true_damage;
+            entry.damage_mitigated += f.damage_mitigated;
+            entry.total_heal += f.total_heal;
+            entry.turret_damage += f.turret_damage;
+            entry.dpm_sum += dpm;
+        }
+
+        for aug in &f.augment_ids {
+            if aug.is_empty() || aug == "0" {
+                continue;
+            }
+            let entry = augments_agg.entry(aug.clone()).or_default();
+            entry.games += 1;
+            entry.wins += win_val;
+            entry.damage += f.damage;
+            entry.damage_taken += f.damage_taken;
+            entry.true_damage += f.true_damage;
+            entry.damage_mitigated += f.damage_mitigated;
+            entry.total_heal += f.total_heal;
+            entry.turret_damage += f.turret_damage;
+            entry.dpm_sum += dpm;
+        }
+
+        if f.spell1_id > 0 && f.spell2_id > 0 {
+            let pair = (f.spell1_id.min(f.spell2_id), f.spell1_id.max(f.spell2_id));
+            let entry = spells_agg.entry(pair).or_default();
+            entry.games += 1;
+            entry.wins += win_val;
+            entry.damage += f.damage;
+            entry.damage_taken += f.damage_taken;
+            entry.true_damage += f.true_damage;
+            entry.damage_mitigated += f.damage_mitigated;
+            entry.total_heal += f.total_heal;
+            entry.turret_damage += f.turret_damage;
+            entry.dpm_sum += dpm;
+        }
+
+        for &sp in &[f.spell1_id, f.spell2_id] {
+            if sp > 0 {
+                let entry = individual_spells_agg.entry(sp).or_insert((0, 0));
+                entry.0 += 1;
+                if f.win {
+                    entry.1 += 1;
+                }
+            }
+        }
+    }
+
+    // Cache champion augments map for fast server-side pagination & filtering
+    {
+        let mut aug_map = HashMap::new();
+        for (aug_id, agg) in &augments_agg {
+            aug_map.insert(aug_id.clone(), (agg.games as usize, agg.wins as usize));
+        }
+        let mut aug_cache = MAYHEM_CHAMPION_AUGMENTS_CACHE.write().await;
+        aug_cache.insert(
+            champion_id,
+            (Instant::now(), champion_win_rate, total_games, aug_map),
+        );
+    }
+
+    // 5. Catalogs resolution
+    let items_catalog = get_items_by_id().await.unwrap_or_default();
+    let aug_catalog = get_augment_catalog_map().await.unwrap_or_default();
+    let spells_catalog = get_spells_by_id().await.unwrap_or_default();
+
+    let min_item_games = if total_games <= 15 {
+        1
+    } else if total_games <= 50 {
+        2
+    } else {
+        ((total_games as f64 * 0.012).ceil() as i64).clamp(3, 20)
+    };
+    let min_aug_games = if total_games <= 15 {
+        1
+    } else if total_games <= 50 {
+        2
+    } else {
+        ((total_games as f64 * 0.008).ceil() as i64).clamp(3, 15)
+    };
+
+    let strategy_defs = [
+        ("win_rate", "Highest Win Rate", "Win Rate"),
+        ("damage_dealt", "Damage Dealt", "Damage Dealt"),
+        ("damage_per_minute", "Damage / Min", "DPM"),
+        ("true_damage", "True Damage", "True Damage"),
+        ("damage_taken", "Damage Taken", "Damage Taken"),
+        ("damage_mitigated", "Damage Mitigated", "Damage Mitigated"),
+        ("healing", "Healing Done", "Healing Done"),
+        ("turret_damage", "Turret Damage", "Turret Damage"),
+    ];
+
+    let mut strategies = Vec::new();
+
+    for (strat_id, strat_label, metric_name) in strategy_defs {
+        // A. Score and select items
+        let mut starters: Vec<(i64, f64, &MetricAggregate)> = Vec::new();
+        let mut boots: Vec<(i64, f64, &MetricAggregate)> = Vec::new();
+        let mut core_items: Vec<(i64, f64, &MetricAggregate)> = Vec::new();
+
+        for (&it_id, agg) in &items_agg {
+            let item_info = items_catalog.get(&(it_id as i32));
+            if is_excluded_mayhem_item(it_id, item_info) {
+                continue;
+            }
+
+            let score = score_metric(agg, strat_id, champion_win_rate);
+            let is_starter = is_starter_item(it_id, item_info);
+            let is_boot = item_info
+                .map(|i| {
+                    i.item_class.as_deref() == Some("boot")
+                        || i.categories.iter().any(|c| c.eq_ignore_ascii_case("boots"))
+                })
+                .unwrap_or(false);
+
+            if is_starter {
+                if agg.games >= 1 {
+                    starters.push((it_id, score, agg));
+                }
+            } else if is_boot {
+                if agg.games >= min_item_games
+                    && item_info.map(|i| i.price_total >= 800).unwrap_or(true)
+                {
+                    boots.push((it_id, score, agg));
+                }
+            } else if item_info
+                .map(|i| i.price_total >= 1400 || i.item_class.as_deref() == Some("legendary"))
+                .unwrap_or(true)
+            {
+                if agg.games >= min_item_games {
+                    core_items.push((it_id, score, agg));
+                }
+            }
+        }
+
+        starters.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        boots.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        core_items.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // 6 main items: 1st core item, then boots, then remaining non-conflicting core items up to 6
+        let mut chosen_item_ids = Vec::new();
+        let mut used_exclusive_groups: HashSet<&'static str> = HashSet::new();
+
+        if let Some(&(id, _, _)) = core_items.first() {
+            let item_info = items_catalog.get(&(id as i32));
+            chosen_item_ids.push(id);
+            if let Some(grp) = get_item_exclusive_group(id, item_info) {
+                used_exclusive_groups.insert(grp);
+            }
+        }
+        if let Some(&(id, _, _)) = boots.first() {
+            let item_info = items_catalog.get(&(id as i32));
+            chosen_item_ids.push(id);
+            if let Some(grp) = get_item_exclusive_group(id, item_info) {
+                used_exclusive_groups.insert(grp);
+            }
+        }
+        for &(id, _, _) in core_items.iter().skip(1) {
+            if chosen_item_ids.len() >= 6 {
+                break;
+            }
+            if !chosen_item_ids.contains(&id) {
+                let item_info = items_catalog.get(&(id as i32));
+                if let Some(grp) = get_item_exclusive_group(id, item_info) {
+                    if used_exclusive_groups.contains(grp) {
+                        continue;
+                    }
+                    used_exclusive_groups.insert(grp);
+                }
+                chosen_item_ids.push(id);
+            }
+        }
+        for &(id, _, _) in &core_items {
+            if chosen_item_ids.len() >= 6 {
+                break;
+            }
+            if !chosen_item_ids.contains(&id) {
+                let item_info = items_catalog.get(&(id as i32));
+                if let Some(grp) = get_item_exclusive_group(id, item_info) {
+                    if used_exclusive_groups.contains(grp) {
+                        continue;
+                    }
+                    used_exclusive_groups.insert(grp);
+                }
+                chosen_item_ids.push(id);
+            }
+        }
+
+        // B. Starter item (shown separately above 6 items)
+        let starter_item = if let Some(&(id, _, agg)) = starters.first() {
+            let item_info = items_catalog.get(&(id as i32));
+            let name = item_info
+                .map(|i| i.name.clone())
+                .unwrap_or_else(|| format!("Starter #{id}"));
+            let raw_icon = item_info.map(|i| i.icon_url.clone()).unwrap_or_default();
+            let icon_url = get_cached_asset_data_uri(&raw_icon).await;
+            let price_total = item_info.map(|i| i.price_total).unwrap_or(0);
+            let item_class = item_info.and_then(|i| i.item_class.clone());
+            let description = item_info.and_then(|i| i.description.clone());
+            let wr = agg.wins as f64 / agg.games.max(1) as f64;
+            let wpa = wr - champion_win_rate;
+            let pick_rate = calc_item_pick_rate(agg.games as usize, total_games, false);
+            Some(MayhemBuildItem {
+                id,
+                name,
+                icon_url,
+                price_total,
+                item_class,
+                description,
+                win_rate: wr,
+                wpa,
+                games: agg.games as usize,
+                pick_rate,
+            })
+        } else {
+            None
+        };
+
+        // C. Alternative items (for exploration below the 6 recommended items, ordered by strategy score)
+        let mut alternative_items = Vec::new();
+        for &(id, _, agg) in &core_items {
+            if !chosen_item_ids.contains(&id) {
+                let item_info = items_catalog.get(&(id as i32));
+                let name = item_info
+                    .map(|i| i.name.clone())
+                    .unwrap_or_else(|| format!("Item #{id}"));
+                let raw_icon = item_info.map(|i| i.icon_url.clone()).unwrap_or_default();
+                let icon_url = get_cached_asset_data_uri(&raw_icon).await;
+                let price_total = item_info.map(|i| i.price_total).unwrap_or(0);
+                let item_class = item_info.and_then(|i| i.item_class.clone());
+                let description = item_info.and_then(|i| i.description.clone());
+                let wr = agg.wins as f64 / agg.games.max(1) as f64;
+                let wpa = wr - champion_win_rate;
+                let pick_rate = calc_item_pick_rate(agg.games as usize, total_games, false);
+                alternative_items.push(MayhemBuildItem {
+                    id,
+                    name,
+                    icon_url,
+                    price_total,
+                    item_class,
+                    description,
+                    win_rate: wr,
+                    wpa,
+                    games: agg.games as usize,
+                    pick_rate,
+                });
+                if alternative_items.len() >= 30 {
+                    break;
+                }
+            }
+        }
+
+        // D. Select summoner spells
+        let mut sorted_spells: Vec<((u64, u64), f64, &MetricAggregate)> = spells_agg
+            .iter()
+            .filter(|(_, agg)| agg.games >= min_item_games || agg.games >= 5)
+            .map(|(&pair, agg)| (pair, score_metric(agg, strat_id, champion_win_rate), agg))
+            .collect();
+        sorted_spells.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let chosen_spells = sorted_spells
+            .first()
+            .map(|(pair, _, _)| *pair)
+            .unwrap_or((4, 32)); // Flash + Mark fallback
+
+        // E. Select augments (target top 3 silver, top 3 gold, top 3 prismatic)
+        let mut silver_augs: Vec<(&String, f64)> = Vec::new();
+        let mut gold_augs: Vec<(&String, f64)> = Vec::new();
+        let mut prismatic_augs: Vec<(&String, f64)> = Vec::new();
+        let mut other_augs: Vec<(&String, f64)> = Vec::new();
+
+        for (aug_id, agg) in &augments_agg {
+            if agg.games < min_aug_games && agg.games < 3 {
+                continue;
+            }
+            let score = score_metric(agg, strat_id, champion_win_rate);
+            let aug_info = aug_catalog
+                .get(aug_id)
+                .or_else(|| aug_catalog.get(&aug_id.to_lowercase()));
+            match aug_info.and_then(|a| a.rarity.as_deref()) {
+                Some("silver") => silver_augs.push((aug_id, score)),
+                Some("gold") => gold_augs.push((aug_id, score)),
+                Some("prismatic") => prismatic_augs.push((aug_id, score)),
+                _ => other_augs.push((aug_id, score)),
+            }
+        }
+
+        silver_augs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        gold_augs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        prismatic_augs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        other_augs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let mut chosen_aug_ids = Vec::new();
+        for &(id, _) in prismatic_augs.iter().take(3) {
+            if !chosen_aug_ids.contains(id) {
+                chosen_aug_ids.push(id.clone());
+            }
+        }
+        for &(id, _) in gold_augs.iter().take(3) {
+            if !chosen_aug_ids.contains(id) {
+                chosen_aug_ids.push(id.clone());
+            }
+        }
+        for &(id, _) in silver_augs.iter().take(3) {
+            if !chosen_aug_ids.contains(id) {
+                chosen_aug_ids.push(id.clone());
+            }
+        }
+        for (id, _) in &other_augs {
+            if chosen_aug_ids.len() >= 9 {
+                break;
+            }
+            if !chosen_aug_ids.contains(id) {
+                chosen_aug_ids.push(id.to_string());
+            }
+        }
+
+        // F. Calculate build WR and WPA
+        let core_ids: Vec<i64> = core_items.iter().take(2).map(|(id, _, _)| *id).collect();
+        let matching_facts: Vec<&ParticipantFact> = facts
+            .iter()
+            .filter(|f| {
+                if core_ids.len() >= 2 {
+                    f.item_ids.contains(&core_ids[0]) && f.item_ids.contains(&core_ids[1])
+                } else if let Some(&c1) = core_ids.first() {
+                    f.item_ids.contains(&c1)
+                } else {
+                    true
+                }
+            })
+            .collect();
+
+        let (build_win_rate, sample_games) = if matching_facts.len() >= 8 {
+            let m_wins = matching_facts.iter().filter(|f| f.win).count();
+            (
+                m_wins as f64 / matching_facts.len() as f64,
+                matching_facts.len(),
+            )
+        } else {
+            // Weighted Bayesian WR of chosen items
+            let mut w_sum = 0.0;
+            let mut w_count = 0.0;
+            for &it_id in &chosen_item_ids {
+                if let Some(agg) = items_agg.get(&it_id) {
+                    let wr = (agg.wins as f64 + 5.0 * champion_win_rate) / (agg.games as f64 + 5.0);
+                    w_sum += wr * (agg.games as f64);
+                    w_count += agg.games as f64;
+                }
+            }
+            let fallback_wr = if w_count > 0.0 {
+                w_sum / w_count
+            } else {
+                champion_win_rate
+            };
+            (fallback_wr, total_games)
+        };
+
+        let build_wpa = build_win_rate - champion_win_rate;
+
+        // G. Compute average metric value for strategy
+        let (raw_metric_value, avg_metric_value) = match strat_id {
+            "win_rate" => (build_win_rate, format!("{:+.1}% WPA", build_wpa * 100.0)),
+            "damage_dealt" => {
+                let avg = if !matching_facts.is_empty() {
+                    matching_facts.iter().map(|f| f.damage).sum::<i64>() as f64
+                        / matching_facts.len() as f64
+                } else {
+                    facts.iter().map(|f| f.damage).sum::<i64>() as f64 / facts.len() as f64
+                };
+                (avg, format!("{avg:.0} avg dmg"))
+            }
+            "damage_per_minute" => {
+                let avg = if !matching_facts.is_empty() {
+                    matching_facts
+                        .iter()
+                        .map(|f| (f.damage as f64) / (f.game_duration.max(60) as f64 / 60.0))
+                        .sum::<f64>()
+                        / matching_facts.len() as f64
+                } else {
+                    facts
+                        .iter()
+                        .map(|f| (f.damage as f64) / (f.game_duration.max(60) as f64 / 60.0))
+                        .sum::<f64>()
+                        / facts.len() as f64
+                };
+                (avg, format!("{avg:.0} DPM"))
+            }
+            "true_damage" => {
+                let avg = if !matching_facts.is_empty() {
+                    matching_facts.iter().map(|f| f.true_damage).sum::<i64>() as f64
+                        / matching_facts.len() as f64
+                } else {
+                    facts.iter().map(|f| f.true_damage).sum::<i64>() as f64 / facts.len() as f64
+                };
+                (avg, format!("{avg:.0} true dmg"))
+            }
+            "damage_taken" => {
+                let avg = if !matching_facts.is_empty() {
+                    matching_facts.iter().map(|f| f.damage_taken).sum::<i64>() as f64
+                        / matching_facts.len() as f64
+                } else {
+                    facts.iter().map(|f| f.damage_taken).sum::<i64>() as f64 / facts.len() as f64
+                };
+                (avg, format!("{avg:.0} dmg taken"))
+            }
+            "damage_mitigated" => {
+                let avg = if !matching_facts.is_empty() {
+                    matching_facts
+                        .iter()
+                        .map(|f| f.damage_mitigated)
+                        .sum::<i64>() as f64
+                        / matching_facts.len() as f64
+                } else {
+                    facts.iter().map(|f| f.damage_mitigated).sum::<i64>() as f64
+                        / facts.len() as f64
+                };
+                (avg, format!("{avg:.0} mitigated"))
+            }
+            "healing" => {
+                let avg = if !matching_facts.is_empty() {
+                    matching_facts.iter().map(|f| f.total_heal).sum::<i64>() as f64
+                        / matching_facts.len() as f64
+                } else {
+                    facts.iter().map(|f| f.total_heal).sum::<i64>() as f64 / facts.len() as f64
+                };
+                (avg, format!("{avg:.0} healed"))
+            }
+            "turret_damage" => {
+                let avg = if !matching_facts.is_empty() {
+                    matching_facts.iter().map(|f| f.turret_damage).sum::<i64>() as f64
+                        / matching_facts.len() as f64
+                } else {
+                    facts.iter().map(|f| f.turret_damage).sum::<i64>() as f64 / facts.len() as f64
+                };
+                (avg, format!("{avg:.0} turret dmg"))
+            }
+            _ => (0.0, String::new()),
+        };
+
+        // H. Enrich items with individual WPA and pick rate
+        let mut enriched_items = Vec::new();
+        for id in chosen_item_ids {
+            let item_info = items_catalog.get(&(id as i32));
+            let is_boot = item_info
+                .map(|i| {
+                    i.item_class.as_deref() == Some("boot")
+                        || i.categories.iter().any(|c| c.eq_ignore_ascii_case("boots"))
+                })
+                .unwrap_or(false);
+            let name = item_info
+                .map(|i| i.name.clone())
+                .unwrap_or_else(|| format!("Item #{id}"));
+            let raw_icon = item_info.map(|i| i.icon_url.clone()).unwrap_or_default();
+            let icon_url = get_cached_asset_data_uri(&raw_icon).await;
+            let price_total = item_info.map(|i| i.price_total).unwrap_or(0);
+            let item_class = item_info.and_then(|i| i.item_class.clone());
+            let description = item_info.and_then(|i| i.description.clone());
+            let agg = items_agg.get(&id);
+            let (wr, games) = agg
+                .map(|a| ((a.wins as f64) / (a.games.max(1) as f64), a.games as usize))
+                .unwrap_or((champion_win_rate, 0));
+            let wpa = wr - champion_win_rate;
+            let pick_rate = calc_item_pick_rate(games, total_games, is_boot);
+            enriched_items.push(MayhemBuildItem {
+                id,
+                name,
+                icon_url,
+                price_total,
+                item_class,
+                description,
+                win_rate: wr,
+                wpa,
+                games,
+                pick_rate,
+            });
+        }
+
+        // I. Enrich spells with individual WPA
+        let mut enriched_spells = Vec::new();
+        for spell_id in [chosen_spells.0, chosen_spells.1] {
+            let spell_info = spells_catalog.get(&spell_id);
+            let name = spell_info
+                .map(|s| s.name.clone())
+                .unwrap_or_else(|| format!("Spell #{spell_id}"));
+            let raw_icon = spell_info.map(|s| s.icon_url.clone()).unwrap_or_default();
+            let icon_url = get_cached_asset_data_uri(&raw_icon).await;
+            let description = spell_info.and_then(|s| s.description.clone());
+            let (games, wins) = individual_spells_agg
+                .get(&spell_id)
+                .copied()
+                .unwrap_or((0, 0));
+            let wr = if games > 0 {
+                wins as f64 / games as f64
+            } else {
+                champion_win_rate
+            };
+            let wpa = wr - champion_win_rate;
+            enriched_spells.push(MayhemBuildSpell {
+                id: spell_id,
+                name,
+                icon_url,
+                description,
+                win_rate: wr,
+                wpa,
+                games: games as usize,
+            });
+        }
+
+        // J. Enrich all spells
+        let mut sorted_individual_spells: Vec<(u64, i64, i64, f64, f64)> = individual_spells_agg
+            .iter()
+            .filter(|(&id, &(games, _))| id > 0 && games >= 1)
+            .map(|(&id, &(games, wins))| {
+                let wr = wins as f64 / games as f64;
+                let wpa = wr - champion_win_rate;
+                (id, games, wins, wr, wpa)
+            })
+            .collect();
+        sorted_individual_spells.sort_by(|a, b| b.1.cmp(&a.1));
+
+        let mut enriched_all_spells = Vec::new();
+        for (spell_id, games, _, wr, wpa) in sorted_individual_spells {
+            let spell_info = spells_catalog.get(&spell_id);
+            let name = spell_info
+                .map(|s| s.name.clone())
+                .unwrap_or_else(|| format!("Spell #{spell_id}"));
+            let raw_icon = spell_info.map(|s| s.icon_url.clone()).unwrap_or_default();
+            let icon_url = get_cached_asset_data_uri(&raw_icon).await;
+            let description = spell_info.and_then(|s| s.description.clone());
+            enriched_all_spells.push(MayhemBuildSpell {
+                id: spell_id,
+                name,
+                icon_url,
+                description,
+                win_rate: wr,
+                wpa,
+                games: games as usize,
+            });
+        }
+
+        // K. Enrich augments with individual WPA
+        let mut enriched_augments = Vec::new();
+        for aug_id in chosen_aug_ids {
+            let aug_info = aug_catalog
+                .get(&aug_id)
+                .or_else(|| aug_catalog.get(&aug_id.to_lowercase()));
+            let name = aug_info
+                .map(|a| a.name.clone())
+                .unwrap_or_else(|| format!("Augment #{aug_id}"));
+            let raw_icon = aug_info.map(|a| a.icon_url.clone()).unwrap_or_default();
+            let icon_url = get_cached_asset_data_uri(&raw_icon).await;
+            let rarity = aug_info.and_then(|a| a.rarity.clone());
+            let tooltip = aug_info.and_then(|a| a.tooltip.clone());
+            let agg = augments_agg.get(&aug_id);
+            let (wr, games) = agg
+                .map(|a| ((a.wins as f64) / (a.games.max(1) as f64), a.games as usize))
+                .unwrap_or((champion_win_rate, 0));
+            let wpa = wr - champion_win_rate;
+            enriched_augments.push(MayhemBuildAugment {
+                id: aug_id,
+                name,
+                icon_url,
+                rarity,
+                tooltip,
+                win_rate: wr,
+                wpa,
+                games,
+            });
+        }
+
+        strategies.push(MayhemBuildStrategy {
+            id: strat_id.to_string(),
+            label: strat_label.to_string(),
+            metric_name: metric_name.to_string(),
+            avg_metric_value,
+            raw_metric_value,
+            build_win_rate,
+            build_wpa,
+            starter_item,
+            items: enriched_items,
+            alternative_items,
+            spells: enriched_spells,
+            all_spells: enriched_all_spells,
+            augments: enriched_augments,
+            sample_games,
+        });
+    }
+
+    // 6. Sort strategies descending by build_wpa
+    strategies.sort_by(|a, b| {
+        b.build_wpa
+            .partial_cmp(&a.build_wpa)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let summary = MayhemChampionBuildSummary {
+        champion_id,
+        champion_name,
+        icon_url,
+        champion_win_rate,
+        champion_wpa,
+        total_games,
+        strategies,
+    };
+
+    // 7. Store in cache
+    {
+        let mut cache = MAYHEM_CHAMPION_BUILDS_CACHE.write().await;
+        cache.insert(champion_id, (Instant::now(), summary.clone()));
+    }
+
+    Ok(summary)
+}
+
+pub fn categorize_augment(name: &str, tooltip: Option<&str>) -> Vec<String> {
+    let text = format!("{} {}", name, tooltip.unwrap_or_default()).to_lowercase();
+    let mut cats = Vec::new();
+    if text.contains("attack damage")
+        || text.contains("attack speed")
+        || text.contains(" ad ")
+        || text.contains("critical")
+        || text.contains("on-hit")
+        || text.contains("armor penetration")
+        || text.contains("lethality")
+        || text.contains("scalead")
+    {
+        cats.push("physical".to_string());
+    }
+    if text.contains("ability power")
+        || text.contains("magic damage")
+        || text.contains("scaleap")
+        || text.contains("ability haste")
+        || text.contains("scaleabilityhaste")
+        || text.contains("mana")
+        || text.contains("spell")
+    {
+        cats.push("magic".to_string());
+    }
+    if text.contains("health")
+        || text.contains("scalehealth")
+        || text.contains("armor")
+        || text.contains("magic resist")
+        || text.contains("shield")
+        || text.contains("heal")
+        || text.contains("damage reduction")
+        || text.contains("invulnerable")
+    {
+        cats.push("defensive".to_string());
+    }
+    if text.contains("move speed")
+        || text.contains("movement speed")
+        || text.contains("dash")
+        || text.contains("flash")
+        || text.contains("snowball")
+        || text.contains("haste")
+        || text.contains("gold")
+        || text.contains("teleport")
+    {
+        cats.push("utility".to_string());
+    }
+    if cats.is_empty() {
+        cats.push("general".to_string());
+    }
+    cats
+}
+
+pub async fn get_mayhem_augments(
+    query: MayhemAugmentsQuery,
+) -> Result<MayhemAugmentsResponse, String> {
+    // 1. Resolve champion data if champion_id is specified
+    let (champion_win_rate, champ_total_games, champion_name, champ_augs) = if let Some(cid) = query.champion_id {
+        if cid > 0 {
+            // Check cache or compute
+            let has_valid_cache = {
+                let cache = MAYHEM_CHAMPION_AUGMENTS_CACHE.read().await;
+                cache
+                    .get(&cid)
+                    .map(|(t, _, _, _)| t.elapsed() < std::time::Duration::from_secs(120))
+                    .unwrap_or(false)
+            };
+
+            if !has_valid_cache {
+                let _ = compute_mayhem_champion_build(cid).await;
+            }
+
+            let cache = MAYHEM_CHAMPION_AUGMENTS_CACHE.read().await;
+            let (wr, champ_total_games, map) = if let Some((_, c_wr, t_games, aug_map)) = cache.get(&cid) {
+                (*c_wr, *t_games, aug_map.clone())
+            } else {
+                (0.50, 0, HashMap::new())
+            };
+
+            let all_champs = get_all_champions().await.unwrap_or_default();
+            let c_name = all_champs
+                .iter()
+                .find(|c| c.id == cid)
+                .map(|c| c.name.clone());
+
+            (wr, champ_total_games, c_name, map)
+        } else {
+            (0.50, 0, None, HashMap::new())
+        }
+    } else {
+        (0.50, 0, None, HashMap::new())
+    };
+
+    // 2. Resolve global augment projection cache
+    let (global_total_games, global_projection_map) = {
+        let cached_map = {
+            let cache = MAYHEM_GLOBAL_AUGMENTS_CACHE.read().await;
+            cache.as_ref().and_then(|(created_at, total, map)| {
+                if created_at.elapsed() < std::time::Duration::from_secs(300) {
+                    Some((*total, map.clone()))
+                } else {
+                    None
+                }
+            })
+        };
+
+        if let Some((total, map)) = cached_map {
+            (total, map)
+        } else {
+            let db_path = history_data_dir().join("global-aram.db");
+            let (sample_count, map): (usize, HashMap<String, (usize, f64, f64)>) = if db_path.exists() {
+                tokio::task::spawn_blocking(move || {
+                    let mut res = HashMap::new();
+                    let mut count = 0usize;
+                    if let Ok(connection) = Connection::open(&db_path) {
+                        let _ = connection.busy_timeout(std::time::Duration::from_secs(5));
+                        let row_opt: Result<(i64, String), _> = connection.query_row(
+                            "SELECT sample_count, rows_json FROM statistics_projections WHERE kind = 'augment'",
+                            [],
+                            |r| Ok((r.get(0)?, r.get(1)?)),
+                        );
+                        if let Ok((sc, json_str)) = row_opt {
+                            count = sc.max(0) as usize;
+                            if let Ok(rows) = serde_json::from_str::<Vec<Value>>(&json_str) {
+                                for r in rows {
+                                    let id = r.get("id").and_then(Value::as_str).unwrap_or("");
+                                    let clean_id = id.strip_prefix("augment:").unwrap_or(id);
+                                    let games = r.get("games").and_then(Value::as_u64).unwrap_or(0)
+                                        as usize;
+                                    let win_rate =
+                                        r.get("win_rate").and_then(Value::as_f64).unwrap_or(0.5);
+                                    let wpa = r.get("wpa").and_then(Value::as_f64).unwrap_or(0.0);
+                                    res.insert(clean_id.to_string(), (games, win_rate, wpa));
+                                    if let Some(name) = r.get("name").and_then(Value::as_str) {
+                                        res.insert(name.to_lowercase(), (games, win_rate, wpa));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    (count, res)
+                })
+                .await
+                .unwrap_or((0, HashMap::new()))
+            } else {
+                (0, HashMap::new())
+            };
+
+            let mut cache = MAYHEM_GLOBAL_AUGMENTS_CACHE.write().await;
+            *cache = Some((Instant::now(), sample_count, map.clone()));
+            (sample_count, map)
+        }
+    };
+
+    // 3. Resolve all unique non-null augments from catalog
+    let aug_catalog = get_augment_catalog_map().await.unwrap_or_default();
+    let mut unique_catalog: HashMap<String, (String, AugmentCatalogEntry)> = HashMap::new();
+
+    for (k, entry) in &aug_catalog {
+        let name_low = entry.name.trim().to_lowercase();
+        if name_low.is_empty()
+            || name_low == "null augment"
+            || name_low == "null"
+            || entry.tooltip.as_deref().unwrap_or("") == "Null"
+        {
+            continue;
+        }
+
+        if let Some((existing_id, _)) = unique_catalog.get(&name_low) {
+            // Prefer purely numeric ID as canonical key
+            if !existing_id.chars().all(|c| c.is_ascii_digit())
+                && k.chars().all(|c| c.is_ascii_digit())
+            {
+                unique_catalog.insert(name_low, (k.clone(), entry.clone()));
+            }
+        } else {
+            unique_catalog.insert(name_low, (k.clone(), entry.clone()));
+        }
+    }
+
+    struct ScoredAugment {
+        item: MayhemAugmentItem,
+        bayesian_wpa: f64,
+        bayesian_wr: f64,
+        rarity_rank: u8,
+    }
+
+    let mut scored_list = Vec::new();
+
+    for (_name_low, (canonical_id, entry)) in unique_catalog {
+        let rarity = entry.rarity.clone();
+        let rarity_rank = match rarity.as_deref() {
+            Some("prismatic") => 3,
+            Some("gold") => 2,
+            Some("silver") => 1,
+            _ => 0,
+        };
+
+        let categories = categorize_augment(&entry.name, entry.tooltip.as_deref());
+
+        // Check global projection statistics
+        let global_stat = global_projection_map
+            .get(&canonical_id)
+            .or_else(|| global_projection_map.get(&entry.name.to_lowercase()))
+            .copied();
+
+        let (global_games, global_win_rate, global_wpa) = global_stat.unwrap_or((0, 0.50, 0.0));
+
+        // Augments are offered in 4 slots per game (levels 3, 7, 11, 15) and cannot be repeated.
+        // Catalog prior: ~250 augments, so uniform slot prior p0 = 1/250 = 0.004 per slot (1.6% game presence).
+        let p0_slot = 0.004f64;
+        let m_slots = 20.0f64; // Equivalent to 5 games of 4 slots for Bayesian sample-size shrinkage
+
+        let global_pick_rate = if global_total_games > 0 {
+            let total_global_slots = (global_total_games * 4) as f64;
+            let slot_share = (global_games as f64 + m_slots * p0_slot) / (total_global_slots + m_slots);
+            (slot_share * 4.0).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+
+        // Check champion statistics
+        let champ_stat = champ_augs
+            .get(&canonical_id)
+            .or_else(|| champ_augs.get(&canonical_id.to_lowercase()))
+            .or_else(|| champ_augs.get(&entry.name))
+            .or_else(|| champ_augs.get(&format!("ARAM_{}", entry.name)));
+
+        // Credibility / Bayesian WPA & WR: Prior weight M = 30.0 with global augment WPA informing the prior
+        let prior_wr = (champion_win_rate + global_wpa).clamp(0.10, 0.90);
+        let m_wr = 30.0f64;
+
+        let (games, wins, win_rate, wpa, bayesian_wpa, bayesian_wr, pick_rate) = if let Some(&(g, w)) = champ_stat {
+            let wr = if g > 0 { w as f64 / g as f64 } else { 0.0 };
+            let raw_wpa = if g > 0 { wr - champion_win_rate } else { 0.0 };
+            let bayes_wr = (w as f64 + m_wr * prior_wr) / (g as f64 + m_wr);
+            let bayes_wpa = bayes_wr - champion_win_rate;
+
+            let pr = if champ_total_games > 0 {
+                let total_champ_slots = (champ_total_games * 4) as f64;
+                let slot_share = (g as f64 + m_slots * p0_slot) / (total_champ_slots + m_slots);
+                (slot_share * 4.0).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+
+            (g, w, wr, raw_wpa, bayes_wpa, bayes_wr, pr)
+        } else {
+            (0, 0, 0.0, 0.0, global_wpa, prior_wr, 0.0)
+        };
+
+        let item = MayhemAugmentItem {
+            id: canonical_id,
+            name: entry.name,
+            icon_url: entry.icon_url,
+            rarity,
+            tooltip: entry.tooltip,
+            categories,
+            games,
+            wins,
+            win_rate,
+            wpa,
+            pick_rate,
+            global_games,
+            global_win_rate,
+            global_wpa,
+            global_pick_rate,
+        };
+
+        scored_list.push(ScoredAugment {
+            item,
+            bayesian_wpa,
+            bayesian_wr,
+            rarity_rank,
+        });
+    }
+
+    // 4. Filtering
+    let tier_filter = query.tier.as_deref().unwrap_or("all").trim().to_lowercase();
+    let category_filter = query
+        .category
+        .as_deref()
+        .unwrap_or("all")
+        .trim()
+        .to_lowercase();
+    let search_filter = query.search.as_deref().unwrap_or("").trim().to_lowercase();
+    let only_sampled = query.only_sampled.unwrap_or(false);
+    let hide_low_pickrate = query.hide_low_pickrate.unwrap_or(false);
+
+    let mut filtered: Vec<ScoredAugment> = scored_list
+        .into_iter()
+        .filter(|aug| {
+            if tier_filter != "all" && !tier_filter.is_empty() {
+                if let Some(r) = aug.item.rarity.as_deref() {
+                    if !r.eq_ignore_ascii_case(&tier_filter) {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            }
+
+            if category_filter != "all" && !category_filter.is_empty() {
+                if !aug
+                    .item
+                    .categories
+                    .iter()
+                    .any(|c| c.eq_ignore_ascii_case(&category_filter))
+                {
+                    return false;
+                }
+            }
+
+            if only_sampled && aug.item.games == 0 {
+                return false;
+            }
+
+            if hide_low_pickrate {
+                // If hide_low_pickrate is active, filter out augments with low sample / low pick rate (<0.5%)
+                if aug.item.games > 0 && aug.item.pick_rate < 0.005 {
+                    return false;
+                }
+            }
+
+            if !search_filter.is_empty() {
+                let name_match = aug.item.name.to_lowercase().contains(&search_filter);
+                let tooltip_match = aug
+                    .item
+                    .tooltip
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains(&search_filter);
+                if !name_match && !tooltip_match {
+                    return false;
+                }
+            }
+
+            true
+        })
+        .collect();
+
+    // 5. Sorting
+    let sort_key = query.sort_key.as_deref().unwrap_or("wpa");
+    let descending = query.descending.unwrap_or(true);
+
+    filtered.sort_by(|a, b| {
+        let ord = match sort_key {
+            "wpa" => {
+                // If one has champion games and other does not, rank played higher
+                if a.item.games > 0 && b.item.games == 0 {
+                    std::cmp::Ordering::Greater
+                } else if a.item.games == 0 && b.item.games > 0 {
+                    std::cmp::Ordering::Less
+                } else if a.item.games == 0 && b.item.games == 0 {
+                    a.item
+                        .global_wpa
+                        .partial_cmp(&b.item.global_wpa)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| a.item.global_games.cmp(&b.item.global_games))
+                } else {
+                    a.bayesian_wpa
+                        .partial_cmp(&b.bayesian_wpa)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| a.item.games.cmp(&b.item.games))
+                        .then_with(|| a.item.global_games.cmp(&b.item.global_games))
+                }
+            }
+            "win_rate" => {
+                if a.item.games > 0 && b.item.games == 0 {
+                    std::cmp::Ordering::Greater
+                } else if a.item.games == 0 && b.item.games > 0 {
+                    std::cmp::Ordering::Less
+                } else if a.item.games == 0 && b.item.games == 0 {
+                    a.item
+                        .global_win_rate
+                        .partial_cmp(&b.item.global_win_rate)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                } else {
+                    a.bayesian_wr
+                        .partial_cmp(&b.bayesian_wr)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| a.item.games.cmp(&b.item.games))
+                }
+            }
+            "games" | "sample" => a
+                .item
+                .games
+                .cmp(&b.item.games)
+                .then_with(|| a.item.pick_rate.partial_cmp(&b.item.pick_rate).unwrap_or(std::cmp::Ordering::Equal))
+                .then_with(|| a.item.global_games.cmp(&b.item.global_games))
+                .then_with(|| {
+                    a.bayesian_wpa
+                        .partial_cmp(&b.bayesian_wpa)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }),
+            "pick_rate" => a
+                .item
+                .pick_rate
+                .partial_cmp(&b.item.pick_rate)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.item.games.cmp(&b.item.games))
+                .then_with(|| {
+                    a.item
+                        .global_pick_rate
+                        .partial_cmp(&b.item.global_pick_rate)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }),
+            "name" => a.item.name.to_lowercase().cmp(&b.item.name.to_lowercase()),
+            "tier" => a.rarity_rank.cmp(&b.rarity_rank).then_with(|| {
+                a.bayesian_wpa
+                    .partial_cmp(&b.bayesian_wpa)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            }),
+            _ => a
+                .bayesian_wpa
+                .partial_cmp(&b.bayesian_wpa)
+                .unwrap_or(std::cmp::Ordering::Equal),
+        };
+
+        if descending {
+            ord.reverse()
+        } else {
+            ord
+        }
+    });
+
+    // 6. Pagination
+    let page_size = query.page_size.unwrap_or(10).clamp(1, 100);
+    let total_items = filtered.len();
+    let total_pages = (total_items + page_size - 1) / page_size;
+    let page = query.page.unwrap_or(1).clamp(1, total_pages.max(1));
+    let start = (page - 1) * page_size;
+    let end = (start + page_size).min(total_items);
+
+    let mut result_items = Vec::new();
+    if start < total_items {
+        for scored in &filtered[start..end] {
+            let mut item = scored.item.clone();
+            item.icon_url = get_cached_asset_data_uri(&item.icon_url).await;
+            result_items.push(item);
+        }
+    }
+
+    Ok(MayhemAugmentsResponse {
+        total_items,
+        total_pages,
+        page,
+        page_size,
+        champion_id: query.champion_id,
+        champion_name,
+        champion_win_rate,
+        total_games: champ_total_games,
+        items: result_items,
+    })
 }

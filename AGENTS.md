@@ -52,7 +52,7 @@ Windows.
 A standalone binary target remains available at `src-tauri/src/bin/lcu-companion-agent.rs`
 if external standalone execution is ever needed:
 
-```powershell
+```bash
 cargo build --manifest-path src-tauri\Cargo.toml --bin lcu-companion-agent
 ```
 
@@ -117,7 +117,7 @@ from `agent_operations` and `global_aram_config`.
 
 ## Validation
 
-```powershell
+```bash
 cargo fmt --manifest-path src-tauri\Cargo.toml -- --check
 cargo build --manifest-path src-tauri\Cargo.toml --bin lcu-companion-agent
 pnpm svelte-check
@@ -273,7 +273,7 @@ For detailed specifications and domain knowledge, consult the specialized docume
 ## 6. Development & Validation Workflow
 
 ### Running Locally
-```powershell
+```cmd
 # Build the standalone agent, then start frontend and Tauri in development mode.
 # Tauri's debug supervisor also invokes Cargo for the agent on each restart.
 pnpm tauri dev
@@ -284,6 +284,7 @@ pnpm tauri dev
 
 ### Command Execution Guidelines
 - **No Unsolicited Checks or Tests**: **DO NOT** run check, build, or test commands (such as `cargo check`, `cargo test`, `svelte-check`, `vite build`, etc.) without the user's direct and explicit request.
+### #IMPORTANT! do not run powershell commands. opt for alternative shells such as cmd.exe, git bash or msys32. here are the path for such tools: "'C:\msys64\msys2_shell.cmd' -defterm -no-start -use-full-path" cmd.exe is in path. git bash: "& 'C:\Program Files\Git\usr\bin\bash.exe'". If something expected to be in path isn't. grab the $PATH variable of powershell in the default profile to find its location and use it.
 
 
 ## Package Manager & Tooling

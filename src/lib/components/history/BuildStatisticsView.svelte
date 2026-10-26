@@ -574,7 +574,7 @@
                 {#each [0, 1, 2] as col}
                   <div class="space-y-2 {col > 0 ? 'sm:pl-2' : ''} {col < 2 ? 'sm:pr-2' : ''}">
                     <div class="h-3 w-16 rounded bg-gray-800/60 mb-2"></div>
-                    {#each [0, 1] as item}
+                    {#each [0, 1] as _item}
                       <div class="flex items-center gap-2">
                         <div class="h-7 w-7 rounded-full bg-gray-800 shrink-0"></div>
                         <div class="flex-1 space-y-1">
@@ -716,7 +716,7 @@
           </thead>
           <tbody class="divide-y divide-gray-800">
             {#if loading && rows.length === 0}
-              {#each Array(10) as _, i}
+              {#each Array(10) as _}
                 <tr class="animate-pulse">
                   <td class="flex items-center gap-2 px-3 py-2.5">
                     <div class="h-7 w-7 rounded bg-gray-800 shrink-0"></div>
