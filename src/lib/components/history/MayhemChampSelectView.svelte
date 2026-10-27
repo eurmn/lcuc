@@ -683,7 +683,7 @@
     <!-- Section 2: Detailed Inspected Champion & Strategy Analysis -->
     {#if inspectedBuild}
       <div class="rounded-2xl border border-gray-800 bg-gray-900/60 p-6 shadow-xl space-y-6">
-        <!-- Champion Hero Banner & Strategy Selector Bar -->
+        <!-- Champion Hero Banner & Strategy Controls -->
         <div class="flex flex-wrap items-center justify-between gap-4 border-b border-gray-800 pb-5">
           <!-- Champion Info -->
           <div class="flex items-center gap-4">
@@ -707,76 +707,88 @@
             </div>
           </div>
 
-          <!-- Strategy Selector & Export Action -->
-          <div class="flex flex-wrap items-center gap-3">
-            <!-- Strategy Dropdown Selector -->
-            <div class="relative">
-              <button
-                type="button"
-                onclick={() => (strategyDropdownOpen = !strategyDropdownOpen)}
-                class="flex items-center gap-2.5 rounded-xl border border-gray-700 bg-gray-900 px-3.5 py-2 text-xs font-medium text-gray-200 transition-colors hover:border-purple-500 focus:outline-none cursor-pointer"
-              >
-                <span class="text-gray-400">Strategy:</span>
-                <span class="font-bold text-white">{activeStrategy?.label ?? "Select Strategy"}</span>
+          <!-- Strategy Selector & Export Inputs (Right of Champion Info) -->
+          <div class="flex flex-wrap items-start gap-3">
+            <!-- Strategy Selector Column -->
+            <div class="flex flex-col">
+              <div class="flex items-center justify-between gap-2 mb-1">
+                <span class="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                  Strategy
+                </span>
                 {#if activeStrategy}
-                  <span class="rounded bg-gray-800 px-1.5 py-0.5 text-[10px] font-mono text-purple-300">
-                    {activeStrategy.avg_metric_value}
-                  </span>
-                  <span class="rounded px-1.5 py-0.5 text-[10px] font-bold font-mono {activeStrategy.build_wpa >= 0 ? 'bg-emerald-950 text-emerald-400 border border-emerald-800/60' : 'bg-rose-950 text-rose-400 border border-rose-800/60'}">
-                    {formatWpa(activeStrategy.build_wpa)} WPA
-                  </span>
-                  <span class="rounded bg-gray-800/80 px-1.5 py-0.5 text-[10px] font-mono text-gray-400">
-                    {activeStrategy.sample_games.toLocaleString()} games
-                  </span>
-                {/if}
-                <span class="icon-[heroicons--chevron-down] h-4 w-4 text-gray-400"></span>
-              </button>
-
-              {#if strategyDropdownOpen}
-                <div class="absolute right-0 top-11 z-40 w-96 rounded-xl border border-gray-700 bg-gray-900 shadow-2xl p-1.5 space-y-1">
-                  <div class="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-                    Optimized Build Strategies (Sorted by highest WPA)
+                  <div class="flex items-center gap-1.5 text-[10px] font-mono">
+                    <span class="rounded px-1.5 py-0.5 font-bold {activeStrategy.build_wpa >= 0 ? 'bg-emerald-950 text-emerald-400 border border-emerald-800/60' : 'bg-rose-950 text-rose-400 border border-rose-800/60'}">
+                      {formatWpa(activeStrategy.build_wpa)} WPA
+                    </span>
+                    <span class="rounded bg-gray-800/80 px-1.5 py-0.5 text-gray-400">
+                      {activeStrategy.sample_games.toLocaleString()} games
+                    </span>
                   </div>
-                  {#each availableStrategies as strat (strat.id)}
-                    {@const isSelected = activeStrategy?.id === strat.id}
-                    <button
-                      type="button"
-                      onclick={() => {
-                        selectedStrategyId = strat.id;
-                        strategyDropdownOpen = false;
-                      }}
-                      class="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-xs transition-colors cursor-pointer {isSelected
-                        ? 'bg-purple-600/30 text-white border border-purple-500/50'
-                        : 'text-gray-300 hover:bg-gray-800 hover:text-white'}"
-                    >
-                      <div class="flex flex-col">
-                        <span class="font-semibold">{strat.label}</span>
-                        <span class="text-[10px] text-gray-400">{strat.avg_metric_value}</span>
-                      </div>
-                      <div class="flex items-center gap-2">
-                        <span class="rounded bg-gray-800/80 px-1.5 py-0.5 text-[10px] font-mono text-gray-400">
-                          {strat.sample_games.toLocaleString()} games
-                        </span>
-                        <span class="rounded px-1.5 py-0.5 text-[10px] font-mono font-bold {strat.build_wpa >= 0 ? 'bg-emerald-950 text-emerald-400 border border-emerald-800/60' : 'bg-rose-950 text-rose-400 border border-rose-800/60'}">
-                          {formatWpa(strat.build_wpa)} WPA
-                        </span>
-                      </div>
-                    </button>
-                  {/each}
-                </div>
-              {/if}
+                {/if}
+              </div>
+              <div class="relative">
+                <button
+                  type="button"
+                  onclick={() => (strategyDropdownOpen = !strategyDropdownOpen)}
+                  class="w-64 sm:w-72 flex items-center justify-between gap-2 rounded-xl border border-gray-700 bg-gray-900 px-3.5 py-2 text-xs font-medium text-gray-200 transition-colors hover:border-purple-500 focus:outline-none cursor-pointer"
+                >
+                  <span class="font-bold text-white truncate min-w-0 flex-1 text-left">
+                    {activeStrategy?.label ?? "Select Strategy"}
+                  </span>
+                  <span class="icon-[heroicons--chevron-down] h-4 w-4 text-gray-400 shrink-0"></span>
+                </button>
+
+                {#if strategyDropdownOpen}
+                  <div class="absolute right-0 top-11 z-40 w-96 rounded-xl border border-gray-700 bg-gray-900 shadow-2xl p-1.5 space-y-1">
+                    <div class="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                      Optimized Build Strategies (Sorted by highest WPA)
+                    </div>
+                    {#each availableStrategies as strat (strat.id)}
+                      {@const isSelected = activeStrategy?.id === strat.id}
+                      <button
+                        type="button"
+                        onclick={() => {
+                          selectedStrategyId = strat.id;
+                          strategyDropdownOpen = false;
+                        }}
+                        class="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-xs transition-colors cursor-pointer {isSelected
+                          ? 'bg-purple-600/30 text-white border border-purple-500/50'
+                          : 'text-gray-300 hover:bg-gray-800 hover:text-white'}"
+                      >
+                        <div class="flex flex-col min-w-0">
+                          <span class="font-semibold truncate">{strat.label}</span>
+                          <span class="text-[10px] text-gray-400">{strat.avg_metric_value}</span>
+                        </div>
+                        <div class="flex items-center gap-2 shrink-0">
+                          <span class="rounded bg-gray-800/80 px-1.5 py-0.5 text-[10px] font-mono text-gray-400">
+                            {strat.sample_games.toLocaleString()} games
+                          </span>
+                          <span class="rounded px-1.5 py-0.5 text-[10px] font-mono font-bold {strat.build_wpa >= 0 ? 'bg-emerald-950 text-emerald-400 border border-emerald-800/60' : 'bg-rose-950 text-rose-400 border border-rose-800/60'}">
+                            {formatWpa(strat.build_wpa)} WPA
+                          </span>
+                        </div>
+                      </button>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
             </div>
 
-            <!-- Export to Inventory Button -->
-            <button
-              type="button"
-              disabled={exporting}
-              onclick={handleExportBuild}
-              class="flex items-center gap-1.5 rounded-xl bg-purple-600 px-4 py-2 text-xs font-bold text-white transition-all hover:bg-purple-500 active:scale-95 disabled:opacity-50 cursor-pointer shadow-lg shadow-purple-900/30"
-            >
-              <span class="icon-[heroicons--arrow-down-tray] h-4 w-4"></span>
-              <span>{exporting ? "Exporting..." : "Export to Inventory"}</span>
-            </button>
+            <!-- Export to Inventory Column -->
+            <div class="flex flex-col items-end">
+              <span class="text-[10px] font-semibold uppercase tracking-wider text-transparent select-none mb-1">
+                Action
+              </span>
+              <button
+                type="button"
+                disabled={exporting}
+                onclick={handleExportBuild}
+                class="flex items-center gap-1.5 rounded-xl bg-purple-600 px-4 py-2 text-xs font-bold text-white transition-all hover:bg-purple-500 active:scale-95 disabled:opacity-50 cursor-pointer shadow-lg shadow-purple-900/30"
+              >
+                <span class="icon-[heroicons--arrow-down-tray] h-4 w-4"></span>
+                <span>{exporting ? "Exporting..." : "Export to Inventory"}</span>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -788,47 +800,63 @@
           </div>
         {/if}
 
-        <!-- Build Cards Grid: Items, Spells, Augments -->
         {#if activeStrategy}
-          <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-            <!-- 1. Recommended Items -->
-            <div class="rounded-xl border border-gray-800 bg-gray-950/60 p-4 space-y-3">
-              <div class="flex items-center justify-between border-b border-gray-800 pb-2">
-                <span class="text-xs font-semibold uppercase tracking-wider text-gray-300 flex items-center gap-1.5">
-                  <span class="icon-[heroicons--cube] h-4 w-4 text-amber-400"></span>
-                  Recommended Items ({activeStrategy.items.length})
-                </span>
-                <span class="text-[10px] text-gray-500">{activeStrategy.starter_item ? "Starter + 6 Items" : "6 Items"}</span>
-              </div>
+          <!-- Performance Metrics Stats (Container only, no visual card cues) -->
+          <div class="flex flex-wrap items-center justify-around gap-4 text-center py-1">
+            <div>
+              <span class="block text-[11px] font-medium text-gray-400">Build Win Rate</span>
+              <strong class="text-lg font-bold text-purple-400">{formatPct(activeStrategy.build_win_rate)}</strong>
+            </div>
+            <div class="h-8 w-px bg-gray-800"></div>
+            <div>
+              <span class="block text-[11px] font-medium text-gray-400">WPA</span>
+              <strong class="text-lg font-bold {activeStrategy.build_wpa >= 0 ? 'text-emerald-400' : 'text-rose-400'}">
+                {formatWpa(activeStrategy.build_wpa)}
+              </strong>
+            </div>
+            <div class="h-8 w-px bg-gray-800"></div>
+            <div>
+              <span class="block text-[11px] font-medium text-gray-400">{activeStrategy.metric_name}</span>
+              <strong class="text-lg font-bold text-cyan-300">{activeStrategy.avg_metric_value}</strong>
+            </div>
+            <div class="h-8 w-px bg-gray-800"></div>
+            <div>
+              <span class="block text-[11px] font-medium text-gray-400">Synergy Sample Size</span>
+              <strong class="text-lg font-bold text-gray-200">{activeStrategy.sample_games.toLocaleString()} games</strong>
+            </div>
+          </div>
 
-              <!-- Starter item shown separately above the 6 items -->
+          <!-- 1. Recommended Items (100% Horizontal Space) -->
+          <div class="rounded-xl border border-gray-800 bg-gray-950/60 p-4 space-y-4">
+            <div class="flex items-center justify-between border-b border-gray-800 pb-2">
+              <span class="text-xs font-semibold uppercase tracking-wider text-gray-300 flex items-center gap-1.5">
+                <span class="icon-[heroicons--cube] h-4 w-4 text-amber-400"></span>
+                Recommended Items ({activeStrategy.items.length})
+              </span>
+              <span class="text-[10px] text-gray-500">{activeStrategy.starter_item ? "Starter + 6 Core Items" : "6 Core Items"}</span>
+            </div>
+
+            <!-- Horizontal Items Flow: Starter (if present) + 6 Core Recommended Items -->
+            <div class="flex flex-col sm:flex-row items-stretch gap-2.5">
               {#if activeStrategy.starter_item}
                 <div
                   id="build-starter-item"
-                  class="flex items-center justify-between rounded-lg border border-amber-500/30 bg-amber-950/20 p-2 hover:border-amber-500/50 transition-colors"
+                  class="sm:w-36 shrink-0 flex flex-col items-center justify-center p-2.5 rounded-lg border border-amber-500/40 bg-amber-950/20 hover:border-amber-500/60 transition-colors text-center relative group"
                 >
-                  <div class="flex items-center gap-2.5 min-w-0">
-                    <div class="relative h-9 w-9 rounded-lg overflow-hidden border border-amber-500/40 bg-gray-950 shrink-0">
-                      <img src={activeStrategy.starter_item.icon_url} alt={activeStrategy.starter_item.name} class="h-full w-full object-cover" />
-                    </div>
-                    <div class="flex flex-col min-w-0">
-                      <div class="flex items-center gap-1.5">
-                        <span class="text-xs font-bold text-amber-200 truncate">{activeStrategy.starter_item.name}</span>
-                        <span class="rounded bg-amber-900/60 px-1 py-0.2 text-[8px] font-semibold text-amber-300 uppercase tracking-wider">
-                          Starter
-                        </span>
-                      </div>
-                      <span class="text-[10px] font-mono text-amber-400/80">{activeStrategy.starter_item.price_total}g</span>
-                    </div>
+                  <div class="relative h-11 w-11 rounded-lg overflow-hidden border border-amber-500/50 bg-gray-950 mb-1">
+                    <img src={activeStrategy.starter_item.icon_url} alt={activeStrategy.starter_item.name} class="h-full w-full object-cover" />
+                    <span class="absolute left-0 top-0 rounded-br bg-amber-950/90 border-r border-b border-amber-500/40 px-1 text-[8px] font-bold text-amber-300 uppercase">
+                      Start
+                    </span>
                   </div>
-                  <div class="flex items-center gap-2">
+                  <span class="text-[10px] font-semibold text-amber-200 truncate max-w-full">{activeStrategy.starter_item.name}</span>
+                  <div class="flex items-center gap-1.5 mt-0.5">
+                    <span class="text-[9px] font-mono text-amber-400/90">{activeStrategy.starter_item.price_total}g</span>
                     {#if activeStrategy.starter_item.pick_rate !== undefined && activeStrategy.starter_item.pick_rate > 0}
-                      <span class="rounded bg-gray-800/80 px-1.5 py-0.5 text-[10px] font-mono text-gray-400">
-                        {formatPct(activeStrategy.starter_item.pick_rate)}
-                      </span>
+                      <span class="text-[9px] font-mono text-gray-400">{formatPct(activeStrategy.starter_item.pick_rate)}</span>
                     {/if}
                     {#if activeStrategy.starter_item.wpa !== undefined}
-                      <span class="rounded px-1.5 py-0.5 text-[10px] font-mono font-bold {activeStrategy.starter_item.wpa >= 0 ? 'bg-emerald-950 text-emerald-400 border border-emerald-800/60' : 'bg-rose-950 text-rose-400 border border-rose-800/60'}">
+                      <span class="text-[9px] font-mono font-bold {activeStrategy.starter_item.wpa >= 0 ? 'text-emerald-400' : 'text-rose-400'}">
                         {formatWpa(activeStrategy.starter_item.wpa)}
                       </span>
                     {/if}
@@ -844,12 +872,13 @@
                     placement="top"
                   />
                 </div>
+                <div class="hidden sm:block w-px bg-gray-800 self-stretch my-0.5"></div>
               {/if}
 
               <!-- 6 Core Recommended Items Grid -->
-              <div class="grid grid-cols-3 gap-2">
+              <div class="flex-1 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
                 {#each activeStrategy.items as item, idx (`item-${item.id}-${idx}`)}
-                  <div id={`build-item-${item.id}-${idx}`} class="group relative flex flex-col items-center p-2 rounded-lg border border-gray-800 bg-gray-900/70 hover:border-gray-700 transition-colors">
+                  <div id={`build-item-${item.id}-${idx}`} class="group relative flex flex-col items-center justify-center p-2 rounded-lg border border-gray-800 bg-gray-900/70 hover:border-gray-700 transition-colors">
                     <div class="relative h-11 w-11 rounded-lg overflow-hidden border border-gray-700 bg-gray-950 mb-1">
                       <img src={item.icon_url} alt={item.name} class="h-full w-full object-cover" />
                       <span class="absolute left-0 top-0 rounded-br bg-gray-950/80 px-1 text-[9px] font-bold text-gray-300" title="Approximate build order">{idx + 1}</span>
@@ -880,92 +909,102 @@
                   </div>
                 {/each}
               </div>
-
-              <!-- Compact scrollable list of alternative items -->
-              {#if activeStrategy.alternative_items && activeStrategy.alternative_items.length > 0}
-                <div class="pt-2 border-t border-gray-800/80">
-                  <div class="flex items-center justify-between mb-1.5">
-                    <span class="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-                      Alternative & Situational Items ({activeStrategy.alternative_items.length})
-                    </span>
-                    <span class="text-[9px] text-gray-500">Scroll to explore</span>
-                  </div>
-                  <div class="max-h-44 overflow-y-auto scrollbar-thin space-y-1 pr-1">
-                    {#each activeStrategy.alternative_items as altItem, idx (`alt-${altItem.id}-${idx}`)}
-                      <div
-                        id={`alt-item-${altItem.id}-${idx}`}
-                        class="flex items-center justify-between p-1.5 rounded-lg border border-gray-800/80 bg-gray-900/50 hover:bg-gray-800/60 hover:border-gray-700 transition-colors"
-                      >
-                        <div class="flex items-center gap-2 min-w-0">
-                          <img src={altItem.icon_url} alt={altItem.name} class="h-7 w-7 rounded-md object-cover bg-gray-950 border border-gray-700 shrink-0" />
-                          <div class="flex flex-col min-w-0">
-                            <span class="text-xs font-semibold text-gray-200 truncate">{altItem.name}</span>
-                            <span class="text-[9px] font-mono text-amber-400/80">{altItem.price_total}g</span>
-                          </div>
-                        </div>
-                        <div class="flex items-center gap-2 shrink-0">
-                          {#if altItem.pick_rate !== undefined && altItem.pick_rate > 0}
-                            <span class="rounded bg-gray-800/80 px-1.5 py-0.5 text-[10px] font-mono text-gray-400">
-                              {formatPct(altItem.pick_rate)}
-                            </span>
-                          {/if}
-                          {#if altItem.games}<span class="text-[10px] text-gray-500">{altItem.games} games</span>{/if}
-                          {#if altItem.wpa !== undefined}
-                            <span class="rounded px-1.5 py-0.5 text-[10px] font-mono font-bold {altItem.wpa >= 0 ? 'bg-emerald-950 text-emerald-400 border border-emerald-800/60' : 'bg-rose-950 text-rose-400 border border-rose-800/60'}">
-                              {formatWpa(altItem.wpa)}
-                            </span>
-                          {/if}
-                        </div>
-
-                        <GameEntityPopover
-                          targetId={`alt-item-${altItem.id}-${idx}`}
-                          name={altItem.name}
-                          iconUrl={altItem.icon_url}
-                          description={altItem.description}
-                          priceTotal={altItem.price_total}
-                          itemClass={altItem.item_class}
-                          placement="top"
-                        />
-                      </div>
-                    {/each}
-                  </div>
-                </div>
-              {/if}
-              <!-- Rare situational items -->
-              {#if sortedSituationalItems.length > 0}
-                <details class="pt-2 border-t border-gray-800/80">
-                  <summary class="cursor-pointer text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-                    Situational ({sortedSituationalItems.length})
-                  </summary>
-                  <div class="mt-1.5 flex flex-wrap gap-1.5">
-                    {#each sortedSituationalItems as sit, idx (`sit-${sit.id}-${idx}`)}
-                      <div id={`sit-item-${sit.id}-${idx}`} class="relative">
-                        <img
-                          src={sit.icon_url}
-                          alt={sit.name}
-                          class="h-8 w-8 rounded-md border border-gray-700 bg-gray-950 object-cover hover:border-gray-500 transition-colors cursor-pointer"
-                        />
-                        <GameEntityPopover
-                          targetId={`sit-item-${sit.id}-${idx}`}
-                          name={sit.name}
-                          iconUrl={sit.icon_url}
-                          description={sit.description}
-                          priceTotal={sit.price_total}
-                          itemClass={sit.item_class}
-                          games={sit.games}
-                          placement="top"
-                        />
-                      </div>
-                    {/each}
-                  </div>
-                </details>
-              {/if}
             </div>
 
-            <!-- Right Column: Spells & Augments -->
-            <div class="space-y-6">
-              <!-- 2. Summoner Spells -->
-              <div class="rounded-xl border border-gray-800 bg-gray-950/60 p-4 space-y-3">
+            <!-- Lower section: Alternative Items & Situational Items side-by-side -->
+            {#if (activeStrategy.alternative_items && activeStrategy.alternative_items.length > 0) || sortedSituationalItems.length > 0}
+              <div class="grid grid-cols-1 {activeStrategy.alternative_items && activeStrategy.alternative_items.length > 0 && sortedSituationalItems.length > 0 ? 'lg:grid-cols-2' : ''} gap-4 pt-3 border-t border-gray-800/80">
+                <!-- Alternative Items -->
+                {#if activeStrategy.alternative_items && activeStrategy.alternative_items.length > 0}
+                  <div>
+                    <div class="flex items-center justify-between mb-1.5">
+                      <span class="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                        Alternative Items ({activeStrategy.alternative_items.length})
+                      </span>
+                      <span class="text-[9px] text-gray-500">Scroll to explore</span>
+                    </div>
+                    <div class="max-h-44 overflow-y-auto scrollbar-thin space-y-1 pr-1">
+                      {#each activeStrategy.alternative_items as altItem, idx (`alt-${altItem.id}-${idx}`)}
+                        <div
+                          id={`alt-item-${altItem.id}-${idx}`}
+                          class="flex items-center justify-between p-1.5 rounded-lg border border-gray-800/80 bg-gray-900/50 hover:bg-gray-800/60 hover:border-gray-700 transition-colors"
+                        >
+                          <div class="flex items-center gap-2 min-w-0">
+                            <img src={altItem.icon_url} alt={altItem.name} class="h-7 w-7 rounded-md object-cover bg-gray-950 border border-gray-700 shrink-0" />
+                            <div class="flex flex-col min-w-0">
+                              <span class="text-xs font-semibold text-gray-200 truncate">{altItem.name}</span>
+                              <span class="text-[9px] font-mono text-amber-400/80">{altItem.price_total}g</span>
+                            </div>
+                          </div>
+                          <div class="flex items-center gap-2 shrink-0">
+                            {#if altItem.pick_rate !== undefined && altItem.pick_rate > 0}
+                              <span class="rounded bg-gray-800/80 px-1.5 py-0.5 text-[10px] font-mono text-gray-400">
+                                {formatPct(altItem.pick_rate)}
+                              </span>
+                            {/if}
+                            {#if altItem.games}<span class="text-[10px] text-gray-500">{altItem.games} games</span>{/if}
+                            {#if altItem.wpa !== undefined}
+                              <span class="rounded px-1.5 py-0.5 text-[10px] font-mono font-bold {altItem.wpa >= 0 ? 'bg-emerald-950 text-emerald-400 border border-emerald-800/60' : 'bg-rose-950 text-rose-400 border border-rose-800/60'}">
+                                {formatWpa(altItem.wpa)}
+                              </span>
+                            {/if}
+                          </div>
+
+                          <GameEntityPopover
+                            targetId={`alt-item-${altItem.id}-${idx}`}
+                            name={altItem.name}
+                            iconUrl={altItem.icon_url}
+                            description={altItem.description}
+                            priceTotal={altItem.price_total}
+                            itemClass={altItem.item_class}
+                            placement="top"
+                          />
+                        </div>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+
+                <!-- Situational Items -->
+                {#if sortedSituationalItems.length > 0}
+                  <div>
+                    <div class="flex items-center justify-between mb-1.5">
+                      <span class="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                        Situational Items ({sortedSituationalItems.length})
+                      </span>
+                      <span class="text-[9px] text-gray-500">Sorted by games</span>
+                    </div>
+                    <div class="flex flex-wrap gap-1.5 p-2 rounded-lg border border-gray-800/80 bg-gray-900/40">
+                      {#each sortedSituationalItems as sit, idx (`sit-${sit.id}-${idx}`)}
+                        <div id={`sit-item-${sit.id}-${idx}`} class="relative">
+                          <img
+                            src={sit.icon_url}
+                            alt={sit.name}
+                            class="h-8 w-8 rounded-md border border-gray-700 bg-gray-950 object-cover hover:border-gray-500 transition-colors cursor-pointer"
+                          />
+                          <GameEntityPopover
+                            targetId={`sit-item-${sit.id}-${idx}`}
+                            name={sit.name}
+                            iconUrl={sit.icon_url}
+                            description={sit.description}
+                            priceTotal={sit.price_total}
+                            itemClass={sit.item_class}
+                            games={sit.games}
+                            placement="top"
+                          />
+                        </div>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+              </div>
+            {/if}
+          </div>
+
+          <!-- 2 & 3. Bottom Row: Summoner Spells & Common Augments (Shared Horizontal Space, Same Y Height) -->
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-6 items-stretch">
+            <!-- 2. Summoner Spells Card -->
+            <div class="rounded-xl border border-gray-800 bg-gray-950/60 p-4 flex flex-col h-full space-y-3">
               <div class="flex items-center justify-between border-b border-gray-800 pb-2">
                 <span class="text-xs font-semibold uppercase tracking-wider text-gray-300 flex items-center gap-1.5">
                   <span class="icon-[heroicons--bolt] h-4 w-4 text-cyan-400"></span>
@@ -976,17 +1015,19 @@
               <div class="grid grid-cols-2 gap-3 pt-1">
                 {#each activeStrategy.spells as spell, idx (`spell-${spell.id}-${idx}`)}
                   <div class="flex items-center gap-2.5 p-2.5 rounded-lg border border-gray-800 bg-gray-900/70">
-                    <img src={spell.icon_url} alt={spell.name} class="h-10 w-10 rounded-lg object-cover bg-gray-950 border border-gray-700 shrink-0" />
+                    <img src={spell.icon_url} alt={spell.name} class="h-9 w-9 rounded-lg border border-gray-700 bg-gray-950 object-cover shrink-0" />
                     <div class="flex flex-col min-w-0">
-                      <div class="flex items-center justify-between gap-1">
-                        <span class="text-xs font-bold text-gray-100 truncate">{spell.name}</span>
+                      <span class="text-xs font-semibold text-gray-200 truncate">{spell.name}</span>
+                      <div class="flex items-center gap-1.5 mt-0.5">
+                        {#if spell.win_rate !== undefined}
+                          <span class="text-[10px] text-gray-400">{formatPct(spell.win_rate)} WR</span>
+                        {/if}
                         {#if spell.wpa !== undefined}
-                          <span class="rounded px-1 py-0.2 text-[9px] font-mono font-bold {spell.wpa >= 0 ? 'bg-emerald-950 text-emerald-400 border border-emerald-800/60' : 'bg-rose-950 text-rose-400 border border-rose-800/60'}">
+                          <span class="text-[10px] font-mono font-bold {spell.wpa >= 0 ? 'text-emerald-400' : 'text-rose-400'}">
                             {formatWpa(spell.wpa)}
                           </span>
                         {/if}
                       </div>
-                      <span class="text-[10px] text-gray-400 line-clamp-2">{spell.description || "Active spell"}</span>
                     </div>
                   </div>
                 {/each}
@@ -994,33 +1035,25 @@
 
               <!-- Other Summoner Spells with WPA -->
               {#if otherSpells.length > 0}
-                <div class="pt-2 border-t border-gray-800/80 space-y-1.5">
-                  <div class="flex items-center justify-between">
+                <div class="pt-2 border-t border-gray-800/80 flex-1 flex flex-col">
+                  <div class="flex items-center justify-between mb-1.5">
                     <span class="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
                       All Other Summoner Spells
                     </span>
-                    <span class="text-[9px] text-gray-500">Spell WPA</span>
+                    <span class="text-[9px] text-gray-500">Win Rate & WPA</span>
                   </div>
-                  <div class="max-h-48 overflow-y-auto scrollbar-thin space-y-1 pr-1">
-                    {#each otherSpells as spell (spell.id)}
-                      <div class="flex items-center justify-between p-1.5 rounded-lg border border-gray-800/80 bg-gray-900/60 hover:bg-gray-800/60 transition-colors">
+                  <div class="grid grid-cols-2 gap-2 overflow-y-auto max-h-48 scrollbar-thin">
+                    {#each otherSpells as spell, idx (`other-spell-${spell.id}-${idx}`)}
+                      <div class="flex items-center justify-between p-1.5 rounded-lg border border-gray-800/80 bg-gray-900/40">
                         <div class="flex items-center gap-2 min-w-0">
-                          <img src={spell.icon_url} alt={spell.name} class="h-6 w-6 rounded-md object-cover bg-gray-950 border border-gray-700 shrink-0" />
-                          <div class="flex flex-col min-w-0">
-                            <span class="text-xs font-semibold text-gray-200 truncate">{spell.name}</span>
-                            {#if spell.games}<span class="text-[10px] text-gray-500">{spell.games} games</span>{/if}
-                          </div>
+                          <img src={spell.icon_url} alt={spell.name} class="h-6 w-6 rounded bg-gray-950 object-cover shrink-0" />
+                          <span class="text-[11px] font-medium text-gray-300 truncate">{spell.name}</span>
                         </div>
-                        <div class="flex items-center gap-2 shrink-0">
-                          {#if spell.win_rate !== undefined}
-                            <span class="text-[10px] text-gray-400">{formatPct(spell.win_rate)} WR</span>
-                          {/if}
-                          {#if spell.wpa !== undefined}
-                            <span class="rounded px-1.5 py-0.5 text-[10px] font-mono font-bold {spell.wpa >= 0 ? 'bg-emerald-950 text-emerald-400 border border-emerald-800/60' : 'bg-rose-950 text-rose-400 border border-rose-800/60'}">
-                              {formatWpa(spell.wpa)}
-                            </span>
-                          {/if}
-                        </div>
+                        {#if spell.wpa !== undefined}
+                          <span class="text-[10px] font-mono font-semibold {spell.wpa >= 0 ? 'text-emerald-400' : 'text-rose-400'} shrink-0">
+                            {formatWpa(spell.wpa)}
+                          </span>
+                        {/if}
                       </div>
                     {/each}
                   </div>
@@ -1028,18 +1061,18 @@
               {/if}
             </div>
 
-            <!-- 3. Common Build Augments -->
-            <div class="rounded-xl border border-gray-800 bg-gray-950/60 p-4 space-y-3">
+            <!-- 3. Common Augments Associated With Build Card -->
+            <div class="rounded-xl border border-gray-800 bg-gray-950/60 p-4 flex flex-col h-full space-y-3">
               <div class="flex items-center justify-between border-b border-gray-800 pb-2">
                 <span class="text-xs font-semibold uppercase tracking-wider text-gray-300 flex items-center gap-1.5">
-                  <span class="icon-[heroicons--sparkles] h-4 w-4 text-purple-400"></span>
+                  <span class="icon-[flowbite--badge-check-outline] h-4 w-4 text-purple-400"></span>
                   Common Augments ({activeStrategy.augments?.length ?? 0})
                 </span>
-                <span class="text-[10px] text-gray-500">Pick Rate &amp; WPA with this core</span>
+                <span class="text-[10px] text-gray-500">Associated With Core</span>
               </div>
 
               {#if activeStrategy.augments && activeStrategy.augments.length > 0}
-                <div class="grid grid-cols-3 gap-2 pt-1">
+                <div class="grid grid-cols-3 gap-2 overflow-y-auto max-h-64 scrollbar-thin flex-1">
                   {#each activeStrategy.augments as aug, idx (`build-aug-${aug.id}-${idx}`)}
                     <div
                       id={`build-aug-${aug.id}-${idx}`}
@@ -1095,36 +1128,10 @@
                   {/each}
                 </div>
               {:else}
-                <div class="flex h-24 items-center justify-center rounded-lg border border-dashed border-gray-800 text-xs text-gray-500">
+                <div class="flex flex-1 items-center justify-center rounded-lg border border-dashed border-gray-800 text-xs text-gray-500 min-h-24">
                   No augment data sampled for this build yet.
                 </div>
               {/if}
-            </div>
-          </div>
-        </div>
-
-          <!-- Performance Metrics Bar -->
-          <div class="rounded-xl border border-gray-800 bg-gray-950/40 p-4 flex flex-wrap items-center justify-around gap-4 text-center">
-            <div>
-              <span class="block text-[11px] font-medium text-gray-400">Build Win Rate</span>
-              <strong class="text-lg font-bold text-purple-400">{formatPct(activeStrategy.build_win_rate)}</strong>
-            </div>
-            <div class="h-8 w-px bg-gray-800"></div>
-            <div>
-              <span class="block text-[11px] font-medium text-gray-400">WPA</span>
-              <strong class="text-lg font-bold {activeStrategy.build_wpa >= 0 ? 'text-emerald-400' : 'text-rose-400'}">
-                {formatWpa(activeStrategy.build_wpa)}
-              </strong>
-            </div>
-            <div class="h-8 w-px bg-gray-800"></div>
-            <div>
-              <span class="block text-[11px] font-medium text-gray-400">{activeStrategy.metric_name}</span>
-              <strong class="text-lg font-bold text-cyan-300">{activeStrategy.avg_metric_value}</strong>
-            </div>
-            <div class="h-8 w-px bg-gray-800"></div>
-            <div>
-              <span class="block text-[11px] font-medium text-gray-400">Synergy Sample Size</span>
-              <strong class="text-lg font-bold text-gray-200">{activeStrategy.sample_games.toLocaleString()} games</strong>
             </div>
           </div>
         {/if}
