@@ -30,6 +30,7 @@ export interface MayhemBuildAugment {
   win_rate?: number;
   wpa?: number;
   games?: number;
+  pick_rate?: number;
 }
 
 export interface MayhemBuildStrategy {

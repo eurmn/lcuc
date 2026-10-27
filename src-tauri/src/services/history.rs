@@ -2431,7 +2431,7 @@ pub struct MinedArchetype {
     pub build_win_rate: f64,
     pub build_wpa: f64,
     pub spells: (u64, u64),
-    pub top_augments: Vec<String>,
+    pub top_augments: Vec<(String, usize, f64, f64, f64)>,
 }
 
 fn classify_archetype_prefix(core_items: &[i64], items_catalog: &HashMap<i32, CachedItemInfo>) -> &'static str {
@@ -2833,17 +2833,34 @@ fn mine_build_archetypes(
             .map(|x| x.0)
             .unwrap_or((4, 32));
 
-        let mut aug_counts: HashMap<String, usize> = HashMap::new();
+        // Augments - mine most common augments associated with this champion and core items
+        let mut aug_counts: HashMap<String, (usize, usize)> = HashMap::new();
         for p in &sub_facts {
             for a in &p.augments {
                 if !a.is_empty() && a != "0" {
-                    *aug_counts.entry(a.clone()).or_default() += 1;
+                    let entry = aug_counts.entry(a.clone()).or_insert((0, 0));
+                    entry.0 += 1;
+                    if p.win {
+                        entry.1 += 1;
+                    }
                 }
             }
         }
-        let mut sorted_augs: Vec<(String, usize)> = aug_counts.into_iter().collect();
-        sorted_augs.sort_by(|a, b| b.1.cmp(&a.1));
-        let top_augments: Vec<String> = sorted_augs.into_iter().take(9).map(|x| x.0).collect();
+        let mut sorted_augs: Vec<(String, usize, usize)> = aug_counts.into_iter().collect();
+        sorted_augs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.2.cmp(&a.2)));
+
+        let sample_g = sample_games.max(1) as f64;
+        let top_augments: Vec<(String, usize, f64, f64, f64)> = sorted_augs
+            .into_iter()
+            .take(12)
+            .map(|(id, g, w)| {
+                let m = 3.0;
+                let wr = (w as f64 + m * build_win_rate) / (g as f64 + m);
+                let wpa = wr - champion_win_rate;
+                let pr = g as f64 / sample_g;
+                (id, g, wr, wpa, pr)
+            })
+            .collect();
 
         let prefix = classify_archetype_prefix(&ordered_core, items_catalog);
         let names = generate_archetype_label(&ordered_core, items_catalog);
@@ -2939,6 +2956,7 @@ async fn mayhem_augment(
         win_rate,
         wpa: win_rate - champion_win_rate,
         games,
+        pick_rate: 0.0,
     }
 }
 
@@ -3725,6 +3743,11 @@ pub async fn compute_mayhem_champion_build(
                 .map(|a| ((a.wins as f64) / (a.games.max(1) as f64), a.games as usize))
                 .unwrap_or((champion_win_rate, 0));
             let wpa = wr - champion_win_rate;
+            let pick_rate = if total_games > 0 {
+                games as f64 / total_games as f64
+            } else {
+                0.0
+            };
             enriched_augments.push(MayhemBuildAugment {
                 id: aug_id,
                 name,
@@ -3734,6 +3757,7 @@ pub async fn compute_mayhem_champion_build(
                 win_rate: wr,
                 wpa,
                 games,
+                pick_rate,
             });
         }
 
@@ -3824,8 +3848,33 @@ pub async fn compute_mayhem_champion_build(
             spells.push(mayhem_spell(sp, &spells_catalog, &individual_spells_agg, champion_win_rate).await);
         }
         let mut augments = Vec::new();
-        for id in &arch.top_augments {
-            augments.push(mayhem_augment(id, &aug_catalog, augments_agg.get(id), champion_win_rate).await);
+        for (id, games, wr, wpa, pr) in &arch.top_augments {
+            if normalized_augments.iter().any(|r| r.eq_ignore_ascii_case(id)) {
+                continue;
+            }
+            let mut aug = mayhem_augment(id, &aug_catalog, augments_agg.get(id), champion_win_rate).await;
+            aug.games = *games;
+            aug.win_rate = *wr;
+            aug.wpa = *wpa;
+            aug.pick_rate = *pr;
+            augments.push(aug);
+        }
+        if augments.len() < 6 {
+            let mut general_augs: Vec<(&String, &MetricAggregate)> = augments_agg
+                .iter()
+                .filter(|(id, _)| {
+                    !augments.iter().any(|a| a.id.eq_ignore_ascii_case(id))
+                        && !normalized_augments.iter().any(|r| r.eq_ignore_ascii_case(id))
+                })
+                .collect();
+            general_augs.sort_by(|a, b| b.1.games.cmp(&a.1.games).then_with(|| b.1.wins.cmp(&a.1.wins)));
+            for (id, agg) in general_augs.into_iter().take(6 - augments.len()) {
+                let mut aug = mayhem_augment(id, &aug_catalog, Some(agg), champion_win_rate).await;
+                if total_games > 0 {
+                    aug.pick_rate = agg.games as f64 / total_games as f64;
+                }
+                augments.push(aug);
+            }
         }
         archetype_strategies.push(MayhemBuildStrategy {
             id: arch.id,

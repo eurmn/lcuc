@@ -101,6 +101,8 @@ pub struct MayhemBuildAugment {
     pub wpa: f64,
     #[serde(default)]
     pub games: usize,
+    #[serde(default)]
+    pub pick_rate: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

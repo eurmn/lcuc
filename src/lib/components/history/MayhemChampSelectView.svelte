@@ -16,6 +16,7 @@
     MayhemAugmentItem,
     MayhemChampionBuildSummary,
     MayhemBuildStrategy,
+    MayhemBuildAugment,
   } from "../../types/champ_select";
   import ChampionCarousel from "../sidebar/ChampionCarousel.svelte";
   import AugmentIcon from "../common/AugmentIcon.svelte";
@@ -317,6 +318,34 @@
   function handleAugmentsChanged(ids: string[]) {
     augmentIds = ids;
     void loadSingleChampionBuild(selectedChampionId);
+  }
+
+  function handleSelectBuildAugment(aug: MayhemBuildAugment) {
+    if (!isInProgress) return;
+    if (pickerSlots.some((s) => s?.id === aug.id)) return;
+    const nextEmptyIdx = pickerSlots.findIndex((s) => s === null);
+    if (nextEmptyIdx !== -1) {
+      const item: MayhemAugmentItem = {
+        id: aug.id,
+        name: aug.name,
+        icon_url: aug.icon_url,
+        rarity: aug.rarity,
+        tooltip: aug.tooltip,
+        categories: [],
+        games: aug.games ?? 0,
+        wins: 0,
+        win_rate: aug.win_rate ?? 0.5,
+        wpa: aug.wpa ?? 0,
+        pick_rate: aug.pick_rate ?? 0,
+        global_games: 0,
+        global_win_rate: 0,
+        global_wpa: 0,
+        global_pick_rate: 0,
+      };
+      pickerSlots[nextEmptyIdx] = item;
+      const ids = pickerSlots.filter((s): s is MayhemAugmentItem => s !== null).map((s) => s.id);
+      handleAugmentsChanged(ids);
+    }
   }
 
   async function handleSaveBuild() {
@@ -754,7 +783,7 @@
 
         <!-- Build Cards Grid: Items, Spells, Augments -->
         {#if activeStrategy}
-          <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
             <!-- 1. Recommended Items -->
             <div class="rounded-xl border border-gray-800 bg-gray-950/60 p-4 space-y-3">
               <div class="flex items-center justify-between border-b border-gray-800 pb-2">
@@ -915,8 +944,10 @@
               {/if}
             </div>
 
-            <!-- 2. Summoner Spells -->
-            <div class="rounded-xl border border-gray-800 bg-gray-950/60 p-4 space-y-3">
+            <!-- Right Column: Spells & Augments -->
+            <div class="space-y-6">
+              <!-- 2. Summoner Spells -->
+              <div class="rounded-xl border border-gray-800 bg-gray-950/60 p-4 space-y-3">
               <div class="flex items-center justify-between border-b border-gray-800 pb-2">
                 <span class="text-xs font-semibold uppercase tracking-wider text-gray-300 flex items-center gap-1.5">
                   <span class="icon-[heroicons--bolt] h-4 w-4 text-cyan-400"></span>
@@ -978,7 +1009,81 @@
                 </div>
               {/if}
             </div>
+
+            <!-- 3. Common Build Augments -->
+            <div class="rounded-xl border border-gray-800 bg-gray-950/60 p-4 space-y-3">
+              <div class="flex items-center justify-between border-b border-gray-800 pb-2">
+                <span class="text-xs font-semibold uppercase tracking-wider text-gray-300 flex items-center gap-1.5">
+                  <span class="icon-[heroicons--sparkles] h-4 w-4 text-purple-400"></span>
+                  Common Augments ({activeStrategy.augments?.length ?? 0})
+                </span>
+                <span class="text-[10px] text-gray-500">Pick Rate &amp; WPA with this core</span>
+              </div>
+
+              {#if activeStrategy.augments && activeStrategy.augments.length > 0}
+                <div class="grid grid-cols-3 gap-2 pt-1">
+                  {#each activeStrategy.augments as aug, idx (`build-aug-${aug.id}-${idx}`)}
+                    <div
+                      id={`build-aug-${aug.id}-${idx}`}
+                      role={isInProgress ? "button" : undefined}
+                      tabindex={isInProgress ? 0 : undefined}
+                      onclick={() => handleSelectBuildAugment(aug)}
+                      onkeydown={(e) => e.key === "Enter" && handleSelectBuildAugment(aug)}
+                      class="group relative flex flex-col items-center p-2 rounded-lg border border-gray-800 bg-gray-900/70 hover:border-gray-700 transition-colors {isInProgress ? 'cursor-pointer hover:border-purple-500/60 hover:bg-purple-950/20' : ''}"
+                      title={isInProgress ? "Click to add to augment tracker" : aug.name}
+                    >
+                      <div class="relative mb-1">
+                        <AugmentIcon
+                          src={aug.icon_url}
+                          name={aug.name}
+                          rarity={aug.rarity}
+                          class="h-11 w-11"
+                          roundedClass="rounded-lg"
+                        />
+                      </div>
+                      <span class="text-[10px] font-medium text-gray-200 truncate max-w-full text-center" title={aug.name}>
+                        {aug.name}
+                      </span>
+                      <div class="flex items-center gap-1.5 mt-0.5">
+                        {#if aug.pick_rate !== undefined && aug.pick_rate > 0}
+                          <span class="text-[9px] font-mono text-purple-300" title={`${aug.games ?? 0} games (${formatPct(aug.pick_rate)} pick rate)`}>
+                            {formatPct(aug.pick_rate)}
+                          </span>
+                        {:else if aug.games}
+                          <span class="text-[9px] font-mono text-gray-400" title={`${aug.games} games`}>
+                            {aug.games}g
+                          </span>
+                        {/if}
+                        {#if aug.wpa !== undefined}
+                          <span
+                            class="text-[9px] font-mono font-bold {aug.wpa >= 0 ? 'text-emerald-400' : 'text-rose-400'}"
+                            title={`Win rate: ${formatPct(aug.win_rate)} (${formatWpa(aug.wpa)} WPA)`}
+                          >
+                            {formatWpa(aug.wpa)}
+                          </span>
+                        {/if}
+                      </div>
+
+                      <!-- Rich Augment Popover -->
+                      <GameEntityPopover
+                        targetId={`build-aug-${aug.id}-${idx}`}
+                        name={aug.name}
+                        iconUrl={aug.icon_url}
+                        description={aug.tooltip}
+                        rarity={aug.rarity}
+                        placement="top"
+                      />
+                    </div>
+                  {/each}
+                </div>
+              {:else}
+                <div class="flex h-24 items-center justify-center rounded-lg border border-dashed border-gray-800 text-xs text-gray-500">
+                  No augment data sampled for this build yet.
+                </div>
+              {/if}
+            </div>
           </div>
+        </div>
 
           <!-- Performance Metrics Bar -->
           <div class="rounded-xl border border-gray-800 bg-gray-950/40 p-4 flex flex-wrap items-center justify-around gap-4 text-center">
