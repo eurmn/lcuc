@@ -49,8 +49,38 @@
     clearStatisticsCache,
     syncStatisticsCachePatch,
   } from "./lib/utils/statistics-data";
-  import { isLcuConnected as fetchIsLcuConnected } from "./lib/api/champ_select";
+  import {
+  checkForUpdateSilently,
+  applyPendingUpdate,
+} from "./lib/api/updater";
+import { isLcuConnected as fetchIsLcuConnected } from "./lib/api/champ_select";
   import type { ChampSelectSession } from "./lib/types/champ_select";
+
+  let updateReady = $state(false);
+  let updateVersion = $state<string | null>(null);
+  let updateDismissed = $state(false);
+  let isApplyingUpdate = $state(false);
+  let updateCheckTimeout: ReturnType<typeof setTimeout> | null = null;
+  let updateCheckInterval: ReturnType<typeof setInterval> | null = null;
+
+  async function runSilentUpdateCheck() {
+    const info = await checkForUpdateSilently();
+    if (info) {
+      updateReady = true;
+      updateVersion = info.version;
+    }
+  }
+
+  async function handleApplyUpdate() {
+    if (isApplyingUpdate) return;
+    isApplyingUpdate = true;
+    try {
+      await applyPendingUpdate();
+    } catch (err) {
+      logger.error("frontend.updater", "Failed to apply update", err);
+      isApplyingUpdate = false;
+    }
+  }
 
   let clientPages = $state<ClientRunePageSummary[]>([]);
   let savedRunesets = $state<RuneSetSummary[]>([]);
@@ -454,6 +484,13 @@
     if (key) {
       await loadTreeForKey(key);
     }
+    updateCheckTimeout = setTimeout(() => {
+      void runSilentUpdateCheck();
+    }, 5000);
+
+    updateCheckInterval = setInterval(() => {
+      void runSilentUpdateCheck();
+    }, 60 * 60 * 1000);
 
     try {
       unlistenRunes = await listen("lcu:runes-changed", async () => {
@@ -503,6 +540,8 @@
     if (unlistenConnected) unlistenConnected();
     if (unlistenDisconnected) unlistenDisconnected();
     if (unlistenChampSelect) unlistenChampSelect();
+    if (updateCheckTimeout) clearTimeout(updateCheckTimeout);
+    if (updateCheckInterval) clearInterval(updateCheckInterval);
   });
 </script>
 
@@ -528,11 +567,57 @@
     {hideLowPickrate}
     onToggleHideLowPickrate={handleToggleHideLowPickrate}
     {isLcuConnected}
+    {updateReady}
+    {updateVersion}
+    onOpenUpdatePrompt={() => (updateDismissed = false)}
     onSaveLimit={saveGlobalStatisticsLimit}
     onResetGlobalDatabase={handleResetGlobalDatabase}
     onPauseCrawler={handlePauseCrawler}
     onStopCrawler={handleStopCrawler}
   />
+
+  <!-- Silent Update Ready Banner -->
+  {#if updateReady && !updateDismissed}
+    <div
+      class="w-full shrink-0 bg-gradient-to-r from-emerald-950/95 via-teal-950/95 to-gray-950/95 border-b border-emerald-500/40 px-4 py-2 flex items-center justify-between z-30 shadow-md text-xs select-none"
+    >
+      <div class="flex items-center gap-2.5">
+        <span class="relative flex h-2.5 w-2.5">
+          <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+          <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+        </span>
+        <span class="font-semibold text-emerald-100">LCU Companion v{updateVersion} ready</span>
+        <span class="text-emerald-300/70 hidden sm:inline">
+          — downloaded in background. Restart application to apply update.
+        </span>
+      </div>
+      <div class="flex items-center gap-2">
+        <button
+          type="button"
+          disabled={isApplyingUpdate}
+          onclick={handleApplyUpdate}
+          class="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded shadow transition cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
+        >
+          {#if isApplyingUpdate}
+            <span class="icon-[heroicons--arrow-path] animate-spin text-xs"></span>
+            Restarting...
+          {:else}
+            <span class="icon-[heroicons--arrow-path] text-xs"></span>
+            Restart Now
+          {/if}
+        </button>
+        <button
+          type="button"
+          disabled={isApplyingUpdate}
+          onclick={() => (updateDismissed = true)}
+          class="px-2.5 py-1 bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white rounded border border-gray-700 transition cursor-pointer"
+          title="Dismiss banner (apply on next restart)"
+        >
+          Later
+        </button>
+      </div>
+    </div>
+  {/if}
 
   <!-- Topside Header Navigation Bar (Sidebar Toggle + Profile + Champion Search) -->
   <TopNavBar
@@ -729,3 +814,4 @@
     {/if}
   </div>
 </div>
+

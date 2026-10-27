@@ -13,18 +13,19 @@ use commands::{
         api_set_global_aram_limit, api_set_global_aram_workers, api_statistics,
         api_stop_global_aram_crawler,
     },
-    api_champ_select_session, api_champ_select_swap, api_is_lcu_connected, api_delete_runeset, api_detect_champion_from_name,
-    api_export_mayhem_build, api_export_saved_rune_page, api_get_champion_roster,
-    api_get_champions, api_get_selected_champion_id, api_get_selected_rune_key,
-    api_import_client_page, api_match_history, api_mayhem_augments, api_mayhem_champion_build,
-    api_mayhem_team_builds, api_profile_challenge_tier, api_remove_friends,
-    api_save_mayhem_build, api_list_saved_mayhem_builds, api_delete_saved_mayhem_build,
-    api_rune_builder_get_keystones, api_rune_builder_get_overview,
+    api_champ_select_session, api_champ_select_swap, api_delete_runeset,
+    api_delete_saved_mayhem_build, api_detect_champion_from_name, api_export_mayhem_build,
+    api_export_saved_rune_page, api_get_champion_roster, api_get_champions,
+    api_get_selected_champion_id, api_get_selected_rune_key, api_import_client_page,
+    api_is_lcu_connected, api_list_saved_mayhem_builds, api_match_history, api_mayhem_augments,
+    api_mayhem_champion_build, api_mayhem_team_builds, api_profile_challenge_tier,
+    api_remove_friends, api_rune_builder_get_keystones, api_rune_builder_get_overview,
     api_rune_builder_get_secondary_playcounts, api_rune_builder_get_shards,
     api_rune_builder_get_tree_runes, api_rune_tree_client, api_rune_tree_current,
     api_rune_tree_saved, api_rune_tree_select_perk, api_runes_overview, api_runesets,
-    api_save_rune_tree, api_set_selected_champion_id, api_set_selected_rune_key,
-    api_summoner_profile, api_toggle_favorite_champion, api_update_runeset_champion,
+    api_save_mayhem_build, api_save_rune_tree, api_set_selected_champion_id,
+    api_set_selected_rune_key, api_summoner_profile, api_toggle_favorite_champion,
+    api_update_runeset_champion,
 };
 use services::lcu_websocket::LcuWsWatcher;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -34,6 +35,7 @@ use tauri::{Manager, WindowEvent};
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             crate::logger::init_app_handle(app.handle().clone());
@@ -41,8 +43,15 @@ pub fn run() {
                 .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
             app.manage(supervisor);
 
-            let status_item = MenuItem::with_id(app, "status", "Crawler: Idle", false, None::<&str>)?;
-            let toggle_item = MenuItem::with_id(app, "toggle_window", "Hide LCU Companion", true, None::<&str>)?;
+            let status_item =
+                MenuItem::with_id(app, "status", "Crawler: Idle", false, None::<&str>)?;
+            let toggle_item = MenuItem::with_id(
+                app,
+                "toggle_window",
+                "Hide LCU Companion",
+                true,
+                None::<&str>,
+            )?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let sep1 = PredefinedMenuItem::separator(app)?;
             let sep2 = PredefinedMenuItem::separator(app)?;
@@ -116,10 +125,7 @@ pub fn run() {
                 loop {
                     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
                     if let Some(supervisor) = app_handle_for_status.try_state::<AgentSupervisor>() {
-                        if let Ok(config) = supervisor
-                            .request("global_aram_config")
-                            .await
-                        {
+                        if let Ok(config) = supervisor.request("global_aram_config").await {
                             let paused = config
                                 .get("crawler_paused")
                                 .and_then(|v| v.as_bool())

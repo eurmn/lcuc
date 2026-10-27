@@ -22,6 +22,9 @@
     hideLowPickrate?: boolean;
     onToggleHideLowPickrate?: () => void;
     isLcuConnected?: boolean;
+  updateReady?: boolean;
+  updateVersion?: string | null;
+  onOpenUpdatePrompt?: () => void;
     onSaveLimit?: (limit: number) => Promise<void>;
     onResetGlobalDatabase?: () => Promise<void>;
     onPauseCrawler?: (paused: boolean) => Promise<void>;
@@ -46,6 +49,9 @@
     hideLowPickrate = false,
     onToggleHideLowPickrate,
     isLcuConnected = false,
+  updateReady = false,
+  updateVersion = null,
+  onOpenUpdatePrompt,
     onSaveLimit,
     onResetGlobalDatabase,
     onPauseCrawler,
@@ -420,6 +426,22 @@
       {/if}
     </div>
 
+        <!-- Update Ready Badge / Prompt Trigger -->
+    {#if updateReady}
+      <button
+        type="button"
+        onclick={onOpenUpdatePrompt}
+        class="h-full px-2.5 text-emerald-400 hover:text-emerald-300 hover:bg-emerald-950/40 transition-colors flex items-center gap-1.5 text-xs font-semibold cursor-pointer border-l border-gray-800/80"
+        title="Update v{updateVersion} ready — click to restart"
+      >
+        <span class="relative flex h-2 w-2">
+          <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+          <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+        </span>
+        <span class="hidden sm:inline text-emerald-300">v{updateVersion} ready</span>
+      </button>
+    {/if}
+
     <!-- Window Action Buttons -->
     <button
       type="button"
@@ -450,3 +472,4 @@
 
 <!-- Logs Modal -->
 <LogsModal isOpen={logsModalOpen} onClose={() => (logsModalOpen = false)} />
+
