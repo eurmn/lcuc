@@ -18,7 +18,6 @@
     MayhemBuildStrategy,
     MayhemBuildAugment,
   } from "../../types/champ_select";
-  import ChampionCarousel from "../sidebar/ChampionCarousel.svelte";
   import AugmentIcon from "../common/AugmentIcon.svelte";
   import GameEntityPopover from "../common/GameEntityPopover.svelte";
   import MayhemAugmentsCard from "./MayhemAugmentsCard.svelte";
@@ -59,7 +58,6 @@
   let manualChampionBuild = $state<MayhemChampionBuildSummary | null>(null);
   let loadingBuild = $state(false);
   let strategyDropdownOpen = $state(false);
-  let searchQuery = $state("");
   let exporting = $state(false);
   let exportToast = $state<{ message: string; success: boolean } | null>(null);
   let hoverTooltip = $state<{
@@ -127,38 +125,6 @@
       : []
   );
 
-  const mayhemAllChampions = $derived(
-    allChampions.filter((c) => c.id > 0 && !c.id.toString().startsWith("600"))
-  );
-
-  const carouselFavoriteChampions = $derived(
-    mayhemAllChampions
-      .filter((c) => c.is_favorite)
-      .sort((a, b) => a.name.localeCompare(b.name))
-  );
-
-  const carouselNonFavoriteChampions = $derived(
-    mayhemAllChampions
-      .filter((c) => !c.is_favorite)
-      .sort((a, b) => a.name.localeCompare(b.name))
-  );
-
-  const carouselSearchedChampions = $derived(
-    searchQuery.trim()
-      ? mayhemAllChampions
-          .filter(
-            (c) =>
-              c.name.toLowerCase().includes(searchQuery.trim().toLowerCase()) ||
-              c.alias?.toLowerCase().includes(searchQuery.trim().toLowerCase())
-          )
-          .sort((a, b) => {
-            const aFav = a.is_favorite ? 1 : 0;
-            const bFav = b.is_favorite ? 1 : 0;
-            if (aFav !== bFav) return bFav - aFav;
-            return a.name.localeCompare(b.name);
-          })
-      : []
-  );
 
   const currentSelectedChampion = $derived(
     allChampions.find((c) => c.id === selectedChampionId) ?? null
@@ -272,7 +238,7 @@
     }
   }
 
-  async function handleCarouselChampionClick(champId: number) {
+  async function handleRosterChampionClick(champId: number) {
     if (isInChampSelect) {
       // In champ select: can only change pick through client, or swap with available roster (bench/teammate)
       if (availableRosterChampionIds.has(champId)) {
@@ -378,7 +344,6 @@
 
   function handleSelectChampion(champId: number) {
     selectedChampionId = champId;
-    searchQuery = "";
     const champObj = allChampions.find((c) => c.id === champId) ?? null;
     if (champObj) {
       onSelectChampion?.(champObj);
@@ -505,7 +470,7 @@
               <button
                 type="button"
                 title={isMe ? "Your current pick" : "Click to request swap from teammate"}
-                onclick={() => member.championId > 0 && (!isMe ? handleCarouselChampionClick(member.championId) : handleSelectChampion(member.championId))}
+                onclick={() => member.championId > 0 && (!isMe ? handleRosterChampionClick(member.championId) : handleSelectChampion(member.championId))}
                 onmouseenter={(e) => member.championId > 0 && handleMouseEnterCard(e, member.championId)}
                 onmouseleave={handleMouseLeaveCard}
                 class="relative flex flex-col items-center justify-center p-2 rounded-xl border transition-all cursor-pointer {isInspected
@@ -572,7 +537,7 @@
                 <button
                   type="button"
                   title="Click to swap this champion from bench"
-                  onclick={() => handleCarouselChampionClick(bench.championId)}
+                  onclick={() => handleRosterChampionClick(bench.championId)}
                   onmouseenter={(e) => handleMouseEnterCard(e, bench.championId)}
                   onmouseleave={handleMouseLeaveCard}
                   class="flex items-center gap-2 p-1.5 pr-2.5 rounded-lg border transition-all cursor-pointer {isInspected
@@ -622,58 +587,6 @@
       </div>
     {/if}
 
-    <!-- Champion Carousel Horizontal Bar Scrolling Card on top of Main Champion Card -->
-    <div class="rounded-2xl border border-gray-800 bg-gray-900/60 p-3.5 shadow-xl">
-      <div class="flex items-center justify-between mb-2.5 px-1">
-        <div class="flex items-center gap-2">
-          <span class="icon-[heroicons--sparkles] h-4 w-4 text-purple-400"></span>
-          <h2 class="text-xs font-semibold uppercase tracking-wider text-gray-400">
-            Champions ({mayhemAllChampions.length})
-          </h2>
-          {#if currentSelectedChampion}
-            <span class="rounded bg-purple-950/80 border border-purple-800/80 px-2 py-0.5 text-[11px] font-medium text-purple-300">
-              Selected: <strong class="text-white">{currentSelectedChampion.name}</strong>
-            </span>
-          {/if}
-        </div>
-        <div class="relative w-52">
-          <span class="icon-[heroicons--magnifying-glass] pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-500"></span>
-          <input
-            type="text"
-            placeholder="Quick champion filter..."
-            bind:value={searchQuery}
-            class="w-full rounded-lg border border-gray-700 bg-gray-950/80 pl-8 pr-2.5 py-1 text-xs text-gray-200 placeholder-gray-500 focus:border-purple-500 focus:outline-none"
-          />
-          {#if searchQuery}
-            <button
-              type="button"
-              title="Clear filter"
-              onclick={() => (searchQuery = "")}
-              class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-200 cursor-pointer"
-            >
-              <span class="icon-[heroicons--x-mark] h-3.5 w-3.5"></span>
-            </button>
-          {/if}
-        </div>
-      </div>
-
-      <div class="rounded-xl border border-gray-800/80 bg-gray-950/40 p-2">
-        <ChampionCarousel
-          searchedChampions={carouselSearchedChampions}
-          favoriteChampions={carouselFavoriteChampions}
-          nonFavoriteChampions={carouselNonFavoriteChampions}
-          selectedChampion={currentSelectedChampion}
-          {searchQuery}
-          isRuneMismatch={false}
-          activeRuneChampionId={null}
-          showAllChampions={false}
-          pinSelectedFirst={true}
-          blocked={isInChampSelect}
-          allowedChampionIds={availableRosterChampionIds}
-          onSelectChampion={(champ) => champ && handleCarouselChampionClick(champ.id)}
-        />
-      </div>
-    </div>
 
     <!-- Main Champion Card alongside Dedicated Complete Augments Card -->
     <div class="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
