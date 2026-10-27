@@ -10,6 +10,7 @@ use crate::services::lcu_perks::ensure_companion_slot;
 use futures_util::{SinkExt, StreamExt};
 use native_tls::TlsConnector;
 use serde_json::Value;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use tokio::time::sleep;
@@ -18,9 +19,16 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::Connector;
 
+pub static LCU_CONNECTED: AtomicBool = AtomicBool::new(false);
+
 pub struct LcuWsWatcher;
 
 impl LcuWsWatcher {
+    /// Returns true if the WebSocket connection to the League client is currently active.
+    pub fn is_connected() -> bool {
+        LCU_CONNECTED.load(Ordering::Relaxed)
+    }
+
     /// Spawns the resilient background LCU WebSocket watcher using Tauri's async runtime.
     pub fn start(app: AppHandle) {
         tauri::async_runtime::spawn(async move {
@@ -40,10 +48,12 @@ impl LcuWsWatcher {
                 }
                 if was_connected {
                     was_connected = false;
+                    LCU_CONNECTED.store(false, Ordering::Relaxed);
                     let _ = app.emit("lcu:disconnected", ());
                 }
             } else if was_connected {
                 was_connected = false;
+                LCU_CONNECTED.store(false, Ordering::Relaxed);
                 let _ = app.emit("lcu:disconnected", ());
             }
             sleep(Duration::from_secs(1)).await;
@@ -85,6 +95,7 @@ impl LcuWsWatcher {
         );
 
         *was_connected = true;
+        LCU_CONNECTED.store(true, Ordering::Relaxed);
 
         let (mut write, mut read) = ws_stream.split();
 
@@ -118,6 +129,7 @@ impl LcuWsWatcher {
             }
         }
 
+        LCU_CONNECTED.store(false, Ordering::Relaxed);
         Ok(())
     }
 

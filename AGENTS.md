@@ -1,10 +1,5 @@
 # LCU Companion Agent Guide
 
-> **Current agent handoffs:** Read
-> [`@llm/docs/context/conversation/20261012_BUILD_STATISTICS_TOOLTIPS_AND_BEST_MATCHES.md`](./@llm/docs/context/conversation/20261012_BUILD_STATISTICS_TOOLTIPS_AND_BEST_MATCHES.md)
-> and [`@llm/docs/context/SESSION_HANDOFF_2026-10-11.md`](./@llm/docs/context/SESSION_HANDOFF_2026-10-11.md)
-> before making changes to the UI, standalone agent, or collection pipeline.
-
 ## Mission and architecture
 
 LCU Companion is a Tauri 2 desktop application for League of Legends. Svelte 5
@@ -281,11 +276,10 @@ pnpm tauri dev
 
 ### Planning & Walkthrough Persistence
 - **Walkthrough Archival**: Whenever completing work in Planning Mode, in addition to generating the session walkthrough artifact, **ALWAYS save a permanent copy of the walkthrough document inside `@llm/docs/historical/walkthrough/<feature_name>_walkthrough.md`** so historical implementation context is permanently tracked across sessions. Change the file name of the markdown file if the conversation gets too long/changes subject. If the conversation includes multiple very different changes that need their own documentation, create different files for different features.
+- Verify the last 2 walkthroughs to have been created when you are in a new conversation. This will give you context over the current development environment the application is currently at.
 
 ### Command Execution Guidelines
 - **No Unsolicited Checks or Tests**: **DO NOT** run check, build, or test commands (such as `cargo check`, `cargo test`, `svelte-check`, `vite build`, etc.) without the user's direct and explicit request.
-### #IMPORTANT! do not run powershell commands. opt for alternative shells such as cmd.exe, git bash or msys32. here are the path for such tools: "'C:\msys64\msys2_shell.cmd' -defterm -no-start -use-full-path" cmd.exe is in path. git bash: "& 'C:\Program Files\Git\usr\bin\bash.exe'". If something expected to be in path isn't. grab the $PATH variable of powershell in the default profile to find its location and use it.
-
 
 ## Package Manager & Tooling
 - Always use `pnpm` instead of `npm` for installing dependencies, running scripts, and managing packages in this repository.
@@ -296,5 +290,3 @@ pnpm tauri dev
   ```
 - Do not run `cargo check` or `cargo build` proactively before finishing code changes. Only run check/test commands after all code modifications are complete.
 
-# IMPORTANT
-always work out a way to reduce the amount of commands ran in a single output, if many commands are needed and interconnected, use them with && to reduce API calls.

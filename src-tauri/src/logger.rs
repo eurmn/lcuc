@@ -21,6 +21,8 @@ pub struct LogEntry {
     pub timestamp: String,
     pub level: String,
     pub source: String,
+    #[serde(default)]
+    pub target: String,
     pub message: String,
 }
 
@@ -215,6 +217,7 @@ pub fn write(level: Level, source: &str, message: &str, context: Option<&str>) {
                     timestamp: ts,
                     level: level.as_str().to_string(),
                     source: source.to_string(),
+                    target: source.to_string(),
                     message: format!("{}{}", message, suffix),
                 });
             }
@@ -236,6 +239,7 @@ pub fn parse_log_line(line: &str) -> Option<LogEntry> {
         timestamp: ts_part.to_string(),
         level: level_part.to_string(),
         source: source_part.to_string(),
+        target: source_part.to_string(),
         message: message_part.to_string(),
     })
 }

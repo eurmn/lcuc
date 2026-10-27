@@ -1,6 +1,12 @@
 use crate::logger;
-use crate::models::{MayhemAugmentsQuery, MayhemAugmentsResponse, MayhemChampionBuildSummary};
-use crate::services::history::{compute_mayhem_champion_build, get_mayhem_augments};
+use crate::models::{
+    MayhemAugmentsQuery, MayhemAugmentsResponse, MayhemChampionBuildSummary,
+    SaveMayhemBuildPayload, SavedMayhemBuild,
+};
+use crate::services::history::{
+    compute_mayhem_champion_build, delete_saved_mayhem_build, get_mayhem_augments,
+    list_saved_mayhem_builds, save_mayhem_build,
+};
 use crate::services::lcu_client::LcuClient;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -24,6 +30,23 @@ pub struct ExportBuildResult {
     pub item_set_created: bool,
     pub spells_applied: bool,
     pub message: String,
+}
+
+/// Returns whether the LCU API / WebSocket is currently connected and communicating.
+#[tauri::command]
+pub async fn api_is_lcu_connected() -> bool {
+    if crate::services::lcu_websocket::LcuWsWatcher::is_connected() {
+        return true;
+    }
+    if let Some(creds) = LcuClient::find_credentials() {
+        if let Ok(client) = LcuClient::new(creds) {
+            return client
+                .get_json_response::<Value>("/lol-gameflow/v1/gameflow-phase")
+                .await
+                .is_ok();
+        }
+    }
+    false
 }
 
 /// Queries the active Champion Select session from LCU.
@@ -60,8 +83,9 @@ pub async fn api_champ_select_session() -> Result<Option<Value>, String> {
 #[tauri::command]
 pub async fn api_mayhem_champion_build(
     champion_id: i64,
+    augment_ids: Option<Vec<String>>,
 ) -> Result<MayhemChampionBuildSummary, String> {
-    compute_mayhem_champion_build(champion_id).await
+    compute_mayhem_champion_build(champion_id, augment_ids.unwrap_or_default()).await
 }
 
 /// Batch-computes or retrieves builds for multiple champions (team roster and bench).
@@ -74,11 +98,33 @@ pub async fn api_mayhem_team_builds(
         if id <= 0 {
             continue;
         }
-        if let Ok(summary) = compute_mayhem_champion_build(id).await {
+        if let Ok(summary) = compute_mayhem_champion_build(id, Vec::new()).await {
             results.insert(id, summary);
         }
     }
     Ok(results)
+}
+
+/// Persists a mined build (e.g. when a match ends).
+#[tauri::command]
+pub async fn api_save_mayhem_build(
+    payload: SaveMayhemBuildPayload,
+) -> Result<SavedMayhemBuild, String> {
+    save_mayhem_build(payload).await
+}
+
+/// Lists saved builds, optionally for one champion.
+#[tauri::command]
+pub async fn api_list_saved_mayhem_builds(
+    champion_id: Option<i64>,
+) -> Result<Vec<SavedMayhemBuild>, String> {
+    list_saved_mayhem_builds(champion_id).await
+}
+
+/// Deletes a saved build by id.
+#[tauri::command]
+pub async fn api_delete_saved_mayhem_build(id: String) -> Result<(), String> {
+    delete_saved_mayhem_build(id).await
 }
 
 /// Queries the complete augments list with server-side pagination, tier & category filtering, and Bayesian WPA ranking.
@@ -226,3 +272,65 @@ pub async fn api_export_mayhem_build(
         message,
     })
 }
+
+/// Swaps to an available champion in the active champ select session (either from the bench or by requesting a swap from a teammate).
+#[tauri::command]
+pub async fn api_champ_select_swap(champion_id: i64) -> Result<bool, String> {
+    let Some(creds) = LcuClient::find_credentials() else {
+        return Err("League Client is not running".to_string());
+    };
+    let Ok(client) = LcuClient::new(creds) else {
+        return Err("Failed to create LCU client".to_string());
+    };
+
+    let session: Value = client
+        .get_json("/lol-champ-select/v1/session")
+        .await
+        .map_err(|e| format!("Champ select session not available: {e}"))?;
+
+    let is_on_bench = session
+        .get("benchChampions")
+        .and_then(Value::as_array)
+        .map(|bench| {
+            bench.iter().any(|b| {
+                b.get("championId").and_then(Value::as_i64) == Some(champion_id)
+            })
+        })
+        .unwrap_or(false);
+
+    if is_on_bench {
+        let path = format!("/lol-champ-select/v1/session/bench/swap/{champion_id}");
+        let status = client.post_json_status(&path, &json!({})).await?;
+        return Ok(status >= 200 && status < 300);
+    }
+
+    let local_cell_id = session
+        .get("localPlayerCellId")
+        .and_then(Value::as_i64)
+        .unwrap_or(-1);
+    let teammate_cell_id = session
+        .get("myTeam")
+        .and_then(Value::as_array)
+        .and_then(|team| {
+            team.iter().find_map(|m| {
+                let cell_id = m.get("cellId").and_then(Value::as_i64)?;
+                let c_id = m.get("championId").and_then(Value::as_i64)?;
+                if cell_id != local_cell_id && c_id == champion_id {
+                    Some(cell_id)
+                } else {
+                    None
+                }
+            })
+        });
+
+    if let Some(cell_id) = teammate_cell_id {
+        let path = format!("/lol-champ-select/v1/session/champion-swaps/{cell_id}/request");
+        let status = client.post_json_status(&path, &json!({})).await?;
+        return Ok(status >= 200 && status < 300);
+    }
+
+    Err(format!(
+        "Champion {champion_id} is not available in bench or team roster"
+    ))
+}
+

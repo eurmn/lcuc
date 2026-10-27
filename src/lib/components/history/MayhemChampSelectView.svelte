@@ -6,11 +6,14 @@
     getMayhemChampionBuild,
     getMayhemTeamBuilds,
     exportMayhemBuild,
+    saveMayhemBuild,
+    swapChampSelectChampion,
   } from "../../api/champ_select";
   import { getChampions } from "../../api/champions";
   import type { ChampionSummary } from "../../types/champions";
   import type {
     ChampSelectSession,
+    MayhemAugmentItem,
     MayhemChampionBuildSummary,
     MayhemBuildStrategy,
   } from "../../types/champ_select";
@@ -18,19 +21,22 @@
   import AugmentIcon from "../common/AugmentIcon.svelte";
   import GameEntityPopover from "../common/GameEntityPopover.svelte";
   import MayhemAugmentsCard from "./MayhemAugmentsCard.svelte";
-  import { getSummonerProfile } from "../../api/profile";
+  import MayhemAugmentPicker from "./MayhemAugmentPicker.svelte";
   import { logger } from "../../utils/logger";
 
   let {
     selectedChampion = null,
     onSelectChampion,
+    hideLowPickrate = false,
+    isLcuConnected = false,
   }: {
     selectedChampion?: ChampionSummary | null;
     onSelectChampion?: (champ: ChampionSummary | null) => void;
+    hideLowPickrate?: boolean;
+    isLcuConnected?: boolean;
   } = $props();
 
   let session = $state<ChampSelectSession | null>(null);
-  let isLcuConnected = $state(false);
   let teamBuilds = $state<Record<number, MayhemChampionBuildSummary>>({});
   let allChampions = $state<ChampionSummary[]>([]);
   let selectedChampionId = $state<number>(22);
@@ -43,17 +49,18 @@
       }
     }
   });
-  let selectedStrategyId = $state<string>("win_rate");
+  let selectedStrategyId = $state<string>("archetype_1");
+  let gameflowPhase = $state<string>("");
+  let pickerSlots = $state<(MayhemAugmentItem | null)[]>([null, null, null, null]);
+  let augmentIds = $state<string[]>([]);
+  let savePrompt = $state<{ strategy: MayhemBuildStrategy; build: MayhemChampionBuildSummary; augmentIds: string[] } | null>(null);
+  const isInProgress = $derived(gameflowPhase === "InProgress");
   let manualChampionBuild = $state<MayhemChampionBuildSummary | null>(null);
   let loadingBuild = $state(false);
   let strategyDropdownOpen = $state(false);
   let searchQuery = $state("");
   let exporting = $state(false);
   let exportToast = $state<{ message: string; success: boolean } | null>(null);
-  let hideLowPickrate = $state(
-    typeof window !== "undefined" &&
-      localStorage.getItem("lcu-statistics-hide-low-pickrate") === "true"
-  );
   let hoverTooltip = $state<{
     visible: boolean;
     x: number;
@@ -61,25 +68,8 @@
     summary: MayhemChampionBuildSummary | null;
   }>({ visible: false, x: 0, y: 0, summary: null });
 
-  function toggleHideLowPickrate() {
-    hideLowPickrate = !hideLowPickrate;
-    if (typeof window !== "undefined") {
-      localStorage.setItem("lcu-statistics-hide-low-pickrate", String(hideLowPickrate));
-      window.dispatchEvent(new Event("storage"));
-    }
-  }
-
-  function handleStorageChange() {
-    if (typeof window !== "undefined") {
-      hideLowPickrate =
-        localStorage.getItem("lcu-statistics-hide-low-pickrate") === "true";
-    }
-  }
-
   let unlistenSession: UnlistenFn | null = null;
   let unlistenPhase: UnlistenFn | null = null;
-  let unlistenConnected: UnlistenFn | null = null;
-  let unlistenDisconnected: UnlistenFn | null = null;
 
   const isInChampSelect = $derived(
     Boolean(
@@ -89,6 +79,23 @@
         (session.queueId === 2400 || session.benchEnabled)
     )
   );
+
+  const availableRosterChampionIds = $derived.by<Set<number>>(() => {
+    const ids = new Set<number>();
+    if (session?.benchChampions) {
+      for (const b of session.benchChampions) {
+        if (b.championId > 0) ids.add(b.championId);
+      }
+    }
+    if (session?.myTeam) {
+      for (const m of session.myTeam) {
+        if (m.championId > 0 && m.cellId !== session.localPlayerCellId) {
+          ids.add(m.championId);
+        }
+      }
+    }
+    return ids;
+  });
 
   const inspectedBuild = $derived<MayhemChampionBuildSummary | null>(
     teamBuilds[selectedChampionId] ?? manualChampionBuild
@@ -149,15 +156,6 @@
     allChampions.find((c) => c.id === selectedChampionId) ?? null
   );
 
-  async function checkLcuConnection() {
-    try {
-      const prof = await getSummonerProfile();
-      isLcuConnected = Boolean(prof && prof.display_name);
-    } catch {
-      isLcuConnected = false;
-    }
-  }
-
   onMount(async () => {
     try {
       allChampions = await getChampions();
@@ -174,7 +172,6 @@
         const data = event.payload as ChampSelectSession | null;
         if (data && data.myTeam && data.myTeam.length > 0) {
           session = data;
-          isLcuConnected = true;
           await handleSessionUpdated(data);
         } else {
           session = null;
@@ -183,21 +180,12 @@
 
       unlistenPhase = await listen("lcu:gameflow-phase", async (event) => {
         const phase = event.payload as string;
+        handlePhaseChange(phase);
         if (phase !== "ChampSelect") {
           session = null;
         } else {
           await refreshSession();
         }
-      });
-
-      unlistenConnected = await listen("lcu:connected", async () => {
-        isLcuConnected = true;
-        await refreshSession();
-      });
-
-      unlistenDisconnected = await listen("lcu:disconnected", () => {
-        isLcuConnected = false;
-        session = null;
       });
     } catch (err) {
       logger.error("frontend.mayhem_champ_select", "Failed attaching event listeners", err);
@@ -207,20 +195,11 @@
     if (!isInChampSelect && selectedChampionId > 0) {
       await loadSingleChampionBuild(selectedChampionId);
     }
-
-    if (typeof window !== "undefined") {
-      window.addEventListener("storage", handleStorageChange);
-    }
   });
 
   onDestroy(() => {
-    if (typeof window !== "undefined") {
-      window.removeEventListener("storage", handleStorageChange);
-    }
     if (unlistenSession) unlistenSession();
     if (unlistenPhase) unlistenPhase();
-    if (unlistenConnected) unlistenConnected();
-    if (unlistenDisconnected) unlistenDisconnected();
   });
 
   async function refreshSession() {
@@ -228,14 +207,11 @@
       const activeSession = await getChampSelectSession();
       if (activeSession && activeSession.myTeam && activeSession.myTeam.length > 0) {
         session = activeSession;
-        isLcuConnected = true;
         await handleSessionUpdated(activeSession);
       } else {
         session = null;
-        await checkLcuConnection();
       }
     } catch (err) {
-      isLcuConnected = false;
       session = null;
       logger.warn("frontend.mayhem_champ_select", "Champ select session unavailable", err);
     }
@@ -275,17 +251,41 @@
     if (myChampId && myChampId > 0) {
       if (selectedChampionId !== myChampId) {
         selectedChampionId = myChampId;
+        const matched = allChampions.find((c) => c.id === myChampId) ?? null;
+        if (matched) {
+          onSelectChampion?.(matched);
+        }
+        if (!teamBuilds[myChampId]) {
+          void loadSingleChampionBuild(myChampId);
+        }
       }
     } else if (ids.length > 0 && (!selectedChampionId || selectedChampionId === 0)) {
       selectedChampionId = ids[0];
     }
   }
 
+  async function handleCarouselChampionClick(champId: number) {
+    if (isInChampSelect) {
+      // In champ select: can only change pick through client, or swap with available roster (bench/teammate)
+      if (availableRosterChampionIds.has(champId)) {
+        try {
+          await swapChampSelectChampion(champId);
+          // Actual state in UI is ONLY updated through LCU-sent messages we receive!
+        } catch (err) {
+          logger.error("frontend.mayhem_champ_select", "Failed requesting champ swap from LCU", err);
+        }
+      }
+      return;
+    }
+
+    handleSelectChampion(champId);
+  }
+
   async function loadSingleChampionBuild(championId: number) {
     if (!championId || championId <= 0) return;
     loadingBuild = true;
     try {
-      const build = await getMayhemChampionBuild(championId);
+      const build = await getMayhemChampionBuild(championId, augmentIds);
       manualChampionBuild = build;
       teamBuilds[championId] = build;
       if (build.strategies.length > 0 && !build.strategies.some((s) => s.id === selectedStrategyId)) {
@@ -296,6 +296,48 @@
     } finally {
       loadingBuild = false;
     }
+  }
+
+  function handlePhaseChange(phase: string) {
+    const prev = gameflowPhase;
+    gameflowPhase = phase;
+    const ended = phase === "PreEndOfGame" || phase === "EndOfGame" || phase === "WaitingForStats";
+    if (prev === "InProgress" && ended && activeStrategy && inspectedBuild) {
+      savePrompt = { strategy: activeStrategy, build: inspectedBuild, augmentIds: [...augmentIds] };
+    }
+    if (phase === "Lobby" || phase === "None" || phase === "ChampSelect") {
+      pickerSlots = [null, null, null, null];
+      if (augmentIds.length > 0) {
+        augmentIds = [];
+        void loadSingleChampionBuild(selectedChampionId);
+      }
+    }
+  }
+
+  function handleAugmentsChanged(ids: string[]) {
+    augmentIds = ids;
+    void loadSingleChampionBuild(selectedChampionId);
+  }
+
+  async function handleSaveBuild() {
+    if (!savePrompt) return;
+    const { strategy, build, augmentIds: ids } = savePrompt;
+    try {
+      await saveMayhemBuild({
+        champion_id: build.champion_id,
+        champion_name: build.champion_name,
+        strategy_label: strategy.label,
+        augment_ids: ids,
+        build: strategy,
+      });
+      exportToast = { message: "Build saved", success: true };
+    } catch (err) {
+      exportToast = { message: `Save error: ${String(err)}`, success: false };
+    }
+    savePrompt = null;
+    setTimeout(() => {
+      exportToast = null;
+    }, 5000);
   }
 
   function handleSelectChampion(champId: number) {
@@ -385,44 +427,9 @@
         <span class="text-xs text-gray-400">Champion Selection</span>
       </div>
 
-      <!-- Status Indicators & Low Pick-Rate Control -->
+      <!-- Status Indicators -->
       <div class="flex items-center gap-2">
-        <!-- 0. Hide Low Pick-Rate Filter Toggle -->
-        <button
-          type="button"
-          onclick={toggleHideLowPickrate}
-          title={hideLowPickrate
-            ? "Hide Low Pick-rate: ON (Filtering out off-meta champions <1% and items <0.2%; augments always preserved)"
-            : "Hide Low Pick-rate: OFF (Showing all data)"}
-          class="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-all cursor-pointer {hideLowPickrate
-            ? 'border-purple-500/50 bg-purple-950/70 text-purple-300 hover:bg-purple-900/60 shadow-sm'
-            : 'border-gray-800 bg-gray-900/60 text-gray-400 hover:border-gray-700 hover:text-gray-300'}"
-        >
-          <span class="icon-[heroicons--funnel] h-3 w-3 {hideLowPickrate ? 'text-purple-400' : 'text-gray-500'}"></span>
-          <span>Hide Low Pick-Rate</span>
-          <span
-            class="ml-0.5 rounded px-1 text-[9px] font-mono font-semibold {hideLowPickrate
-              ? 'bg-purple-800/80 text-purple-100'
-              : 'bg-gray-800 text-gray-500'}"
-          >
-            {hideLowPickrate ? "ON" : "OFF"}
-          </span>
-        </button>
-
-        <!-- 1. LCU Client Status Indicator -->
-        {#if isLcuConnected}
-          <span class="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-950/60 px-2.5 py-0.5 text-[11px] font-medium text-emerald-300">
-            <span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span>
-            LCU Client: Connected
-          </span>
-        {:else}
-          <span class="inline-flex items-center gap-1.5 rounded-full border border-rose-500/30 bg-rose-950/60 px-2.5 py-0.5 text-[11px] font-medium text-rose-300">
-            <span class="h-1.5 w-1.5 rounded-full bg-rose-400"></span>
-            LCU Client: Offline
-          </span>
-        {/if}
-
-        <!-- 2. Champ Select Status Indicator -->
+        <!-- Champ Select Status Indicator -->
         {#if isInChampSelect}
           <span class="inline-flex items-center gap-1.5 rounded-full border border-purple-500/40 bg-purple-950/70 px-2.5 py-0.5 text-[11px] font-semibold text-purple-200 animate-pulse">
             <span class="h-1.5 w-1.5 rounded-full bg-purple-400"></span>
@@ -461,7 +468,8 @@
               {@const isInspected = selectedChampionId === member.championId}
               <button
                 type="button"
-                onclick={() => member.championId > 0 && handleSelectChampion(member.championId)}
+                title={isMe ? "Your current pick" : "Click to request swap from teammate"}
+                onclick={() => member.championId > 0 && (!isMe ? handleCarouselChampionClick(member.championId) : handleSelectChampion(member.championId))}
                 onmouseenter={(e) => member.championId > 0 && handleMouseEnterCard(e, member.championId)}
                 onmouseleave={handleMouseLeaveCard}
                 class="relative flex flex-col items-center justify-center p-2 rounded-xl border transition-all cursor-pointer {isInspected
@@ -527,7 +535,8 @@
                 {@const isInspected = selectedChampionId === bench.championId}
                 <button
                   type="button"
-                  onclick={() => handleSelectChampion(bench.championId)}
+                  title="Click to swap this champion from bench"
+                  onclick={() => handleCarouselChampionClick(bench.championId)}
                   onmouseenter={(e) => handleMouseEnterCard(e, bench.championId)}
                   onmouseleave={handleMouseLeaveCard}
                   class="flex items-center gap-2 p-1.5 pr-2.5 rounded-lg border transition-all cursor-pointer {isInspected
@@ -553,6 +562,26 @@
               {/each}
             </div>
           {/if}
+        </div>
+      </div>
+    {/if}
+
+    <!-- In-game augment picker (levels 3/7/11/15) -->
+    {#if isInProgress && selectedChampionId > 0}
+      <MayhemAugmentPicker
+        championId={selectedChampionId}
+        bind:slots={pickerSlots}
+        fallbackUsed={inspectedBuild?.fallback_used ?? false}
+        onChange={handleAugmentsChanged}
+      />
+    {/if}
+
+    {#if savePrompt}
+      <div class="flex items-center justify-between gap-3 rounded-xl border border-emerald-800/60 bg-emerald-950/40 px-4 py-2.5 text-xs text-emerald-200">
+        <span>Match ended. Save <strong>{savePrompt.strategy.label}</strong> for {savePrompt.build.champion_name}?</span>
+        <div class="flex gap-2">
+          <button type="button" onclick={handleSaveBuild} class="cursor-pointer rounded-lg bg-emerald-600 px-3 py-1 font-semibold text-white hover:bg-emerald-500">Save</button>
+          <button type="button" onclick={() => (savePrompt = null)} class="cursor-pointer rounded-lg border border-gray-700 px-3 py-1 text-gray-300 hover:bg-gray-800">Dismiss</button>
         </div>
       </div>
     {/if}
@@ -603,7 +632,9 @@
           activeRuneChampionId={null}
           showAllChampions={false}
           pinSelectedFirst={true}
-          onSelectChampion={(champ) => champ && handleSelectChampion(champ.id)}
+          blocked={isInChampSelect}
+          allowedChampionIds={availableRosterChampionIds}
+          onSelectChampion={(champ) => champ && handleCarouselChampionClick(champ.id)}
         />
       </div>
     </div>
@@ -785,6 +816,7 @@
                   <div id={`build-item-${item.id}-${idx}`} class="group relative flex flex-col items-center p-2 rounded-lg border border-gray-800 bg-gray-900/70 hover:border-gray-700 transition-colors">
                     <div class="relative h-11 w-11 rounded-lg overflow-hidden border border-gray-700 bg-gray-950 mb-1">
                       <img src={item.icon_url} alt={item.name} class="h-full w-full object-cover" />
+                      <span class="absolute left-0 top-0 rounded-br bg-gray-950/80 px-1 text-[9px] font-bold text-gray-300" title="Approximate build order">{idx + 1}</span>
                     </div>
                     <span class="text-[10px] font-medium text-gray-200 truncate max-w-full text-center">{item.name}</span>
                     <div class="flex items-center gap-1.5 mt-0.5">
@@ -862,6 +894,24 @@
                     {/each}
                   </div>
                 </div>
+              {/if}
+              <!-- Rare situational items -->
+              {#if activeStrategy.situational_items && activeStrategy.situational_items.length > 0}
+                <details class="pt-2 border-t border-gray-800/80">
+                  <summary class="cursor-pointer text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                    Situational ({activeStrategy.situational_items.length})
+                  </summary>
+                  <div class="mt-1.5 flex flex-wrap gap-1.5">
+                    {#each activeStrategy.situational_items as sit, idx (`sit-${sit.id}-${idx}`)}
+                      <img
+                        src={sit.icon_url}
+                        alt={sit.name}
+                        title={`${sit.name} · ${sit.games ?? 0} games`}
+                        class="h-8 w-8 rounded-md border border-gray-700 bg-gray-950 object-cover"
+                      />
+                    {/each}
+                  </div>
+                </details>
               {/if}
             </div>
 

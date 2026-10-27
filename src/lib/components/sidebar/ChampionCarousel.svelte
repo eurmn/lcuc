@@ -12,6 +12,8 @@
     activeRuneChampionId = null,
     showAllChampions = true,
     pinSelectedFirst = false,
+    blocked = false,
+    allowedChampionIds = null,
     onSelectChampion,
   }: {
     searchedChampions: ChampionSummary[];
@@ -23,6 +25,8 @@
     activeRuneChampionId: number | null;
     showAllChampions?: boolean;
     pinSelectedFirst?: boolean;
+    blocked?: boolean;
+    allowedChampionIds?: Set<number> | null;
     onSelectChampion: (champ: ChampionSummary | null) => void;
   } = $props();
 
@@ -51,6 +55,47 @@
   function scrollRight() {
     scrollContainer?.scrollBy({ left: 200, behavior: "smooth" });
   }
+
+  function getButtonClass(champ: ChampionSummary, isSelected: boolean): string {
+    if (isSelected) {
+      return "relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border-2 border-purple-500 ring-2 ring-purple-400/80 shadow-[0_0_12px_rgba(168,85,247,0.6)] bg-gray-900 p-0 opacity-100 scale-105 cursor-pointer transition-all z-10";
+    }
+    if (blocked) {
+      const allowed = allowedChampionIds ? allowedChampionIds.has(champ.id) : false;
+      if (allowed) {
+        return "relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border-2 border-cyan-400 ring-2 ring-cyan-500/50 bg-gray-900 p-0 shadow-[0_0_10px_rgba(34,211,238,0.5)] opacity-100 hover:scale-110 cursor-pointer transition-all z-10";
+      }
+      return "relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border border-gray-800 bg-gray-950 p-0 opacity-25 grayscale cursor-not-allowed transition-all";
+    }
+    if (champ.is_favorite) {
+      return "relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border-2 border-yellow-400 bg-gray-900 p-0 shadow-sm shadow-yellow-950/40 opacity-90 hover:opacity-100 hover:scale-105 cursor-pointer transition-all";
+    }
+    return "relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border border-gray-700/80 bg-gray-900 p-0 opacity-70 hover:opacity-100 hover:border-gray-500 hover:scale-105 cursor-pointer transition-all";
+  }
+
+  function getButtonTitle(champ: ChampionSummary, isSelected: boolean): string {
+    if (isSelected) {
+      return `${champ.name} (Current Pick)`;
+    }
+    if (blocked) {
+      const allowed = allowedChampionIds ? allowedChampionIds.has(champ.id) : false;
+      if (allowed) {
+        return `${champ.name} (Available in roster — click to swap in client)`;
+      }
+      return `${champ.name} (Pick can only be changed in League client)`;
+    }
+    return `${champ.name}${champ.is_favorite ? " (Favorite)" : ""}`;
+  }
+
+  function handleChampClick(champ: ChampionSummary, isSelected: boolean) {
+    if (blocked) {
+      const allowed = allowedChampionIds ? allowedChampionIds.has(champ.id) : false;
+      if (!allowed || isSelected) {
+        return;
+      }
+    }
+    onSelectChampion(champ);
+  }
 </script>
 
 <div class="relative flex-1 flex items-center min-w-0 overflow-hidden">
@@ -75,17 +120,13 @@
     {#if searchQuery.trim()}
       <!-- Search Results -->
       {#each searchedChampions as champ (champ.id)}
-        {@const isSelected = selectedChampion && selectedChampion.id === champ.id}
+        {@const isSelected = Boolean(selectedChampion && selectedChampion.id === champ.id)}
         <div class="relative flex shrink-0 items-center justify-center">
           <button
             type="button"
-            title={`${champ.name}${champ.is_favorite ? " (Favorite)" : ""}`}
-            onclick={() => onSelectChampion(champ)}
-            class={isSelected
-              ? "relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border-2 border-purple-500 ring-2 ring-purple-400/80 shadow-[0_0_12px_rgba(168,85,247,0.6)] bg-gray-900 p-0 opacity-100 scale-105 cursor-pointer transition-all z-10"
-              : champ.is_favorite
-              ? "relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border-2 border-yellow-400 bg-gray-900 p-0 shadow-sm shadow-yellow-950/40 opacity-90 hover:opacity-100 hover:scale-105 cursor-pointer transition-all"
-              : "relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border border-gray-700/80 bg-gray-900 p-0 opacity-70 hover:opacity-100 hover:border-gray-500 hover:scale-105 cursor-pointer transition-all"}
+            title={getButtonTitle(champ, isSelected)}
+            onclick={() => handleChampClick(champ, isSelected)}
+            class={getButtonClass(champ, isSelected)}
           >
             {#if champ.square_icon_url}
               <img
@@ -112,9 +153,9 @@
         <div class="relative flex shrink-0 items-center justify-center">
           <button
             type="button"
-            title={`${selectedChampion.name}${selectedChampion.is_favorite ? " (Favorite)" : ""} (Selected)`}
-            onclick={() => onSelectChampion(selectedChampion)}
-            class="relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border-2 border-purple-500 ring-2 ring-purple-400/80 shadow-[0_0_12px_rgba(168,85,247,0.6)] bg-gray-900 p-0 opacity-100 scale-105 cursor-pointer transition-all z-10"
+            title={getButtonTitle(selectedChampion, true)}
+            onclick={() => handleChampClick(selectedChampion, true)}
+            class={getButtonClass(selectedChampion, true)}
           >
             {#if selectedChampion.square_icon_url}
               <img
@@ -131,15 +172,13 @@
 
       <!-- Favorites List -->
       {#each (pinSelectedFirst && selectedChampion ? favoriteChampions.filter((c) => c.id !== selectedChampion.id) : favoriteChampions) as champ (champ.id)}
-        {@const isSelected = selectedChampion && selectedChampion.id === champ.id}
+        {@const isSelected = Boolean(selectedChampion && selectedChampion.id === champ.id)}
         <div class="relative flex shrink-0 items-center justify-center">
           <button
             type="button"
-            title={`${champ.name} (Favorite)`}
-            onclick={() => onSelectChampion(champ)}
-            class={isSelected
-              ? "relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border-2 border-purple-500 ring-2 ring-purple-400/80 shadow-[0_0_12px_rgba(168,85,247,0.6)] bg-gray-900 p-0 opacity-100 scale-105 cursor-pointer transition-all z-10"
-              : "relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border-2 border-yellow-400 bg-gray-900 p-0 shadow-sm shadow-yellow-950/40 opacity-90 hover:opacity-100 hover:scale-105 cursor-pointer transition-all"}
+            title={getButtonTitle(champ, isSelected)}
+            onclick={() => handleChampClick(champ, isSelected)}
+            class={getButtonClass(champ, isSelected)}
           >
             {#if champ.square_icon_url}
               <img
@@ -162,7 +201,7 @@
       {/each}
 
       <!-- All Champions button -->
-      {#if showAllChampions && selectedChampion !== null}
+      {#if showAllChampions && selectedChampion !== null && !blocked}
         <div class="relative flex shrink-0 items-center justify-center">
           <button
             type="button"
@@ -188,15 +227,13 @@
 
       <!-- Non-Favorite Champions List -->
       {#each (pinSelectedFirst && selectedChampion ? nonFavoriteChampions.filter((c) => c.id !== selectedChampion.id) : nonFavoriteChampions) as champ (champ.id)}
-        {@const isSelected = selectedChampion && selectedChampion.id === champ.id}
+        {@const isSelected = Boolean(selectedChampion && selectedChampion.id === champ.id)}
         <div class="relative flex shrink-0 items-center justify-center">
           <button
             type="button"
-            title={champ.name}
-            onclick={() => onSelectChampion(champ)}
-            class={isSelected
-              ? "relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border-2 border-purple-500 ring-2 ring-purple-400/80 shadow-[0_0_12px_rgba(168,85,247,0.6)] bg-gray-900 p-0 opacity-100 scale-105 cursor-pointer transition-all z-10"
-              : "relative flex h-11 w-11 shrink-0 overflow-hidden rounded-full border border-gray-700/80 bg-gray-900 p-0 opacity-70 hover:opacity-100 hover:border-gray-500 hover:scale-105 cursor-pointer transition-all"}
+            title={getButtonTitle(champ, isSelected)}
+            onclick={() => handleChampClick(champ, isSelected)}
+            class={getButtonClass(champ, isSelected)}
           >
             {#if champ.square_icon_url}
               <img

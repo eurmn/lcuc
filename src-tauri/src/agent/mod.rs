@@ -227,6 +227,8 @@ lazy_static! {
     static ref COLLECTOR_WAKEUP: tokio::sync::Notify = tokio::sync::Notify::new();
     static ref CRAWLER_GENERATION: std::sync::atomic::AtomicU64 =
         std::sync::atomic::AtomicU64::new(0);
+    static ref GLOBAL_ARAM_DB_INITIALIZED: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
 }
 
 fn json_i64_array(value: &str) -> Vec<i64> {
@@ -1601,6 +1603,25 @@ fn compact_stored_projections(path: &PathBuf) -> Result<(), String> {
     }
     let connection = open_connection(path)
         .map_err(|error| format!("failed opening database for projection compaction: {error}"))?;
+
+    let is_compacted: bool = connection
+        .query_row(
+            "SELECT 1 FROM config WHERE key = 'projections_compacted_v1'",
+            [],
+            |_| Ok(true),
+        )
+        .or_else(|_| {
+            connection.query_row(
+                "SELECT 1 FROM sync_state WHERE key = 'projections_compacted_v1'",
+                [],
+                |_| Ok(true),
+            )
+        })
+        .unwrap_or(false);
+    if is_compacted {
+        return Ok(());
+    }
+
     let mut statement = match connection
         .prepare("SELECT kind, sample_count, baseline, rows_json FROM statistics_projections")
     {
@@ -1630,20 +1651,22 @@ fn compact_stored_projections(path: &PathBuf) -> Result<(), String> {
                     .map(|r| compact_row_for_projection(&r))
                     .collect();
                 if let Ok(new_json) = serde_json::to_string(&compacted) {
-                    let _ = connection.execute(
-                        "UPDATE statistics_projections SET rows_json = ?1, updated_at = CURRENT_TIMESTAMP WHERE kind = ?2",
-                        rusqlite::params![new_json, kind],
-                    );
-                    compacted_any = true;
-                    logger::info(
-                        "agent.database",
-                        &format!(
-                            "Compacted {kind} projection in {:?}: {} bytes -> {} bytes",
-                            path.file_name().unwrap_or_default(),
-                            rows_json.len(),
-                            new_json.len()
-                        ),
-                    );
+                    if new_json.len() < rows_json.len() {
+                        let _ = connection.execute(
+                            "UPDATE statistics_projections SET rows_json = ?1, updated_at = CURRENT_TIMESTAMP WHERE kind = ?2",
+                            rusqlite::params![new_json, kind],
+                        );
+                        compacted_any = true;
+                        logger::info(
+                            "agent.database",
+                            &format!(
+                                "Compacted {kind} projection in {:?}: {} bytes -> {} bytes",
+                                path.file_name().unwrap_or_default(),
+                                rows_json.len(),
+                                new_json.len()
+                            ),
+                        );
+                    }
                 }
             }
         }
@@ -1651,6 +1674,14 @@ fn compact_stored_projections(path: &PathBuf) -> Result<(), String> {
     if compacted_any {
         let _ = connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
     }
+    let _ = connection.execute(
+        "INSERT OR REPLACE INTO config (key, value, updated_at) VALUES ('projections_compacted_v1', '1', CURRENT_TIMESTAMP)",
+        [],
+    );
+    let _ = connection.execute(
+        "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('projections_compacted_v1', '1', CURRENT_TIMESTAMP)",
+        [],
+    );
     Ok(())
 }
 
@@ -1670,7 +1701,10 @@ pub fn global_aram_database_path() -> PathBuf {
         .join("global-aram.db")
 }
 
-fn initialize_global_aram_database(path: &PathBuf) -> Result<(), String> {
+pub fn initialize_global_aram_database(path: &PathBuf) -> Result<(), String> {
+    if GLOBAL_ARAM_DB_INITIALIZED.load(std::sync::atomic::Ordering::Relaxed) {
+        return Ok(());
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("failed creating global ARAM database directory: {error}"))?;
@@ -1826,6 +1860,7 @@ fn initialize_global_aram_database(path: &PathBuf) -> Result<(), String> {
     repair_global_augment_ids(path)?;
     backfill_global_game_patches(path)?;
     compact_stored_projections(path)?;
+    GLOBAL_ARAM_DB_INITIALIZED.store(true, std::sync::atomic::Ordering::Relaxed);
     Ok(())
 }
 

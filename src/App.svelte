@@ -49,6 +49,8 @@
     clearStatisticsCache,
     syncStatisticsCachePatch,
   } from "./lib/utils/statistics-data";
+  import { isLcuConnected as fetchIsLcuConnected } from "./lib/api/champ_select";
+  import type { ChampSelectSession } from "./lib/types/champ_select";
 
   let clientPages = $state<ClientRunePageSummary[]>([]);
   let savedRunesets = $state<RuneSetSummary[]>([]);
@@ -71,6 +73,7 @@
   let statisticsRefreshKey = $state(0);
   let agentOperations = $state<AgentOperation[]>([]);
   let hideLowPickrate = $state(false);
+  let isLcuConnected = $state(false);
   let crawlerRateText = $state("0.0 match/min");
   let crawlerEtaText = $state("");
   let crawlerPaused = $state(false);
@@ -222,10 +225,10 @@
     }
   }
 
-  function handleHideLowPickrateChange(event: Event) {
-    const input = event.currentTarget as HTMLInputElement;
-    hideLowPickrate = input.checked;
-    localStorage.setItem("lcu-statistics-hide-low-pickrate", String(input.checked));
+  function handleToggleHideLowPickrate() {
+    hideLowPickrate = !hideLowPickrate;
+    localStorage.setItem("lcu-statistics-hide-low-pickrate", String(hideLowPickrate));
+    window.dispatchEvent(new Event("storage"));
   }
 
   function toggleSidebar() {
@@ -436,8 +439,14 @@
   let unlistenRunes: UnlistenFn | null = null;
   let unlistenConnected: UnlistenFn | null = null;
   let unlistenDisconnected: UnlistenFn | null = null;
+  let unlistenChampSelect: UnlistenFn | null = null;
 
   onMount(async () => {
+    try {
+      isLcuConnected = await fetchIsLcuConnected();
+    } catch {
+      isLcuConnected = false;
+    }
     await loadChampions();
     await restoreSelectedChampion();
     const persistedRuneKey = await getSelectedRuneKey();
@@ -451,16 +460,39 @@
         await loadOverview(selectedKey);
       });
       unlistenConnected = await listen("lcu:connected", async () => {
+        isLcuConnected = true;
         await loadOverview(selectedKey);
         await loadChampions();
         topNavBarRef?.refreshChampions();
         topNavBarRef?.refreshProfile();
       });
       unlistenDisconnected = await listen("lcu:disconnected", async () => {
+        isLcuConnected = false;
         clientPages = [];
         activeCompanionName = null;
         await loadOverview(selectedKey);
       });
+      unlistenChampSelect = await listen<ChampSelectSession | null>(
+        "lcu:champ-select-session",
+        async (event) => {
+          const data = event.payload;
+          if (data && data.myTeam && data.myTeam.length > 0) {
+            const myChampId = data.myTeam.find(
+              (m) => m.cellId === data.localPlayerCellId
+            )?.championId;
+            if (myChampId && myChampId > 0 && (!selectedChampion || selectedChampion.id !== myChampId)) {
+              if (allChampions.length === 0) {
+                allChampions = await getChampions();
+              }
+              const matched = allChampions.find((c) => c.id === myChampId);
+              if (matched) {
+                selectedChampion = matched;
+                await setSelectedChampionId(matched.id);
+              }
+            }
+          }
+        }
+      );
     } catch (err) {
       logger.error("frontend.app", "Failed to attach Tauri event listeners", err);
     }
@@ -470,6 +502,7 @@
     if (unlistenRunes) unlistenRunes();
     if (unlistenConnected) unlistenConnected();
     if (unlistenDisconnected) unlistenDisconnected();
+    if (unlistenChampSelect) unlistenChampSelect();
   });
 </script>
 
@@ -492,6 +525,9 @@
     {crawlerPaused}
     {crawlerRateText}
     {crawlerEtaText}
+    {hideLowPickrate}
+    onToggleHideLowPickrate={handleToggleHideLowPickrate}
+    {isLcuConnected}
     onSaveLimit={saveGlobalStatisticsLimit}
     onResetGlobalDatabase={handleResetGlobalDatabase}
     onPauseCrawler={handlePauseCrawler}
@@ -634,6 +670,8 @@
             <MayhemChampSelectView
               {selectedChampion}
               onSelectChampion={handleSelectChampionFilter}
+              {hideLowPickrate}
+              {isLcuConnected}
             />
           {:else}
           <!-- Content container for Statistics -->
@@ -651,12 +689,6 @@
                       <button type="button" class="rounded-md px-2.5 py-1.5 transition-colors {statisticsScope === option[0] ? 'bg-cyan-700 text-white' : 'text-gray-400 hover:text-white'}" onclick={() => handleStatisticsScopeChange(option[0] as "personal" | "compare")}>{option[1]}</button>
                     {/each}
                   </div>
-
-                  <!-- Hide low pick-rate checkbox -->
-                  <label class="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer select-none">
-                    <input type="checkbox" checked={hideLowPickrate} onchange={handleHideLowPickrateChange} class="rounded border-gray-700 bg-gray-900 text-purple-600 focus:ring-0" />
-                    <span class="text-[11px] text-gray-400">Hide &lt;1%</span>
-                  </label>
 
                   <!-- Champions vs Builds switcher -->
                   <div class="flex rounded-lg border border-gray-700 bg-gray-900 p-0.5 text-xs">

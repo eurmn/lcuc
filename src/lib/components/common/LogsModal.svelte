@@ -86,9 +86,10 @@
       }
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
+        const tag = (entry.target || entry.source || '').toLowerCase();
         return (
           entry.message.toLowerCase().includes(q) ||
-          entry.target.toLowerCase().includes(q) ||
+          tag.includes(q) ||
           entry.level.toLowerCase().includes(q)
         );
       }
@@ -98,7 +99,7 @@
 
   async function copyLogs() {
     const text = filteredLogs
-      .map((l) => `[${l.timestamp}] [${l.level}] [${l.target}] ${l.message}`)
+      .map((l) => `[${l.timestamp}] [${l.level}] [${l.target || l.source || ''}] ${l.message}`)
       .join('\n');
     try {
       await navigator.clipboard.writeText(text);
@@ -247,13 +248,14 @@
           </div>
         {:else}
           {#each filteredLogs as entry}
+            {@const tag = entry.target || entry.source || ''}
             <div class="hover:bg-gray-900/60 rounded px-1.5 py-0.5 flex items-baseline gap-2 group">
               <span class="text-gray-500 shrink-0 select-none text-[10px]">{entry.timestamp}</span>
               <span class="shrink-0 w-12 text-center text-[10px] uppercase font-bold px-1 rounded bg-gray-900/80 border border-gray-800 {getLevelColor(entry.level)}">
                 {entry.level}
               </span>
-              <span class="text-gray-400 shrink-0 text-[11px] truncate max-w-[140px]" title={entry.target}>
-                [{entry.target.replace('lcu_companion::', '')}]
+              <span class="text-gray-400 shrink-0 text-[11px] truncate max-w-[140px]" title={tag}>
+                [{tag.replace('lcu_companion::', '')}]
               </span>
               <span class="text-gray-200 break-all flex-1 whitespace-pre-wrap">
                 {entry.message}

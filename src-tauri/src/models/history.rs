@@ -117,6 +117,8 @@ pub struct MayhemBuildStrategy {
     pub items: Vec<MayhemBuildItem>,
     #[serde(default)]
     pub alternative_items: Vec<MayhemBuildItem>,
+    #[serde(default)]
+    pub situational_items: Vec<MayhemBuildItem>,
     pub spells: Vec<MayhemBuildSpell>,
     #[serde(default)]
     pub all_spells: Vec<MayhemBuildSpell>,
@@ -133,6 +135,10 @@ pub struct MayhemChampionBuildSummary {
     pub champion_wpa: f64,
     pub total_games: usize,
     pub strategies: Vec<MayhemBuildStrategy>,
+    #[serde(default)]
+    pub applied_augment_ids: Vec<String>,
+    #[serde(default)]
+    pub fallback_used: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -187,6 +193,8 @@ pub struct MayhemAugmentsQuery {
     pub only_sampled: Option<bool>,
     #[serde(default)]
     pub hide_low_pickrate: Option<bool>,
+    #[serde(default)]
+    pub with_augment_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -202,3 +210,24 @@ pub struct MayhemAugmentsResponse {
     pub total_games: usize,
     pub items: Vec<MayhemAugmentItem>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedMayhemBuild {
+    pub id: String,
+    pub champion_id: i64,
+    pub champion_name: String,
+    pub strategy_label: String,
+    pub augment_ids: Vec<String>,
+    pub build: MayhemBuildStrategy,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveMayhemBuildPayload {
+    pub champion_id: i64,
+    pub champion_name: String,
+    pub strategy_label: String,
+    pub augment_ids: Vec<String>,
+    pub build: MayhemBuildStrategy,
+}
+

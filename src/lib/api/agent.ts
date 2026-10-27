@@ -152,7 +152,8 @@ export interface AgentOperation {
 export interface LogEntry {
   timestamp: string;
   level: string;
-  target: string;
+  source?: string;
+  target?: string;
   message: string;
 }
 

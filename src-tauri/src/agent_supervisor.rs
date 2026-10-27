@@ -1,6 +1,6 @@
 use crate::agent::{
-    collector_loop, database_path, dispatch_command, initialize_database, websocket_loop,
-    RuntimeState,
+    collector_loop, database_path, dispatch_command, global_aram_database_path,
+    initialize_database, initialize_global_aram_database, websocket_loop, RuntimeState,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -28,6 +28,8 @@ impl AgentSupervisor {
     pub fn start() -> Result<Self, String> {
         let path = database_path();
         initialize_database(&path)?;
+        let global_path = global_aram_database_path();
+        initialize_global_aram_database(&global_path)?;
 
         let runtime = Arc::new(RwLock::new(RuntimeState {
             collector_state: "sleeping".to_string(),

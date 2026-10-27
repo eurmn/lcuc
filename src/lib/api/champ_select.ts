@@ -6,18 +6,44 @@ import type {
   MayhemAugmentsQuery,
   MayhemAugmentsResponse,
   MayhemChampionBuildSummary,
+  SaveMayhemBuildPayload,
+  SavedMayhemBuild,
 } from "../types/champ_select";
+
+export async function isLcuConnected(): Promise<boolean> {
+  return invoke<boolean>("api_is_lcu_connected");
+}
 
 export async function getChampSelectSession(): Promise<ChampSelectSession | null> {
   return invoke<ChampSelectSession | null>("api_champ_select_session");
 }
 
 export async function getMayhemChampionBuild(
-  championId: number
+  championId: number,
+  augmentIds: string[] = []
 ): Promise<MayhemChampionBuildSummary> {
   return invoke<MayhemChampionBuildSummary>("api_mayhem_champion_build", {
     championId,
+    augmentIds,
   });
+}
+
+export async function saveMayhemBuild(
+  payload: SaveMayhemBuildPayload
+): Promise<SavedMayhemBuild> {
+  return invoke<SavedMayhemBuild>("api_save_mayhem_build", { payload });
+}
+
+export async function listSavedMayhemBuilds(
+  championId?: number
+): Promise<SavedMayhemBuild[]> {
+  return invoke<SavedMayhemBuild[]>("api_list_saved_mayhem_builds", {
+    championId: championId ?? null,
+  });
+}
+
+export async function deleteSavedMayhemBuild(id: string): Promise<void> {
+  return invoke<void>("api_delete_saved_mayhem_build", { id });
 }
 
 export async function getMayhemTeamBuilds(
@@ -42,4 +68,8 @@ export async function exportMayhemBuild(
   return invoke<ExportBuildResult>("api_export_mayhem_build", {
     payload,
   });
+}
+
+export async function swapChampSelectChampion(championId: number): Promise<boolean> {
+  return invoke<boolean>("api_champ_select_swap", { championId });
 }

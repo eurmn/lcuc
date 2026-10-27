@@ -19,6 +19,9 @@
     crawlerPaused?: boolean;
     crawlerRateText?: string;
     crawlerEtaText?: string;
+    hideLowPickrate?: boolean;
+    onToggleHideLowPickrate?: () => void;
+    isLcuConnected?: boolean;
     onSaveLimit?: (limit: number) => Promise<void>;
     onResetGlobalDatabase?: () => Promise<void>;
     onPauseCrawler?: (paused: boolean) => Promise<void>;
@@ -40,6 +43,9 @@
     crawlerPaused = false,
     crawlerRateText = "0.0 match/min",
     crawlerEtaText = "",
+    hideLowPickrate = false,
+    onToggleHideLowPickrate,
+    isLcuConnected = false,
     onSaveLimit,
     onResetGlobalDatabase,
     onPauseCrawler,
@@ -187,6 +193,43 @@
         </div>
       </div>
     {/if}
+
+    <div class="flex items-center gap-2 px-2">
+      <!-- Hide Low Pick-Rate Filter Toggle -->
+      <button
+        type="button"
+        onclick={onToggleHideLowPickrate}
+        title={hideLowPickrate
+          ? "Hide Low Pick-rate: ON (Filtering out off-meta champions <1% and items <0.2%; augments always preserved)"
+          : "Hide Low Pick-rate: OFF (Showing all data)"}
+        class="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-all cursor-pointer {hideLowPickrate
+          ? 'border-purple-500/50 bg-purple-950/70 text-purple-300 hover:bg-purple-900/60 shadow-sm'
+          : 'border-gray-800 bg-gray-900/60 text-gray-400 hover:border-gray-700 hover:text-gray-300'}"
+      >
+        <span class="icon-[heroicons--funnel] h-3 w-3 {hideLowPickrate ? 'text-purple-400' : 'text-gray-500'}"></span>
+        <span>Hide Low Pick-Rate</span>
+        <span
+          class="ml-0.5 rounded px-1 text-[9px] font-mono font-semibold {hideLowPickrate
+            ? 'bg-purple-800/80 text-purple-100'
+            : 'bg-gray-800 text-gray-500'}"
+        >
+          {hideLowPickrate ? "ON" : "OFF"}
+        </span>
+      </button>
+
+      <!-- LCU Client Status Indicator -->
+      {#if isLcuConnected}
+        <span class="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-950/60 px-2.5 py-0.5 text-[11px] font-medium text-emerald-300 select-none">
+          <span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span>
+          LCU API: Connected
+        </span>
+      {:else}
+        <span class="inline-flex items-center gap-1.5 rounded-full border border-rose-500/30 bg-rose-950/60 px-2.5 py-0.5 text-[11px] font-medium text-rose-300 select-none">
+          <span class="h-1.5 w-1.5 rounded-full bg-rose-400"></span>
+          LCU API: Offline
+        </span>
+      {/if}
+    </div>
 
     <!-- Logs Modal Button -->
     <button

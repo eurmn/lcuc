@@ -43,6 +43,7 @@ export interface MayhemBuildStrategy {
   starter_item?: MayhemBuildItem | null;
   items: MayhemBuildItem[];
   alternative_items?: MayhemBuildItem[];
+  situational_items?: MayhemBuildItem[];
   spells: MayhemBuildSpell[];
   all_spells?: MayhemBuildSpell[];
   augments: MayhemBuildAugment[];
@@ -57,6 +58,26 @@ export interface MayhemChampionBuildSummary {
   champion_wpa: number;
   total_games: number;
   strategies: MayhemBuildStrategy[];
+  applied_augment_ids?: string[];
+  fallback_used?: boolean;
+}
+
+export interface SavedMayhemBuild {
+  id: string;
+  champion_id: number;
+  champion_name: string;
+  strategy_label: string;
+  augment_ids: string[];
+  build: MayhemBuildStrategy;
+  created_at: string;
+}
+
+export interface SaveMayhemBuildPayload {
+  champion_id: number;
+  champion_name: string;
+  strategy_label: string;
+  augment_ids: string[];
+  build: MayhemBuildStrategy;
 }
 
 export interface MayhemAugmentItem {
@@ -88,6 +109,7 @@ export interface MayhemAugmentsQuery {
   page_size?: number;
   only_sampled?: boolean;
   hide_low_pickrate?: boolean;
+  with_augment_ids?: string[];
 }
 
 export interface MayhemAugmentsResponse {
