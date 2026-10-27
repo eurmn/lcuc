@@ -14,6 +14,7 @@
     rarity = "",
     itemClass = "",
     priceTotal = 0,
+    games = 0,
     categories = [],
     placement = "top",
     delay = 350,
@@ -27,6 +28,7 @@
     rarity?: string;
     itemClass?: string;
     priceTotal?: number;
+    games?: number;
     categories?: string[];
     placement?: "top" | "bottom" | "left" | "right";
     delay?: number;
@@ -84,6 +86,9 @@
           {/if}
           {#if itemClass}
             <span class="capitalize text-gray-400">{itemClass}</span>
+          {/if}
+          {#if games > 0}
+            <span class="text-gray-400 font-mono">{games.toLocaleString()} {games === 1 ? 'game' : 'games'}</span>
           {/if}
           {#if categories.length > 0}
             <span class="text-gray-500 truncate">{categories.slice(0, 3).join(", ")}</span>

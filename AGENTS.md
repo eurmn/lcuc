@@ -275,7 +275,7 @@ pnpm tauri dev
 ```
 
 ### Planning & Walkthrough Persistence
-- **Walkthrough Archival**: Whenever completing work in Planning Mode, in addition to generating the session walkthrough artifact, **ALWAYS save a permanent copy of the walkthrough document inside `@llm/docs/historical/walkthrough/<feature_name>_walkthrough.md`** so historical implementation context is permanently tracked across sessions. Change the file name of the markdown file if the conversation gets too long/changes subject. If the conversation includes multiple very different changes that need their own documentation, create different files for different features.
+- **Walkthrough Archival**: Whenever completing work in Planning Mode, in addition to generating the session walkthrough artifact, **ALWAYS save a permanent copy of the walkthrough document inside `@llm/docs/historical/walkthrough/<feature_name>_walkthrough.md`** so historical implementation context is permanently tracked across sessions. Change the file name of the markdown file if the conversation gets too long/changes subject. If the conversation includes multiple very different changes that need their own documentation, create different files for different features. After creating a walkthrough and finishing your task, commit your changes.
 - Verify the last 2 walkthroughs to have been created when you are in a new conversation. This will give you context over the current development environment the application is currently at.
 
 ### Command Execution Guidelines

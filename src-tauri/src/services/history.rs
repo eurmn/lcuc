@@ -2815,9 +2815,9 @@ fn mine_build_archetypes(
         });
 
         situational_items.sort_by(|a, b| {
-            let sa = a.2 * 100.0 + (a.1 as f64).ln_1p();
-            let sb = b.2 * 100.0 + (b.1 as f64).ln_1p();
-            sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+            b.1.cmp(&a.1)
+                .then_with(|| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal))
+                .then_with(|| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal))
         });
 
         let mut spell_pairs: HashMap<(u64, u64), usize> = HashMap::new();
@@ -2846,7 +2846,8 @@ fn mine_build_archetypes(
                 }
             }
         }
-        let mut sorted_augs: Vec<(String, usize, usize)> = aug_counts.into_iter().collect();
+        let mut sorted_augs: Vec<(String, usize, usize)> =
+            aug_counts.into_iter().map(|(id, (g, w))| (id, g, w)).collect();
         sorted_augs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.2.cmp(&a.2)));
 
         let sample_g = sample_games.max(1) as f64;
@@ -4500,4 +4501,29 @@ pub async fn delete_saved_mayhem_build(id: String) -> Result<(), String> {
     })
     .await
     .map_err(|e| format!("spawn_blocking failed: {e}"))?
+}
+
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_situational_items_sorted_by_popularity() {
+        let mut items = vec![
+            (1001i64, 2usize, 0.60f64, 0.05f64),
+            (1002i64, 15usize, 0.45f64, 0.07f64),
+            (1003i64, 8usize, 0.80f64, 0.06f64),
+            (1004i64, 8usize, 0.90f64, 0.06f64),
+        ];
+
+        items.sort_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then_with(|| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal))
+                .then_with(|| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal))
+        });
+
+        assert_eq!(items[0].0, 1002);
+        assert_eq!(items[1].0, 1004);
+        assert_eq!(items[2].0, 1003);
+        assert_eq!(items[3].0, 1001);
+    }
 }

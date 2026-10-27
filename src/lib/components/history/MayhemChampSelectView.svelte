@@ -119,6 +119,13 @@
         )
       : []
   );
+  const sortedSituationalItems = $derived(
+    activeStrategy?.situational_items
+      ? [...activeStrategy.situational_items].sort(
+          (a, b) => (b.games ?? 0) - (a.games ?? 0) || (b.win_rate ?? 0) - (a.win_rate ?? 0)
+        )
+      : []
+  );
 
   const mayhemAllChampions = $derived(
     allChampions.filter((c) => c.id > 0 && !c.id.toString().startsWith("600"))
@@ -925,19 +932,30 @@
                 </div>
               {/if}
               <!-- Rare situational items -->
-              {#if activeStrategy.situational_items && activeStrategy.situational_items.length > 0}
+              {#if sortedSituationalItems.length > 0}
                 <details class="pt-2 border-t border-gray-800/80">
                   <summary class="cursor-pointer text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-                    Situational ({activeStrategy.situational_items.length})
+                    Situational ({sortedSituationalItems.length})
                   </summary>
                   <div class="mt-1.5 flex flex-wrap gap-1.5">
-                    {#each activeStrategy.situational_items as sit, idx (`sit-${sit.id}-${idx}`)}
-                      <img
-                        src={sit.icon_url}
-                        alt={sit.name}
-                        title={`${sit.name} · ${sit.games ?? 0} games`}
-                        class="h-8 w-8 rounded-md border border-gray-700 bg-gray-950 object-cover"
-                      />
+                    {#each sortedSituationalItems as sit, idx (`sit-${sit.id}-${idx}`)}
+                      <div id={`sit-item-${sit.id}-${idx}`} class="relative">
+                        <img
+                          src={sit.icon_url}
+                          alt={sit.name}
+                          class="h-8 w-8 rounded-md border border-gray-700 bg-gray-950 object-cover hover:border-gray-500 transition-colors cursor-pointer"
+                        />
+                        <GameEntityPopover
+                          targetId={`sit-item-${sit.id}-${idx}`}
+                          name={sit.name}
+                          iconUrl={sit.icon_url}
+                          description={sit.description}
+                          priceTotal={sit.price_total}
+                          itemClass={sit.item_class}
+                          games={sit.games}
+                          placement="top"
+                        />
+                      </div>
                     {/each}
                   </div>
                 </details>
@@ -1057,7 +1075,7 @@
                         {#if aug.wpa !== undefined}
                           <span
                             class="text-[9px] font-mono font-bold {aug.wpa >= 0 ? 'text-emerald-400' : 'text-rose-400'}"
-                            title={`Win rate: ${formatPct(aug.win_rate)} (${formatWpa(aug.wpa)} WPA)`}
+                            title={`Win rate: ${formatPct(aug.win_rate ?? 0)} (${formatWpa(aug.wpa)} WPA)`}
                           >
                             {formatWpa(aug.wpa)}
                           </span>
