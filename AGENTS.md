@@ -276,6 +276,7 @@ bun run tauri dev
 
 ### Planning & Walkthrough Persistence
 - **Walkthrough Archival**: Whenever completing work in Planning Mode, in addition to generating the session walkthrough artifact, **ALWAYS save a permanent copy of the walkthrough document inside `@llm/docs/historical/walkthrough/<feature_name>_walkthrough.md`** so historical implementation context is permanently tracked across sessions. Change the file name of the markdown file if the conversation gets too long/changes subject. If the conversation includes multiple very different changes that need their own documentation, create different files for different features. After creating a walkthrough and finishing your task, ask the user for feedback and, when approved, commit your changes.
+- **Version Bump Confirmation**: Whenever the user approves a commit/push, ALWAYS ask the user if this release requires a version bump or not before proceeding with commit, tag, and push.
 - Verify the last 2 walkthroughs to have been created when you are in a new conversation. This will give you context over the current development environment the application is currently at.
 
 ### Command Execution Guidelines
