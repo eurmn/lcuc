@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { MayhemStageItem } from "../../types/champ_select";
   import GameEntityPopover from "../common/GameEntityPopover.svelte";
+  import SituationalTagBadge from "../common/SituationalTagBadge.svelte";
 
   let {
     stages = [],
@@ -60,11 +61,7 @@
                     {/if}
                     <span class="text-[9px] font-mono text-amber-300 mt-0.5">{it.price_total}g</span>
 
-                    {#if it.situational_tag}
-                      <span class="absolute -top-1.5 -right-1 px-1 rounded bg-rose-500/90 text-white text-[8px] font-semibold tracking-tight shadow">
-                        {it.situational_tag}
-                      </span>
-                    {/if}
+                    <SituationalTagBadge tag={it.situational_tag} />
                   </div>
 
                   <GameEntityPopover

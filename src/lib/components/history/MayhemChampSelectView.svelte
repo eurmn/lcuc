@@ -24,6 +24,7 @@
   } from "../../types/champ_select";
   import AugmentIcon from "../common/AugmentIcon.svelte";
   import GameEntityPopover from "../common/GameEntityPopover.svelte";
+  import SituationalTagBadge from "../common/SituationalTagBadge.svelte";
   import MayhemAugmentsCard from "./MayhemAugmentsCard.svelte";
   import MayhemAugmentPicker from "./MayhemAugmentPicker.svelte";
   import LivePurchaseAdvisor from "./LivePurchaseAdvisor.svelte";
@@ -1094,11 +1095,7 @@
                             alt={sit.name}
                             class="h-9 w-9 rounded-lg border border-gray-700 bg-gray-950 object-cover hover:border-gray-500 transition-colors cursor-pointer"
                           />
-                          {#if sit.situational_tag}
-                            <span class="absolute -top-1.5 -right-1 px-1 rounded bg-rose-600/95 text-white text-[8px] font-bold tracking-tight shadow pointer-events-none whitespace-nowrap">
-                              {sit.situational_tag}
-                            </span>
-                          {/if}
+                          <SituationalTagBadge tag={sit.situational_tag} />
                           <GameEntityPopover
                             targetId={`sit-item-${sit.id}-${idx}`}
                             name={sit.name}
