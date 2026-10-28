@@ -22,11 +22,13 @@ export async function getChampSelectSession(): Promise<ChampSelectSession | null
 
 export async function getMayhemChampionBuild(
   championId: number,
-  augmentIds: string[] = []
+  augmentIds: string[] = [],
+  algorithmVersion: "v1" | "v2" = "v2"
 ): Promise<MayhemChampionBuildSummary> {
   return invoke<MayhemChampionBuildSummary>("api_mayhem_champion_build", {
     championId,
     augmentIds,
+    algorithmVersion,
   });
 }
 
@@ -49,10 +51,12 @@ export async function deleteSavedMayhemBuild(id: string): Promise<void> {
 }
 
 export async function getMayhemTeamBuilds(
-  championIds: number[]
+  championIds: number[],
+  algorithmVersion: "v1" | "v2" = "v2"
 ): Promise<Record<number, MayhemChampionBuildSummary>> {
   return invoke<Record<number, MayhemChampionBuildSummary>>("api_mayhem_team_builds", {
     championIds,
+    algorithmVersion,
   });
 }
 

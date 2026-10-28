@@ -265,7 +265,7 @@ lazy_static! {
     static ref RESOLVED_AUGMENTS_CACHE: RwLock<Option<HashMap<String, MatchHistoryAugmentInfo>>> =
         RwLock::new(None);
     static ref SPELLS_CACHE: RwLock<Option<HashMap<u64, CachedSpellInfo>>> = RwLock::new(None);
-    static ref MAYHEM_CHAMPION_BUILDS_CACHE: RwLock<HashMap<(i64, Vec<String>), (Instant, MayhemChampionBuildSummary)>> =
+    static ref MAYHEM_CHAMPION_BUILDS_CACHE: RwLock<HashMap<(i64, Vec<String>, String), (Instant, MayhemChampionBuildSummary)>> =
         RwLock::new(HashMap::new());
     static ref MAYHEM_CHAMPION_AUGMENTS_CACHE: RwLock<HashMap<(i64, Vec<String>), (Instant, f64, usize, HashMap<String, (usize, usize)>)>> =
         RwLock::new(HashMap::new());
@@ -3327,10 +3327,869 @@ async fn mayhem_augment(
     }
 }
 
+// ponytail: V2 build creation algorithm inferring purchase priority from early-ended matches and branching adaptive augment synergies.
+
+#[derive(Clone, Debug)]
+struct V2ParsedFact {
+    legendaries: Vec<(i64, usize)>, // (item_id, slot_idx)
+    boot: Option<i64>,
+    starter: Option<i64>,
+    win: bool,
+    spell1: u64,
+    spell2: u64,
+    augments: Vec<String>,
+}
+
+fn parse_facts_for_v2(
+    facts: &[ParticipantFact],
+    items_catalog: &HashMap<i32, CachedItemInfo>,
+) -> Vec<V2ParsedFact> {
+    facts
+        .iter()
+        .map(|f| {
+            let mut legendaries = Vec::new();
+            let mut boot = None;
+            let mut starter = None;
+
+            for (slot, &it) in f.item_ids.iter().enumerate() {
+                if it == 0 || it == 2050 || it == 2052 || it == 220013 {
+                    continue;
+                }
+                let info = items_catalog.get(&(it as i32));
+                if is_excluded_mayhem_item(it, info) {
+                    continue;
+                }
+                if is_starter_item(it, info) {
+                    if starter.is_none() {
+                        starter = Some(it);
+                    }
+                    continue;
+                }
+                let is_boot = info
+                    .map(|i| {
+                        i.item_class.as_deref() == Some("boot")
+                            || i.categories.iter().any(|c| c.eq_ignore_ascii_case("boots"))
+                    })
+                    .unwrap_or(false);
+                if is_boot {
+                    if boot.is_none() {
+                        boot = Some(it);
+                    }
+                    continue;
+                }
+                if info
+                    .map(|i| i.price_total >= 1800 || i.item_class.as_deref() == Some("legendary"))
+                    .unwrap_or(true)
+                {
+                    legendaries.push((it, slot));
+                }
+            }
+
+            V2ParsedFact {
+                legendaries,
+                boot,
+                starter,
+                win: f.win,
+                spell1: f.spell1_id,
+                spell2: f.spell2_id,
+                augments: f.augment_ids.clone(),
+            }
+        })
+        .collect()
+}
+
+#[derive(Clone, Debug)]
+struct RushItemCandidate {
+    item_id: i64,
+    rush_score: f64,
+    bayesian_wr: f64,
+    total_games: usize,
+    solo_count: usize,
+    mean_slot: f64,
+}
+
+fn infer_v2_rush_items_from_refs(
+    parsed: &[&V2ParsedFact],
+    champion_win_rate: f64,
+    min_games: usize,
+) -> Vec<RushItemCandidate> {
+    let mut solo_counts: HashMap<i64, usize> = HashMap::new();
+    let mut pair_first_counts: HashMap<i64, usize> = HashMap::new();
+    let mut slot_sums: HashMap<i64, (usize, usize)> = HashMap::new();
+    let mut item_wins: HashMap<i64, usize> = HashMap::new();
+    let mut item_games: HashMap<i64, usize> = HashMap::new();
+
+    for p in parsed {
+        // Matches where player finished only 1 legendary item: 100% certainty 1st purchase!
+        if p.legendaries.len() == 1 {
+            let it = p.legendaries[0].0;
+            *solo_counts.entry(it).or_default() += 1;
+        } else if p.legendaries.len() == 2 {
+            let (it1, s1) = p.legendaries[0];
+            let (it2, s2) = p.legendaries[1];
+            let first_it = if s1 <= s2 { it1 } else { it2 };
+            *pair_first_counts.entry(first_it).or_default() += 1;
+        }
+
+        for &(it, slot) in &p.legendaries {
+            let entry = slot_sums.entry(it).or_default();
+            entry.0 += slot;
+            entry.1 += 1;
+            *item_games.entry(it).or_default() += 1;
+            if p.win {
+                *item_wins.entry(it).or_default() += 1;
+            }
+        }
+    }
+
+    let mut candidates = Vec::new();
+    for (&it, &games) in &item_games {
+        if games < min_games {
+            continue;
+        }
+        let wins = item_wins.get(&it).copied().unwrap_or(0);
+        let solo = solo_counts.get(&it).copied().unwrap_or(0);
+        let pair1 = pair_first_counts.get(&it).copied().unwrap_or(0);
+        let (s_sum, s_count) = slot_sums.get(&it).copied().unwrap_or((0, 1));
+        let mean_slot = s_sum as f64 / s_count.max(1) as f64;
+
+        let bayes_wr = (wins as f64 + 6.0 * champion_win_rate) / (games as f64 + 6.0);
+        // Early signals: solo completions (weight 4.0), 2-item 1st slots (weight 1.5)
+        let early_signal = (solo as f64 * 4.0) + (pair1 as f64 * 1.5);
+        let slot_factor = (5.5 - mean_slot).clamp(0.2, 5.0);
+        let rush_score = early_signal * slot_factor
+            + (bayes_wr - champion_win_rate) * 20.0
+            + (games as f64).sqrt() * 0.5;
+
+        candidates.push(RushItemCandidate {
+            item_id: it,
+            rush_score,
+            bayesian_wr: bayes_wr,
+            total_games: games,
+            solo_count: solo,
+            mean_slot,
+        });
+    }
+
+    candidates.sort_by(|a, b| {
+        b.rush_score
+            .partial_cmp(&a.rush_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    candidates
+}
+
+async fn enrich_v2_item_from_refs(
+    id: i64,
+    facts: &[&V2ParsedFact],
+    items_catalog: &HashMap<i32, CachedItemInfo>,
+    champion_win_rate: f64,
+    total_champ_games: usize,
+    item_aug_synergies: &HashMap<i64, f64>,
+) -> MayhemBuildItem {
+    let mut it_games = 0usize;
+    let mut it_wins = 0usize;
+    for p in facts {
+        if p.legendaries.iter().any(|(x, _)| *x == id) {
+            it_games += 1;
+            if p.win {
+                it_wins += 1;
+            }
+        }
+    }
+    let info = items_catalog.get(&(id as i32));
+    let is_boot = info
+        .map(|i| {
+            i.item_class.as_deref() == Some("boot")
+                || i.categories.iter().any(|c| c.eq_ignore_ascii_case("boots"))
+        })
+        .unwrap_or(false);
+    let mut it = mayhem_item(id, items_catalog, None, champion_win_rate, total_champ_games).await;
+    it.games = it_games;
+    it.win_rate = if it_games > 0 {
+        it_wins as f64 / it_games as f64
+    } else {
+        champion_win_rate
+    };
+    it.wpa = it.win_rate - champion_win_rate;
+    it.pick_rate = calc_item_pick_rate(it_games, total_champ_games, is_boot);
+    if let Some(&syn) = item_aug_synergies.get(&id) {
+        if syn >= 0.015 {
+            it.situational_tag = Some(format!("Synergy: {:+.0}% WR", syn * 100.0));
+        }
+    }
+    if it.situational_tag.is_none() {
+        it.situational_tag = get_situational_tag(id, info).map(|s| s.to_string());
+    }
+    it
+}
+
+async fn assemble_v2_strategy_for_core(
+    strategy_id: &str,
+    label_prefix: &str,
+    rush_item: i64,
+    facts: &[&V2ParsedFact],
+    champion_win_rate: f64,
+    total_champ_games: usize,
+    items_catalog: &HashMap<i32, CachedItemInfo>,
+    aug_catalog: &HashMap<String, AugmentCatalogEntry>,
+    item_aug_synergies: &HashMap<i64, f64>,
+    shared_spells: &[MayhemBuildSpell],
+    all_spells: &[MayhemBuildSpell],
+    normalized_augments: &[String],
+) -> MayhemBuildStrategy {
+    let mut ordered_core = vec![rush_item];
+    let mut exclusive_groups: HashSet<&'static str> = HashSet::new();
+    if let Some(grp) = get_item_exclusive_group(rush_item, items_catalog.get(&(rush_item as i32))) {
+        exclusive_groups.insert(grp);
+    }
+
+    let facts_with_rush: Vec<&V2ParsedFact> = facts
+        .iter()
+        .copied()
+        .filter(|p| p.legendaries.iter().any(|(x, _)| *x == rush_item))
+        .collect();
+
+    // 1. Find 2nd Core Item
+    let mut pair_counts: HashMap<i64, (usize, usize)> = HashMap::new();
+    for p in &facts_with_rush {
+        for &(it, _) in &p.legendaries {
+            if it != rush_item {
+                let grp = get_item_exclusive_group(it, items_catalog.get(&(it as i32)));
+                if grp.map_or(false, |g| exclusive_groups.contains(g)) {
+                    continue;
+                }
+                let e = pair_counts.entry(it).or_default();
+                e.0 += 1;
+                if p.win {
+                    e.1 += 1;
+                }
+            }
+        }
+    }
+    let mut scored_second: Vec<(i64, f64)> = pair_counts
+        .into_iter()
+        .map(|(it, (g, w))| {
+            let bayes_wr = (w as f64 + 4.0 * champion_win_rate) / (g as f64 + 4.0);
+            let co_occur = g as f64 / facts_with_rush.len().max(1) as f64;
+            let syn = item_aug_synergies.get(&it).copied().unwrap_or(0.0);
+            let score = (bayes_wr - champion_win_rate) * 0.5 + co_occur * 0.35 + syn * 0.20;
+            (it, score)
+        })
+        .collect();
+    scored_second.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    if let Some(&(second_it, _)) = scored_second.first() {
+        ordered_core.push(second_it);
+        if let Some(grp) = get_item_exclusive_group(second_it, items_catalog.get(&(second_it as i32))) {
+            exclusive_groups.insert(grp);
+        }
+    }
+
+    // 2. Find 3rd Core Item
+    let second_item_opt = ordered_core.get(1).copied();
+    let facts_with_core2: Vec<&V2ParsedFact> = if let Some(s2) = second_item_opt {
+        facts_with_rush
+            .iter()
+            .copied()
+            .filter(|p| p.legendaries.iter().any(|(x, _)| *x == s2))
+            .collect()
+    } else {
+        facts_with_rush.clone()
+    };
+
+    let sample_pool_for_3rd = if facts_with_core2.len() >= 3 {
+        &facts_with_core2
+    } else {
+        &facts_with_rush
+    };
+
+    let mut triple_counts: HashMap<i64, (usize, usize)> = HashMap::new();
+    for p in sample_pool_for_3rd {
+        for &(it, _) in &p.legendaries {
+            if !ordered_core.contains(&it) {
+                let grp = get_item_exclusive_group(it, items_catalog.get(&(it as i32)));
+                if grp.map_or(false, |g| exclusive_groups.contains(g)) {
+                    continue;
+                }
+                let e = triple_counts.entry(it).or_default();
+                e.0 += 1;
+                if p.win {
+                    e.1 += 1;
+                }
+            }
+        }
+    }
+    let mut scored_third: Vec<(i64, f64)> = triple_counts
+        .into_iter()
+        .map(|(it, (g, w))| {
+            let bayes_wr = (w as f64 + 4.0 * champion_win_rate) / (g as f64 + 4.0);
+            let co_occur = g as f64 / sample_pool_for_3rd.len().max(1) as f64;
+            let syn = item_aug_synergies.get(&it).copied().unwrap_or(0.0);
+            let score = (bayes_wr - champion_win_rate) * 0.5 + co_occur * 0.35 + syn * 0.20;
+            (it, score)
+        })
+        .collect();
+    scored_third.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    if let Some(&(third_it, _)) = scored_third.first() {
+        ordered_core.push(third_it);
+        if let Some(grp) = get_item_exclusive_group(third_it, items_catalog.get(&(third_it as i32))) {
+            exclusive_groups.insert(grp);
+        }
+    }
+
+    // 3. Find Boot and Starter
+    let mut boot_counts: HashMap<i64, (usize, usize)> = HashMap::new();
+    let mut starter_counts: HashMap<i64, (usize, usize)> = HashMap::new();
+    for p in &facts_with_rush {
+        if let Some(b) = p.boot {
+            let e = boot_counts.entry(b).or_default();
+            e.0 += 1;
+            if p.win { e.1 += 1; }
+        }
+        if let Some(s) = p.starter {
+            let e = starter_counts.entry(s).or_default();
+            e.0 += 1;
+            if p.win { e.1 += 1; }
+        }
+    }
+    let boot_id = boot_counts.into_iter().max_by_key(|x| x.1 .0).map(|x| x.0);
+    let starter_id = starter_counts.into_iter().max_by_key(|x| x.1 .0).and_then(|(id, (g, _))| {
+        if g >= 2 && (g as f64 / facts_with_rush.len().max(1) as f64) >= 0.05 {
+            Some(id)
+        } else {
+            None
+        }
+    });
+
+    // 4. Find Continuation / Capstones (Items 4 & 5)
+    let mut continuation_counts: HashMap<i64, (usize, usize)> = HashMap::new();
+    for p in &facts_with_rush {
+        for &(it, _) in &p.legendaries {
+            if !ordered_core.contains(&it) {
+                let grp = get_item_exclusive_group(it, items_catalog.get(&(it as i32)));
+                if grp.map_or(false, |g| exclusive_groups.contains(g)) {
+                    continue;
+                }
+                let e = continuation_counts.entry(it).or_default();
+                e.0 += 1;
+                if p.win {
+                    e.1 += 1;
+                }
+            }
+        }
+    }
+    let mut scored_continuation: Vec<(i64, f64, usize, usize)> = continuation_counts
+        .into_iter()
+        .map(|(it, (g, w))| {
+            let bayes_wr = (w as f64 + 4.0 * champion_win_rate) / (g as f64 + 4.0);
+            let co_occur = g as f64 / facts_with_rush.len().max(1) as f64;
+            let syn = item_aug_synergies.get(&it).copied().unwrap_or(0.0);
+            let score = (bayes_wr - champion_win_rate) * 0.4 + co_occur * 0.4 + syn * 0.25;
+            (it, score, g, w)
+        })
+        .collect();
+    scored_continuation.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut continuation_ids = Vec::new();
+    for (it, _, _, _) in &scored_continuation {
+        let grp = get_item_exclusive_group(*it, items_catalog.get(&(*it as i32)));
+        if grp.map_or(false, |g| exclusive_groups.contains(g)) {
+            continue;
+        }
+        if let Some(g) = grp {
+            exclusive_groups.insert(g);
+        }
+        continuation_ids.push(*it);
+        if continuation_ids.len() >= 2 {
+            break;
+        }
+    }
+
+    // 5. Construct 6 ordered build items
+    let mut build_item_ids = Vec::new();
+    // Item 1: Inferred 1st Rush Item
+    build_item_ids.push(ordered_core[0]);
+    // Item 2: Boots
+    if let Some(b) = boot_id {
+        build_item_ids.push(b);
+    }
+    // Item 3: 2nd Core Item
+    if ordered_core.len() > 1 {
+        build_item_ids.push(ordered_core[1]);
+    }
+    // Item 4: 3rd Core Item
+    if ordered_core.len() > 2 {
+        build_item_ids.push(ordered_core[2]);
+    }
+    // Items 5 & 6: Continuation / Capstones
+    for &c_id in &continuation_ids {
+        if build_item_ids.len() >= 6 {
+            break;
+        }
+        if !build_item_ids.contains(&c_id) {
+            build_item_ids.push(c_id);
+        }
+    }
+
+    let mut items = Vec::new();
+    for &id in &build_item_ids {
+        items.push(enrich_v2_item_from_refs(id, facts, items_catalog, champion_win_rate, total_champ_games, item_aug_synergies).await);
+    }
+
+    // Starter item
+    let starter_item = if let Some(sid) = starter_id {
+        Some(enrich_v2_item_from_refs(sid, facts, items_catalog, champion_win_rate, total_champ_games, item_aug_synergies).await)
+    } else {
+        None
+    };
+
+    // Alternative & Situational items
+    let mut alternative_items = Vec::new();
+    let mut situational_items = Vec::new();
+
+    for (c_id, _, _, _) in scored_continuation.into_iter().skip(continuation_ids.len()) {
+        if build_item_ids.contains(&c_id) {
+            continue;
+        }
+        let item = enrich_v2_item_from_refs(c_id, facts, items_catalog, champion_win_rate, total_champ_games, item_aug_synergies).await;
+        let is_situational = item.situational_tag.as_ref().map_or(false, |t| !t.starts_with("Synergy:"));
+        if is_situational && situational_items.len() < 12 {
+            situational_items.push(item);
+        } else if alternative_items.len() < 24 {
+            alternative_items.push(item);
+        }
+    }
+
+    // Sort alternative items so items with positive augment synergy are at the front
+    alternative_items.sort_by(|a, b| {
+        let syn_a = item_aug_synergies.get(&a.id).copied().unwrap_or(0.0);
+        let syn_b = item_aug_synergies.get(&b.id).copied().unwrap_or(0.0);
+        syn_b.partial_cmp(&syn_a).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let stages = build_stage_pathing(&starter_item, &items, &situational_items);
+
+    // Build statistics
+    let core_facts: Vec<&V2ParsedFact> = facts
+        .iter()
+        .copied()
+        .filter(|p| ordered_core.iter().all(|c| p.legendaries.iter().any(|(x, _)| x == c)))
+        .collect();
+    let sample_games = core_facts.len().max(1);
+    let sample_wins = core_facts.iter().filter(|p| p.win).count();
+    let build_win_rate = if core_facts.is_empty() {
+        champion_win_rate
+    } else {
+        (sample_wins as f64 + 5.0 * champion_win_rate) / (sample_games as f64 + 5.0)
+    };
+    let build_wpa = build_win_rate - champion_win_rate;
+
+    // Mine Top Augments
+    let mut aug_counts: HashMap<String, (usize, usize)> = HashMap::new();
+    for p in &core_facts {
+        for a in &p.augments {
+            if !a.is_empty() && a != "0" && !normalized_augments.iter().any(|r| r.eq_ignore_ascii_case(a)) {
+                let e = aug_counts.entry(a.clone()).or_default();
+                e.0 += 1;
+                if p.win { e.1 += 1; }
+            }
+        }
+    }
+    let mut aug_list: Vec<(String, usize, usize)> = aug_counts
+        .into_iter()
+        .map(|(a, (g, w))| (a, g, w))
+        .collect();
+    aug_list.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.2.cmp(&a.2)));
+
+    let mut augments = Vec::new();
+    for (a_id, g, w) in aug_list.into_iter().take(6) {
+        let mut aug = mayhem_augment(&a_id, aug_catalog, None, champion_win_rate).await;
+        aug.games = g;
+        aug.win_rate = (w as f64 + 3.0 * build_win_rate) / (g as f64 + 3.0);
+        aug.wpa = aug.win_rate - champion_win_rate;
+        aug.pick_rate = g as f64 / sample_games as f64;
+        augments.push(aug);
+    }
+
+    let prefix = classify_archetype_prefix(&ordered_core, items_catalog);
+    let names = generate_archetype_label(&ordered_core, items_catalog);
+    let label = format!("{}: {}: {}", label_prefix, prefix, names);
+
+    MayhemBuildStrategy {
+        id: strategy_id.to_string(),
+        label,
+        metric_name: "Win Rate".to_string(),
+        avg_metric_value: format!("{:+.1}% WPA", build_wpa * 100.0),
+        raw_metric_value: build_win_rate,
+        build_win_rate,
+        build_wpa,
+        starter_item,
+        items,
+        alternative_items,
+        situational_items,
+        stages,
+        spells: shared_spells.to_vec(),
+        all_spells: all_spells.to_vec(),
+        augments,
+        sample_games,
+    }
+}
+
+async fn assemble_v2_strategy_from_mined(
+    arch: &MinedArchetype,
+    facts: &[V2ParsedFact],
+    champion_win_rate: f64,
+    total_champ_games: usize,
+    items_catalog: &HashMap<i32, CachedItemInfo>,
+    aug_catalog: &HashMap<String, AugmentCatalogEntry>,
+    item_aug_synergies: &HashMap<i64, f64>,
+    shared_spells: &[MayhemBuildSpell],
+    all_spells: &[MayhemBuildSpell],
+    normalized_augments: &[String],
+) -> MayhemBuildStrategy {
+    let fact_refs: Vec<&V2ParsedFact> = facts.iter().collect();
+
+    let mut items = Vec::new();
+    for &id in &arch.core_items {
+        items.push(enrich_v2_item_from_refs(id, &fact_refs, items_catalog, champion_win_rate, total_champ_games, item_aug_synergies).await);
+    }
+    if let Some(bid) = arch.boot_id {
+        if items.len() >= 1 {
+            items.insert(1, enrich_v2_item_from_refs(bid, &fact_refs, items_catalog, champion_win_rate, total_champ_games, item_aug_synergies).await);
+        } else {
+            items.push(enrich_v2_item_from_refs(bid, &fact_refs, items_catalog, champion_win_rate, total_champ_games, item_aug_synergies).await);
+        }
+    }
+    for &(id, _, _, _) in &arch.continuation_items {
+        if items.len() >= 6 {
+            break;
+        }
+        if !items.iter().any(|x| x.id == id) {
+            items.push(enrich_v2_item_from_refs(id, &fact_refs, items_catalog, champion_win_rate, total_champ_games, item_aug_synergies).await);
+        }
+    }
+
+    let starter_item = if let Some(sid) = arch.starter_id {
+        Some(enrich_v2_item_from_refs(sid, &fact_refs, items_catalog, champion_win_rate, total_champ_games, item_aug_synergies).await)
+    } else {
+        None
+    };
+
+    let mut alternative_items = Vec::new();
+    for &(id, _, _, _) in arch.continuation_items.iter().skip(2) {
+        if !items.iter().any(|x| x.id == id) && alternative_items.len() < 20 {
+            alternative_items.push(enrich_v2_item_from_refs(id, &fact_refs, items_catalog, champion_win_rate, total_champ_games, item_aug_synergies).await);
+        }
+    }
+    alternative_items.sort_by(|a, b| {
+        let syn_a = item_aug_synergies.get(&a.id).copied().unwrap_or(0.0);
+        let syn_b = item_aug_synergies.get(&b.id).copied().unwrap_or(0.0);
+        syn_b.partial_cmp(&syn_a).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut situational_items = Vec::new();
+    for &(id, _, _, _) in &arch.situational_items {
+        if !items.iter().any(|x| x.id == id) && situational_items.len() < 12 {
+            situational_items.push(enrich_v2_item_from_refs(id, &fact_refs, items_catalog, champion_win_rate, total_champ_games, item_aug_synergies).await);
+        }
+    }
+
+    let stages = build_stage_pathing(&starter_item, &items, &situational_items);
+
+    let mut augments = Vec::new();
+    for (id, g, wr, wpa, pr) in &arch.top_augments {
+        if normalized_augments.iter().any(|r| r.eq_ignore_ascii_case(id)) {
+            continue;
+        }
+        let mut a = mayhem_augment(id, aug_catalog, None, champion_win_rate).await;
+        a.games = *g;
+        a.win_rate = *wr;
+        a.wpa = *wpa;
+        a.pick_rate = *pr;
+        augments.push(a);
+    }
+
+    MayhemBuildStrategy {
+        id: arch.id.clone(),
+        label: format!("Adaptive: {}", arch.label),
+        metric_name: "Win Rate".to_string(),
+        avg_metric_value: format!("{:+.1}% WPA", arch.build_wpa * 100.0),
+        raw_metric_value: arch.build_win_rate,
+        build_win_rate: arch.build_win_rate,
+        build_wpa: arch.build_wpa,
+        starter_item,
+        items,
+        alternative_items,
+        situational_items,
+        stages,
+        spells: shared_spells.to_vec(),
+        all_spells: all_spells.to_vec(),
+        augments,
+        sample_games: arch.sample_games,
+    }
+}
+
+async fn compute_mayhem_champion_build_v2(
+    champion_id: i64,
+    champion_name: &str,
+    icon_url: &str,
+    facts: &[ParticipantFact],
+    _global_baseline: f64,
+    champion_win_rate: f64,
+    champion_wpa: f64,
+    normalized_augments: &[String],
+    items_catalog: &HashMap<i32, CachedItemInfo>,
+    aug_catalog: &HashMap<String, AugmentCatalogEntry>,
+    spells_catalog: &HashMap<u64, CachedSpellInfo>,
+) -> MayhemChampionBuildSummary {
+    let total_games = facts.len();
+    let parsed = parse_facts_for_v2(facts, items_catalog);
+
+    // 1. Cache champion augments map for fast server-side pagination & filtering
+    {
+        let mut aug_map = HashMap::new();
+        for p in &parsed {
+            for a in &p.augments {
+                if !a.is_empty() && a != "0" {
+                    let entry = aug_map.entry(a.clone()).or_insert((0usize, 0usize));
+                    entry.0 += 1;
+                    if p.win {
+                        entry.1 += 1;
+                    }
+                }
+            }
+        }
+        let mut aug_cache = MAYHEM_CHAMPION_AUGMENTS_CACHE.write().await;
+        aug_cache.insert(
+            (champion_id, normalized_augments.to_vec()),
+            (Instant::now(), champion_win_rate, facts.len(), aug_map),
+        );
+    }
+
+    // 2. Compute empirical augment synergies from facts
+    let mut item_aug_synergies: HashMap<i64, f64> = HashMap::new();
+    for aug in normalized_augments {
+        let aug_facts: Vec<&V2ParsedFact> = parsed
+            .iter()
+            .filter(|p| p.augments.iter().any(|a| a.eq_ignore_ascii_case(aug)))
+            .collect();
+        if aug_facts.len() >= 2 {
+            let mut counts: HashMap<i64, (usize, usize)> = HashMap::new();
+            for p in &aug_facts {
+                for &(it, _) in &p.legendaries {
+                    let e = counts.entry(it).or_default();
+                    e.0 += 1;
+                    if p.win {
+                        e.1 += 1;
+                    }
+                }
+            }
+            for (it, (g, w)) in counts {
+                if g >= 2 {
+                    let wr = (w as f64 + 3.0 * champion_win_rate) / (g as f64 + 3.0);
+                    let delta = wr - champion_win_rate;
+                    if delta > 0.01 {
+                        *item_aug_synergies.entry(it).or_default() += delta;
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Shared spell statistics across all facts
+    let mut spell_pairs: HashMap<(u64, u64), (usize, usize)> = HashMap::new();
+    let mut ind_spells: HashMap<u64, (i64, i64)> = HashMap::new();
+    for p in &parsed {
+        if p.spell1 > 0 && p.spell2 > 0 {
+            let pair = (p.spell1.min(p.spell2), p.spell1.max(p.spell2));
+            let e = spell_pairs.entry(pair).or_default();
+            e.0 += 1;
+            if p.win { e.1 += 1; }
+        }
+        for sp in [p.spell1, p.spell2] {
+            if sp > 0 {
+                let e = ind_spells.entry(sp).or_default();
+                e.0 += 1;
+                if p.win { e.1 += 1; }
+            }
+        }
+    }
+    let top_spell_pair = spell_pairs
+        .into_iter()
+        .max_by_key(|x| x.1 .0)
+        .map(|x| x.0)
+        .unwrap_or((4, 32));
+
+    let mut shared_spells = Vec::new();
+    for sp in [top_spell_pair.0, top_spell_pair.1] {
+        shared_spells.push(mayhem_spell(sp, spells_catalog, &ind_spells, champion_win_rate).await);
+    }
+    let all_spells = shared_spells.clone();
+
+    // 4. Infer Rush Items by analyzing incomplete games (solo completions & slot positions)
+    let min_rush_games = if total_games <= 15 { 1 } else if total_games <= 50 { 2 } else { 3 };
+    let parsed_refs: Vec<&V2ParsedFact> = parsed.iter().collect();
+    let candidates = infer_v2_rush_items_from_refs(&parsed_refs, champion_win_rate, min_rush_games);
+
+    let mut strategies = Vec::new();
+
+    // 5. Build Adaptive Strategies (when augments are selected)
+    let mut adaptive_strategies = Vec::new();
+    if !normalized_augments.is_empty() {
+        for aug in normalized_augments {
+            // A. Check for known warped archetype template
+            if let Some(warped_arch) = build_augment_warped_archetype(aug, champion_win_rate) {
+                let strat = assemble_v2_strategy_from_mined(
+                    &warped_arch,
+                    &parsed,
+                    champion_win_rate,
+                    total_games,
+                    items_catalog,
+                    aug_catalog,
+                    &item_aug_synergies,
+                    &shared_spells,
+                    &all_spells,
+                    normalized_augments,
+                ).await;
+                adaptive_strategies.push(strat);
+            }
+
+            // B. Data-driven augment core
+            let aug_facts: Vec<&V2ParsedFact> = parsed
+                .iter()
+                .filter(|p| p.augments.iter().any(|a| a.eq_ignore_ascii_case(aug)))
+                .collect();
+            if aug_facts.len() >= 3 {
+                let aug_candidates = infer_v2_rush_items_from_refs(&aug_facts, champion_win_rate, 2);
+                if let Some(top_aug_cand) = aug_candidates.first() {
+                    let strat = assemble_v2_strategy_for_core(
+                        &format!("adaptive_{}", aug.to_lowercase().replace(' ', "_")),
+                        &format!("Adaptive: {}", aug),
+                        top_aug_cand.item_id,
+                        &aug_facts,
+                        champion_win_rate,
+                        total_games,
+                        items_catalog,
+                        aug_catalog,
+                        &item_aug_synergies,
+                        &shared_spells,
+                        &all_spells,
+                        normalized_augments,
+                    ).await;
+                    if !adaptive_strategies.iter().any(|s| s.items.iter().map(|i| i.id).collect::<Vec<_>>() == strat.items.iter().map(|i| i.id).collect::<Vec<_>>()) {
+                        adaptive_strategies.push(strat);
+                    }
+                }
+            }
+        }
+    }
+
+    // 6. Build General Builds (1 or 2 robust paths for all games)
+    if let Some(first_cand) = candidates.first() {
+        let general_1 = assemble_v2_strategy_for_core(
+            "general_1",
+            "General",
+            first_cand.item_id,
+            &parsed_refs,
+            champion_win_rate,
+            total_games,
+            items_catalog,
+            aug_catalog,
+            &item_aug_synergies,
+            &shared_spells,
+            &all_spells,
+            normalized_augments,
+        ).await;
+
+        let g1_core_items: HashSet<i64> = general_1.items.iter().take(3).map(|i| i.id).collect();
+
+        // Check for viable distinct General Build 2 (distinct rush item / different archetype)
+        let mut general_2 = None;
+        for cand in candidates.iter().skip(1) {
+            if cand.total_games >= 4 && !g1_core_items.contains(&cand.item_id) {
+                let strat = assemble_v2_strategy_for_core(
+                    "general_2",
+                    "General",
+                    cand.item_id,
+                    &parsed_refs,
+                    champion_win_rate,
+                    total_games,
+                    items_catalog,
+                    aug_catalog,
+                    &item_aug_synergies,
+                    &shared_spells,
+                    &all_spells,
+                    normalized_augments,
+                ).await;
+                let g2_core: HashSet<i64> = strat.items.iter().take(3).map(|i| i.id).collect();
+                if g2_core.intersection(&g1_core_items).count() <= 1 {
+                    general_2 = Some(strat);
+                    break;
+                }
+            }
+        }
+
+        if !adaptive_strategies.is_empty() {
+            strategies.extend(adaptive_strategies);
+            strategies.push(general_1);
+            if let Some(g2) = general_2 {
+                strategies.push(g2);
+            }
+        } else {
+            strategies.push(general_1);
+            if let Some(g2) = general_2 {
+                strategies.push(g2);
+            }
+        }
+    }
+
+    // Fallback if strategies empty:
+    if strategies.is_empty() {
+        for (idx, arch) in mine_build_archetypes(&facts.iter().collect::<Vec<_>>(), items_catalog, champion_win_rate).into_iter().enumerate() {
+            let strat = assemble_v2_strategy_from_mined(
+                &arch,
+                &parsed,
+                champion_win_rate,
+                total_games,
+                items_catalog,
+                aug_catalog,
+                &item_aug_synergies,
+                &shared_spells,
+                &all_spells,
+                normalized_augments,
+            ).await;
+            strategies.push(strat);
+            if idx >= 1 {
+                break;
+            }
+        }
+    }
+
+    MayhemChampionBuildSummary {
+        champion_id,
+        champion_name: champion_name.to_string(),
+        icon_url: icon_url.to_string(),
+        champion_win_rate,
+        champion_wpa,
+        total_games,
+        strategies,
+        applied_augment_ids: normalized_augments.to_vec(),
+        fallback_used: false,
+    }
+}
+
 pub async fn compute_mayhem_champion_build(
     champion_id: i64,
     requested_augments: Vec<String>,
+    algorithm_version: Option<String>,
 ) -> Result<MayhemChampionBuildSummary, String> {
+    let version = algorithm_version
+        .unwrap_or_else(|| "v2".to_string())
+        .to_lowercase();
+    let version = if version == "v1" { "v1".to_string() } else { "v2".to_string() };
+
     let mut normalized_augments: Vec<String> = requested_augments
         .into_iter()
         .filter(|a| !a.is_empty() && a != "0")
@@ -3338,7 +4197,7 @@ pub async fn compute_mayhem_champion_build(
     normalized_augments.sort();
     normalized_augments.dedup();
 
-    let cache_key = (champion_id, normalized_augments.clone());
+    let cache_key = (champion_id, normalized_augments.clone(), version.clone());
     // 1. Check in-memory cache
     {
         let cache = MAYHEM_CHAMPION_BUILDS_CACHE.read().await;
@@ -3436,6 +4295,31 @@ pub async fn compute_mayhem_champion_build(
     let champion_win_rate = wins_count as f64 / total_games as f64;
     let champion_wpa = champion_win_rate - global_baseline;
 
+    if version == "v2" {
+        let items_catalog = get_items_by_id().await.unwrap_or_default();
+        let aug_catalog = get_augment_catalog_map().await.unwrap_or_default();
+        let spells_catalog = get_spells_by_id().await.unwrap_or_default();
+
+        let summary = compute_mayhem_champion_build_v2(
+            champion_id,
+            &champion_name,
+            &icon_url,
+            &facts,
+            global_baseline,
+            champion_win_rate,
+            champion_wpa,
+            &normalized_augments,
+            &items_catalog,
+            &aug_catalog,
+            &spells_catalog,
+        )
+        .await;
+
+        let mut cache = MAYHEM_CHAMPION_BUILDS_CACHE.write().await;
+        cache.insert(cache_key, (Instant::now(), summary.clone()));
+        return Ok(summary);
+    }
+
     // 4. Augment conditioning filter (has_all) with >= 15 games fallback
     let mut applied_augment_ids = normalized_augments.clone();
     let mut fallback_used = false;
@@ -3476,7 +4360,7 @@ pub async fn compute_mayhem_champion_build(
         }
         let mut aug_cache = MAYHEM_CHAMPION_AUGMENTS_CACHE.write().await;
         aug_cache.insert(
-            cache_key.clone(),
+            (champion_id, normalized_augments.clone()),
             (Instant::now(), champion_win_rate, active_facts.len(), aug_map),
         );
     }
@@ -4458,7 +5342,7 @@ pub async fn get_mayhem_augments(
             };
 
             if !has_valid_cache {
-                let _ = compute_mayhem_champion_build(cid, with_ids.clone()).await;
+                let _ = compute_mayhem_champion_build(cid, with_ids.clone(), None).await;
             }
 
             let cache = MAYHEM_CHAMPION_AUGMENTS_CACHE.read().await;
@@ -5081,5 +5965,54 @@ mod tests {
         assert_eq!(advice2.current_stage, 2);
         assert_eq!(advice2.next_target.as_ref().map(|i| i.id), Some(3115));
         assert_eq!(advice2.gold_needed, 1500);
+    }
+
+    #[test]
+    fn test_v2_infer_rush_items_from_early_matches() {
+        let mut facts = Vec::new();
+        // Item 6672 (e.g. Kraken Slayer): bought as sole legendary in 5 early games (slot 0)
+        for _ in 0..5 {
+            facts.push(V2ParsedFact {
+                legendaries: vec![(6672, 0)],
+                boot: Some(3006),
+                starter: Some(1055),
+                win: true,
+                spell1: 4,
+                spell2: 32,
+                augments: vec![],
+            });
+        }
+        // 5 games with (6672, 3085)
+        for _ in 0..5 {
+            facts.push(V2ParsedFact {
+                legendaries: vec![(6672, 0), (3085, 1)],
+                boot: Some(3006),
+                starter: Some(1055),
+                win: true,
+                spell1: 4,
+                spell2: 32,
+                augments: vec![],
+            });
+        }
+        // 5 late games finishing 3089 (Rabadon's) in slot 3
+        for _ in 0..5 {
+            facts.push(V2ParsedFact {
+                legendaries: vec![(6672, 0), (3085, 1), (3031, 2), (3089, 3)],
+                boot: Some(3006),
+                starter: Some(1055),
+                win: true,
+                spell1: 4,
+                spell2: 32,
+                augments: vec![],
+            });
+        }
+
+        let refs: Vec<&V2ParsedFact> = facts.iter().collect();
+        let candidates = infer_v2_rush_items_from_refs(&refs, 0.50, 2);
+
+        assert!(!candidates.is_empty(), "Must produce rush candidates");
+        assert_eq!(candidates[0].item_id, 6672, "Item 6672 must be #1 rush item due to solo early completions");
+        let rabadon_score = candidates.iter().find(|c| c.item_id == 3089).map_or(0.0, |c| c.rush_score);
+        assert!(candidates[0].rush_score > rabadon_score, "Rush item must score higher than late capstone 3089");
     }
 }

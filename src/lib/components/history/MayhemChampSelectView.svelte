@@ -81,6 +81,20 @@
   let liveAdvice = $state<MayhemLiveAdvice | null>(null);
   let isEncyclopediaOpen = $state(false);
   let livePollTimer: ReturnType<typeof setInterval> | null = null;
+  let buildAlgorithmVersion = $state<"v1" | "v2">(
+    (typeof localStorage !== "undefined" && (localStorage.getItem("mayhem-build-algorithm-version") as "v1" | "v2")) || "v2"
+  );
+
+  function setBuildAlgorithmVersion(v: "v1" | "v2") {
+    if (buildAlgorithmVersion === v) return;
+    buildAlgorithmVersion = v;
+    try {
+      localStorage.setItem("mayhem-build-algorithm-version", v);
+    } catch (_) {}
+    if (selectedChampionId > 0) {
+      void loadSingleChampionBuild(selectedChampionId);
+    }
+  }
 
   const isInChampSelect = $derived(
     Boolean(
@@ -307,7 +321,7 @@
 
     if (ids.length > 0) {
       try {
-        const builds = await getMayhemTeamBuilds(ids);
+        const builds = await getMayhemTeamBuilds(ids, buildAlgorithmVersion);
         teamBuilds = { ...teamBuilds, ...builds };
       } catch (err) {
         logger.error("frontend.mayhem_champ_select", "Failed batch loading team builds", err);
@@ -356,7 +370,7 @@
     if (!championId || championId <= 0) return;
     loadingBuild = true;
     try {
-      const build = await getMayhemChampionBuild(championId, augmentIds);
+      const build = await getMayhemChampionBuild(championId, augmentIds, buildAlgorithmVersion);
       manualChampionBuild = build;
       teamBuilds[championId] = build;
       if (build.strategies.length > 0 && !build.strategies.some((s) => s.id === selectedStrategyId)) {
@@ -526,6 +540,26 @@
 
       <!-- Status Indicators -->
       <div class="flex items-center gap-2">
+        <!-- V1 / V2 Build Algorithm Toggle -->
+        <div class="flex items-center rounded-lg border border-gray-700/60 bg-gray-850 p-0.5 text-xs font-semibold shadow-sm">
+          <button
+            type="button"
+            onclick={() => setBuildAlgorithmVersion("v1")}
+            class="px-2 py-0.5 rounded transition text-[11px] {buildAlgorithmVersion === 'v1' ? 'bg-purple-600 text-white font-bold shadow' : 'text-gray-400 hover:text-gray-200'}"
+            title="Algorithm V1: Classic Metric & Archetype Mining"
+          >
+            V1
+          </button>
+          <button
+            type="button"
+            onclick={() => setBuildAlgorithmVersion("v2")}
+            class="px-2 py-0.5 rounded transition text-[11px] {buildAlgorithmVersion === 'v2' ? 'bg-purple-600 text-white font-bold shadow' : 'text-gray-400 hover:text-gray-200'}"
+            title="Algorithm V2: Purchase Priority Inference & Adaptive Augment Synergy"
+          >
+            V2
+          </button>
+        </div>
+
         <!-- Encyclopedia Button -->
         <button
           type="button"

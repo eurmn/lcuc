@@ -13,6 +13,17 @@
   let lastRefreshKey = 0;
   let kind = $state<StatisticsKind>("item");
   let isEncyclopediaOpen = $state(false);
+  let buildAlgorithmVersion = $state<"v1" | "v2">(
+    (typeof localStorage !== "undefined" && (localStorage.getItem("mayhem-build-algorithm-version") as "v1" | "v2")) || "v2"
+  );
+
+  function setBuildAlgorithmVersion(v: "v1" | "v2") {
+    if (buildAlgorithmVersion === v) return;
+    buildAlgorithmVersion = v;
+    try {
+      localStorage.setItem("mayhem-build-algorithm-version", v);
+    } catch (_) {}
+  }
   let rows = $state<ServerStatisticRow[]>([]);
   let selectedId = $state<string | null>(null);
   let search = $state("");
@@ -655,6 +666,26 @@
             </p>
           </div>
           <div class="flex flex-wrap items-center gap-2">
+            <!-- V1 / V2 Build Algorithm Toggle -->
+            <div class="flex items-center rounded-lg border border-gray-700/60 bg-gray-950 p-0.5 text-xs font-semibold shadow-sm">
+              <button
+                type="button"
+                onclick={() => setBuildAlgorithmVersion("v1")}
+                class="px-2 py-0.5 rounded transition text-[11px] {buildAlgorithmVersion === 'v1' ? 'bg-purple-600 text-white font-bold shadow' : 'text-gray-400 hover:text-gray-200'}"
+                title="Algorithm V1: Classic Metric & Archetype Mining"
+              >
+                V1
+              </button>
+              <button
+                type="button"
+                onclick={() => setBuildAlgorithmVersion("v2")}
+                class="px-2 py-0.5 rounded transition text-[11px] {buildAlgorithmVersion === 'v2' ? 'bg-purple-600 text-white font-bold shadow' : 'text-gray-400 hover:text-gray-200'}"
+                title="Algorithm V2: Purchase Priority Inference & Adaptive Augment Synergy"
+              >
+                V2
+              </button>
+            </div>
+
             <button
               type="button"
               onclick={() => (isEncyclopediaOpen = true)}

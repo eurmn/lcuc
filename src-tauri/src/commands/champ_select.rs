@@ -80,26 +80,28 @@ pub async fn api_champ_select_session() -> Result<Option<Value>, String> {
     }
 }
 
-/// Computes or retrieves from cache the full 8-strategy build analysis for a champion in ARAM Mayhem.
+/// Computes or retrieves from cache the full build analysis for a champion in ARAM Mayhem.
 #[tauri::command]
 pub async fn api_mayhem_champion_build(
     champion_id: i64,
     augment_ids: Option<Vec<String>>,
+    algorithm_version: Option<String>,
 ) -> Result<MayhemChampionBuildSummary, String> {
-    compute_mayhem_champion_build(champion_id, augment_ids.unwrap_or_default()).await
+    compute_mayhem_champion_build(champion_id, augment_ids.unwrap_or_default(), algorithm_version).await
 }
 
 /// Batch-computes or retrieves builds for multiple champions (team roster and bench).
 #[tauri::command]
 pub async fn api_mayhem_team_builds(
     champion_ids: Vec<i64>,
+    algorithm_version: Option<String>,
 ) -> Result<HashMap<i64, MayhemChampionBuildSummary>, String> {
     let mut results = HashMap::new();
     for id in champion_ids {
         if id <= 0 {
             continue;
         }
-        if let Ok(summary) = compute_mayhem_champion_build(id, Vec::new()).await {
+        if let Ok(summary) = compute_mayhem_champion_build(id, Vec::new(), algorithm_version.clone()).await {
             results.insert(id, summary);
         }
     }
@@ -350,7 +352,7 @@ pub async fn api_get_live_build_advice(
     game_time: Option<f64>,
     augment_ids: Option<Vec<String>>,
 ) -> Result<MayhemLiveAdvice, String> {
-    let summary = compute_mayhem_champion_build(champion_id, augment_ids.unwrap_or_default()).await?;
+    let summary = compute_mayhem_champion_build(champion_id, augment_ids.unwrap_or_default(), None).await?;
     let strat = if let Some(ref sid) = strategy_id {
         summary.strategies.iter().find(|s| &s.id == sid)
     } else {
