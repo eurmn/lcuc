@@ -9,6 +9,51 @@ export interface MayhemBuildItem {
   wpa?: number;
   games?: number;
   pick_rate?: number;
+  situational_tag?: string;
+}
+
+export interface MayhemStageItem {
+  stage: number;
+  title: string;
+  timing: string;
+  items: MayhemBuildItem[];
+}
+
+export interface MayhemLiveAdvice {
+  current_stage: number;
+  stage_title: string;
+  immediate_purchases: MayhemBuildItem[];
+  next_target?: MayhemBuildItem | null;
+  gold_needed: number;
+}
+
+export interface LivePlayerItem {
+  slot: number;
+  item_id: number;
+  count: number;
+  display_name: string;
+  price: number;
+}
+
+export interface LivePlayerStats {
+  ability_power: number;
+  attack_damage: number;
+  attack_speed: number;
+  attack_range: number;
+  crit_chance: number;
+  armor: number;
+  magic_resist: number;
+  move_speed: number;
+}
+
+export interface LiveGameState {
+  is_in_game: boolean;
+  game_time: number;
+  champion_name: string;
+  level: number;
+  current_gold: number;
+  items: LivePlayerItem[];
+  stats: LivePlayerStats;
 }
 
 export interface MayhemBuildSpell {
@@ -45,6 +90,7 @@ export interface MayhemBuildStrategy {
   items: MayhemBuildItem[];
   alternative_items?: MayhemBuildItem[];
   situational_items?: MayhemBuildItem[];
+  stages?: MayhemStageItem[];
   spells: MayhemBuildSpell[];
   all_spells?: MayhemBuildSpell[];
   augments: MayhemBuildAugment[];

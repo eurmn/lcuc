@@ -1,0 +1,78 @@
+# RIOT LIVE CLIENT DATA IN-GAME API
+
+## Protocol & Endpoint
+- Base URL: `https://127.0.0.1:2999/liveclientdata/allgamedata`
+- Transport: HTTPS with self-signed certificate (must skip TLS certificate verification).
+- Availability: Port 2999 opens only when `League of Legends.exe` match is actively in progress.
+- Mode Support: Supported across Summoner's Rift, ARAM, Arena, and ARAM: Mayhem.
+
+## Key Payload Structure
+```json
+{
+  "activePlayer": {
+    "championStats": {
+      "abilityPower": 0.0,
+      "armor": 38.0,
+      "attackDamage": 72.0,
+      "attackSpeed": 0.68,
+      "cooldownReduction": 0.0,
+      "critChance": 0.0,
+      "currentHealth": 640.0,
+      "maxHealth": 640.0,
+      "magicResist": 32.0,
+      "moveSpeed": 330.0
+    },
+    "currentGold": 1400.0,
+    "level": 3,
+    "summonerName": "PlayerName"
+  },
+  "allPlayers": [
+    {
+      "championName": "Jinx",
+      "isBot": false,
+      "items": [
+        {
+          "canUse": true,
+          "consumable": false,
+          "count": 1,
+          "displayName": "Noonquiver",
+          "itemID": 6670,
+          "price": 1300,
+          "rawDescription": "...",
+          "rawDisplayName": "Item_6670_Name",
+          "slot": 0
+        }
+      ],
+      "level": 3,
+      "riotId": "PlayerName#TAG",
+      "summonerName": "PlayerName",
+      "team": "ORDER"
+    }
+  ],
+  "events": {
+    "Events": [
+      {
+        "EventID": 0,
+        "EventName": "GameStart",
+        "EventTime": 0.0
+      },
+      {
+        "EventID": 1,
+        "EventName": "ItemPurchased",
+        "EventTime": 15.2,
+        "ItemID": 6670
+      }
+    ]
+  },
+  "gameData": {
+    "gameMode": "ARAM",
+    "gameTime": 125.4,
+    "mapName": "Map12"
+  }
+}
+```
+
+## Relevant Sub-endpoints
+- `/liveclientdata/activeplayer` -> Fast polling for current gold and level.
+- `/liveclientdata/playeritems?riotId={riotId}` -> Specific player inventory without full dump.
+- `/liveclientdata/eventdata` -> Event log for recent item purchases, kills, and objectives.

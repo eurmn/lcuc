@@ -20,9 +20,9 @@ Write-Host "=== 3. Running cargo test ===" -ForegroundColor Cyan
 
 Write-Host "=== 4. Running svelte-check ===" -ForegroundColor Cyan
 Set-Location "$scriptDir"
-pnpm check
+bun run check
 
 Write-Host "=== 5. Running frontend build ===" -ForegroundColor Cyan
-pnpm build
+bun run build
 
 Write-Host "=== All validation checks passed successfully! ===" -ForegroundColor Green

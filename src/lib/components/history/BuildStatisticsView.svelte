@@ -7,10 +7,12 @@
   import { createPopoverMiddlewares } from "../../utils/popoverPlacement";
   import AugmentIcon from "../common/AugmentIcon.svelte";
   import GameEntityPopover from "../common/GameEntityPopover.svelte";
+  import MayhemEncyclopediaModal from "./MayhemEncyclopediaModal.svelte";
 
   let { scope = "personal", hideLowPickrate = false, refreshKey = 0 }: { scope?: StatisticsScope; hideLowPickrate?: boolean; refreshKey?: number } = $props();
   let lastRefreshKey = 0;
   let kind = $state<StatisticsKind>("item");
+  let isEncyclopediaOpen = $state(false);
   let rows = $state<ServerStatisticRow[]>([]);
   let selectedId = $state<string | null>(null);
   let search = $state("");
@@ -653,6 +655,15 @@
             </p>
           </div>
           <div class="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onclick={() => (isEncyclopediaOpen = true)}
+              class="flex items-center gap-1.5 rounded-md border border-purple-500/40 bg-purple-950/40 px-2.5 py-1 text-[11px] font-semibold text-purple-200 hover:bg-purple-900/60 transition shadow-sm cursor-pointer"
+            >
+              <span class="icon-[heroicons--book-open] text-xs"></span>
+              Encyclopedia
+            </button>
+
             <input
               value={search}
               oninput={handleSearchInput}
@@ -825,6 +836,7 @@
                           <span class="text-gray-500 text-xs font-bold select-none">+</span>
                         {/if}
                         <div
+                          role="presentation"
                           class="relative shrink-0 cursor-help"
                           onmouseenter={(e) => triggerHover(e, { name: comp.name, iconUrl: comp.icon_url, description: comp.description, rarity: comp.rarity, itemClass: comp.item_class, priceTotal: comp.price_total, categories: comp.categories }, "top")}
                           onmouseleave={clearHover}
@@ -996,4 +1008,9 @@
       {/if}
     </div>
   {/if}
+
+  <MayhemEncyclopediaModal
+    isOpen={isEncyclopediaOpen}
+    onClose={() => (isEncyclopediaOpen = false)}
+  />
 </div>

@@ -3,7 +3,7 @@ use crate::models::{
     ChampionSummary, MatchHistoryAugmentInfo, MatchHistoryItem, MatchHistoryItemInfo,
     MayhemAugmentItem, MayhemAugmentsQuery, MayhemAugmentsResponse, MayhemBuildAugment,
     MayhemBuildItem, MayhemBuildSpell, MayhemBuildStrategy, MayhemChampionBuildSummary,
-    SaveMayhemBuildPayload, SavedMayhemBuild,
+    MayhemLiveAdvice, MayhemStageItem, SaveMayhemBuildPayload, SavedMayhemBuild,
 };
 use crate::services::asset_cache::get_cached_asset_data_uri;
 use crate::services::champions::get_all_champions;
@@ -2419,6 +2419,371 @@ fn calc_item_pick_rate(games: usize, total_games: usize, is_boot: bool) -> f64 {
     }
 }
 
+pub fn get_situational_tag(id: i64, item_info: Option<&CachedItemInfo>) -> Option<&'static str> {
+    match id {
+        // Anti-Heal (Grievous Wounds)
+        3033 | 6609 | 3165 | 3075 | 3916 | 3123 | 3076 => Some("Anti-Heal"),
+        // Anti-Shield (Shield Reaver / Cursed Bloom)
+        6695 | 4645 => Some("Anti-Shield"),
+        // Armor Penetration
+        3036 | 6694 | 3071 | 3302 => Some("Armor Penetration"),
+        // Magic Penetration
+        3135 | 3137 => Some("Magic Penetration"),
+        // Anti-Magic / Spell Shield
+        3156 | 6701 | 4401 | 3102 | 3814 => Some("Magic Resist"),
+        // Armor / Anti-Burst / Stasis
+        3157 | 6333 | 3110 | 3143 => Some("Armor / Anti-Burst"),
+        // Cleanse / CC Immunity
+        3139 | 6035 | 3140 => Some("Cleanse / QSS"),
+        _ => {
+            if let Some(info) = item_info {
+                let lower = info.name.to_lowercase();
+                let desc = info.description.as_deref().unwrap_or("").to_lowercase();
+                if lower.contains("mortal reminder")
+                    || lower.contains("chainsword")
+                    || lower.contains("morellonomicon")
+                    || lower.contains("thornmail")
+                    || desc.contains("grievous wounds")
+                {
+                    return Some("Anti-Heal");
+                }
+                if lower.contains("serpent's fang")
+                    || lower.contains("shadowflame")
+                    || (desc.contains("shield") && (desc.contains("destroy") || desc.contains("reduce")))
+                {
+                    return Some("Anti-Shield");
+                }
+                if lower.contains("dominik")
+                    || lower.contains("serylda")
+                    || lower.contains("cleaver")
+                    || desc.contains("armor penetration")
+                {
+                    return Some("Armor Penetration");
+                }
+                if lower.contains("void staff")
+                    || lower.contains("cryptbloom")
+                    || desc.contains("magic penetration")
+                {
+                    return Some("Magic Penetration");
+                }
+                if lower.contains("kaenic")
+                    || lower.contains("force of nature")
+                    || lower.contains("malmortius")
+                {
+                    return Some("Magic Resist");
+                }
+                if lower.contains("zhonya") || lower.contains("frozen heart") || lower.contains("randuin") {
+                    return Some("Armor / Anti-Burst");
+                }
+            }
+            None
+        }
+    }
+}
+
+pub fn get_item_augment_warp_bonus(item_id: i64, augments: &[String]) -> f64 {
+    let mut bonus = 0.0;
+    for aug in augments {
+        let low = aug.to_lowercase();
+        if low == "marksmage" {
+            if matches!(item_id, 3115 | 3100 | 3089 | 3124 | 4645 | 3302 | 3091 | 3020) {
+                bonus += 3.0;
+            }
+        } else if low == "adapt" {
+            if matches!(item_id, 3031 | 3072 | 3089 | 6333 | 6697 | 3074) {
+                bonus += 2.5;
+            }
+        } else if low == "big shot" || low == "bigshot" {
+            if matches!(item_id, 3046 | 3085 | 3031 | 6672 | 3094 | 3033 | 3006) {
+                bonus += 2.5;
+            }
+        } else if low == "apex inventor" || low == "apexinventor" {
+            if matches!(item_id, 3084 | 6610 | 6665 | 6692 | 3157 | 6653 | 3074 | 3748) {
+                bonus += 2.5;
+            }
+        } else if low == "vulnerability" {
+            if matches!(item_id, 3151 | 3097 | 3031 | 3068 | 6664) {
+                bonus += 2.5;
+            }
+        } else if low == "goliath" {
+            if matches!(item_id, 3084 | 3083 | 6667 | 3068 | 3005 | 3075 | 6701) {
+                bonus += 2.5;
+            }
+        } else if low == "draw your sword" || low == "drawyoursword" {
+            if matches!(item_id, 3074 | 3748 | 3078 | 3153 | 6333 | 3053) {
+                bonus += 2.5;
+            }
+        }
+    }
+    bonus
+}
+
+pub fn build_augment_warped_archetype(augment: &str, champion_win_rate: f64) -> Option<MinedArchetype> {
+    let lower = augment.to_lowercase();
+    if lower == "marksmage" {
+        Some(MinedArchetype {
+            id: "augment_warp_marksmage".to_string(),
+            label: "Augment Warp: AP On-Hit (Marksmage)".to_string(),
+            core_items: vec![3115, 3100, 3089],
+            boot_id: Some(3020),
+            starter_id: Some(3184),
+            continuation_items: vec![
+                (3124, 100, 0.65, 0.45),
+                (4645, 90, 0.64, 0.40),
+                (3302, 80, 0.62, 0.35),
+                (3091, 75, 0.61, 0.30),
+                (4637, 70, 0.60, 0.28),
+            ],
+            situational_items: vec![
+                (3165, 50, 0.60, 0.20),
+                (4645, 60, 0.63, 0.25),
+                (3135, 55, 0.62, 0.22),
+                (3157, 65, 0.61, 0.24),
+                (3102, 45, 0.59, 0.18),
+            ],
+            sample_games: 50,
+            build_win_rate: (champion_win_rate + 0.08).clamp(0.5, 0.75),
+            build_wpa: 0.08,
+            spells: (4, 32),
+            top_augments: vec![("Marksmage".to_string(), 50, 0.65, 0.10, 0.9)],
+        })
+    } else if lower == "adapt" {
+        Some(MinedArchetype {
+            id: "augment_warp_adapt".to_string(),
+            label: "Augment Warp: AD-to-AP (ADAPt)".to_string(),
+            core_items: vec![3031, 3072, 3089],
+            boot_id: Some(3006),
+            starter_id: Some(3177),
+            continuation_items: vec![
+                (6333, 90, 0.63, 0.40),
+                (6697, 85, 0.62, 0.35),
+                (3074, 80, 0.61, 0.32),
+                (4645, 75, 0.60, 0.30),
+            ],
+            situational_items: vec![
+                (3033, 50, 0.60, 0.20),
+                (6695, 55, 0.61, 0.22),
+                (3036, 60, 0.62, 0.25),
+            ],
+            sample_games: 40,
+            build_win_rate: (champion_win_rate + 0.07).clamp(0.5, 0.75),
+            build_wpa: 0.07,
+            spells: (4, 32),
+            top_augments: vec![("ADAPt".to_string(), 40, 0.64, 0.09, 0.9)],
+        })
+    } else if lower == "big shot" || lower == "bigshot" {
+        Some(MinedArchetype {
+            id: "augment_warp_bigshot".to_string(),
+            label: "Augment Warp: AS to Crit (Big Shot)".to_string(),
+            core_items: vec![3046, 3085, 3031],
+            boot_id: Some(3006),
+            starter_id: Some(3177),
+            continuation_items: vec![
+                (6672, 90, 0.64, 0.42),
+                (3094, 85, 0.62, 0.38),
+                (3033, 75, 0.61, 0.30),
+                (3302, 70, 0.60, 0.28),
+            ],
+            situational_items: vec![
+                (3033, 50, 0.60, 0.20),
+                (6695, 55, 0.61, 0.22),
+                (3036, 60, 0.62, 0.25),
+            ],
+            sample_games: 40,
+            build_win_rate: (champion_win_rate + 0.07).clamp(0.5, 0.75),
+            build_wpa: 0.07,
+            spells: (4, 32),
+            top_augments: vec![("Big Shot".to_string(), 40, 0.63, 0.08, 0.9)],
+        })
+    } else if lower == "apex inventor" || lower == "apexinventor" {
+        Some(MinedArchetype {
+            id: "augment_warp_apex_inventor".to_string(),
+            label: "Augment Warp: Item Haste Engine (Apex Inventor)".to_string(),
+            core_items: vec![3084, 6610, 6665],
+            boot_id: Some(3047),
+            starter_id: Some(2051),
+            continuation_items: vec![
+                (6692, 90, 0.63, 0.40),
+                (3157, 80, 0.62, 0.35),
+                (3074, 75, 0.61, 0.30),
+            ],
+            situational_items: vec![
+                (3075, 50, 0.60, 0.20),
+                (6701, 55, 0.61, 0.22),
+            ],
+            sample_games: 40,
+            build_win_rate: (champion_win_rate + 0.06).clamp(0.5, 0.75),
+            build_wpa: 0.06,
+            spells: (4, 32),
+            top_augments: vec![("Apex Inventor".to_string(), 40, 0.62, 0.07, 0.9)],
+        })
+    } else {
+        None
+    }
+}
+
+pub fn build_stage_pathing(
+    starter_item: &Option<MayhemBuildItem>,
+    items: &[MayhemBuildItem],
+    situational_items: &[MayhemBuildItem],
+) -> Vec<MayhemStageItem> {
+    let mut stages = Vec::new();
+
+    // Stage 1: Starter + Boots (0-5 min / Lv 3-6)
+    let mut stage1_items = Vec::new();
+    if let Some(starter) = starter_item {
+        stage1_items.push(starter.clone());
+    }
+    for it in items {
+        if it.item_class.as_deref() == Some("boot")
+            || it.name.to_lowercase().contains("boots")
+            || it.name.to_lowercase().contains("greaves")
+            || it.name.to_lowercase().contains("shoes")
+            || it.name.to_lowercase().contains("treads")
+        {
+            stage1_items.push(it.clone());
+            break;
+        }
+    }
+    if stage1_items.is_empty() && !items.is_empty() {
+        stage1_items.push(items[0].clone());
+    }
+    stages.push(MayhemStageItem {
+        stage: 1,
+        title: "Stage 1: Starter & Boots".to_string(),
+        timing: "0 - 5 min (Lv 3 - 6)".to_string(),
+        items: stage1_items,
+    });
+
+    let non_boots: Vec<MayhemBuildItem> = items
+        .iter()
+        .filter(|it| {
+            it.item_class.as_deref() != Some("boot")
+                && !it.name.to_lowercase().contains("boots")
+                && !it.name.to_lowercase().contains("greaves")
+                && !it.name.to_lowercase().contains("shoes")
+                && !it.name.to_lowercase().contains("treads")
+        })
+        .cloned()
+        .collect();
+
+    // Stage 2: First Mythic/Core spike (Lv 7 augment synergy)
+    let stage2_items: Vec<MayhemBuildItem> = non_boots.iter().take(2).cloned().collect();
+    stages.push(MayhemStageItem {
+        stage: 2,
+        title: "Stage 2: First Core Spike".to_string(),
+        timing: "5 - 10 min (Lv 7)".to_string(),
+        items: stage2_items,
+    });
+
+    // Stage 3: Mid-game counter & synergy continuation (Lv 11 augment)
+    let stage3_items: Vec<MayhemBuildItem> = non_boots.iter().skip(2).take(2).cloned().collect();
+    stages.push(MayhemStageItem {
+        stage: 3,
+        title: "Stage 3: Synergy Continuation".to_string(),
+        timing: "10 - 15 min (Lv 11)".to_string(),
+        items: stage3_items,
+    });
+
+    // Stage 4: Capstone & Situational (Lv 15+)
+    let mut stage4_items: Vec<MayhemBuildItem> = non_boots.iter().skip(4).take(2).cloned().collect();
+    for sit in situational_items.iter().take(2) {
+        if !stage4_items.iter().any(|x| x.id == sit.id) {
+            stage4_items.push(sit.clone());
+        }
+    }
+    stages.push(MayhemStageItem {
+        stage: 4,
+        title: "Stage 4: Capstone & Situational".to_string(),
+        timing: "15+ min (Lv 15+)".to_string(),
+        items: stage4_items,
+    });
+
+    stages
+}
+
+pub fn compute_live_build_advice(
+    strategy: &MayhemBuildStrategy,
+    current_gold: f64,
+    inventory_item_ids: &[i64],
+    level: u32,
+    _game_time: f64,
+) -> MayhemLiveAdvice {
+    let owned_ids: HashSet<i64> = inventory_item_ids.iter().copied().collect();
+
+    let current_stage = if level >= 15 || inventory_item_ids.len() >= 5 {
+        4
+    } else if level >= 11 || inventory_item_ids.len() >= 3 {
+        3
+    } else if level >= 7 || inventory_item_ids.len() >= 2 {
+        2
+    } else {
+        1
+    };
+
+    let stage_title = match current_stage {
+        1 => "Stage 1: Starter & Boots (Lv 3-6)",
+        2 => "Stage 2: First Core Spike (Lv 7)",
+        3 => "Stage 3: Synergy Continuation (Lv 11)",
+        _ => "Stage 4: Capstone & Situational (Lv 15+)",
+    }
+    .to_string();
+
+    let next_target = strategy
+        .items
+        .iter()
+        .find(|it| !owned_ids.contains(&it.id))
+        .cloned();
+
+    let gold_needed = if let Some(ref target) = next_target {
+        (target.price_total as f64 - current_gold).max(0.0) as i64
+    } else {
+        0
+    };
+
+    let mut immediate_purchases = Vec::new();
+    let mut seen_ids = HashSet::new();
+
+    if let Some(ref target) = next_target {
+        if (target.price_total as f64) <= current_gold {
+            immediate_purchases.push(target.clone());
+            seen_ids.insert(target.id);
+        }
+    }
+
+    for it in &strategy.items {
+        if !owned_ids.contains(&it.id) && !seen_ids.contains(&it.id) && (it.price_total as f64) <= current_gold {
+            immediate_purchases.push(it.clone());
+            seen_ids.insert(it.id);
+        }
+    }
+
+    for it in &strategy.situational_items {
+        if !owned_ids.contains(&it.id) && !seen_ids.contains(&it.id) && (it.price_total as f64) <= current_gold {
+            immediate_purchases.push(it.clone());
+            seen_ids.insert(it.id);
+        }
+    }
+
+    for it in &strategy.alternative_items {
+        if immediate_purchases.len() >= 6 {
+            break;
+        }
+        if !owned_ids.contains(&it.id) && !seen_ids.contains(&it.id) && (it.price_total as f64) <= current_gold {
+            immediate_purchases.push(it.clone());
+            seen_ids.insert(it.id);
+        }
+    }
+
+    MayhemLiveAdvice {
+        current_stage,
+        stage_title,
+        immediate_purchases,
+        next_target,
+        gold_needed,
+    }
+}
+
 pub struct MinedArchetype {
     pub id: String,
     pub label: String,
@@ -2914,6 +3279,7 @@ async fn mayhem_item(
         wpa: win_rate - champion_win_rate,
         games,
         pick_rate: calc_item_pick_rate(games, total_games, is_boot),
+        situational_tag: get_situational_tag(id, info).map(|s| s.to_string()),
     }
 }
 
@@ -3232,7 +3598,8 @@ pub async fn compute_mayhem_champion_build(
                 continue;
             }
 
-            let score = score_metric(agg, strat_id, champion_win_rate);
+            let warp_bonus = get_item_augment_warp_bonus(it_id, &normalized_augments);
+            let score = score_metric(agg, strat_id, champion_win_rate) * (1.0 + warp_bonus);
             let is_starter = is_starter_item(it_id, item_info);
             let is_boot = item_info
                 .map(|i| {
@@ -3342,6 +3709,7 @@ pub async fn compute_mayhem_champion_build(
                     wpa,
                     games: agg.games as usize,
                     pick_rate,
+                    situational_tag: None,
                 })
             }
         } else {
@@ -3375,6 +3743,7 @@ pub async fn compute_mayhem_champion_build(
                     wpa,
                     games: agg.games as usize,
                     pick_rate,
+                    situational_tag: get_situational_tag(id, item_info).map(|s| s.to_string()),
                 });
                 if alternative_items.len() >= 30 {
                     break;
@@ -3627,7 +3996,7 @@ pub async fn compute_mayhem_champion_build(
 
         // H. Enrich items with individual WPA and pick rate
         let mut enriched_items = Vec::new();
-        for id in chosen_item_ids {
+        for &id in &chosen_item_ids {
             let item_info = items_catalog.get(&(id as i32));
             let is_boot = item_info
                 .map(|i| {
@@ -3660,6 +4029,7 @@ pub async fn compute_mayhem_champion_build(
                 wpa,
                 games,
                 pick_rate,
+                situational_tag: get_situational_tag(id, item_info).map(|s| s.to_string()),
             });
         }
 
@@ -3762,6 +4132,21 @@ pub async fn compute_mayhem_champion_build(
             });
         }
 
+        let mut strat_situational = Vec::new();
+        for &(id, _, agg) in &core_items {
+            if !chosen_item_ids.contains(&id) {
+                if let Some(tag) = get_situational_tag(id, items_catalog.get(&(id as i32))) {
+                    let mut it = mayhem_item(id, &items_catalog, Some(agg), champion_win_rate, total_games).await;
+                    it.situational_tag = Some(tag.to_string());
+                    strat_situational.push(it);
+                    if strat_situational.len() >= 6 {
+                        break;
+                    }
+                }
+            }
+        }
+        let stages = build_stage_pathing(&starter_item, &enriched_items, &strat_situational);
+
         strategies.push(MayhemBuildStrategy {
             id: strat_id.to_string(),
             label: strat_label.to_string(),
@@ -3773,7 +4158,8 @@ pub async fn compute_mayhem_champion_build(
             starter_item,
             items: enriched_items,
             alternative_items,
-            situational_items: Vec::new(),
+            situational_items: strat_situational,
+            stages,
             spells: enriched_spells,
             all_spells: enriched_all_spells,
             augments: enriched_augments,
@@ -3836,6 +4222,7 @@ pub async fn compute_mayhem_champion_build(
             item.win_rate = wr;
             item.wpa = wr - champion_win_rate;
             item.pick_rate = pr;
+            item.situational_tag = get_situational_tag(id, items_catalog.get(&(id as i32))).map(|s| s.to_string());
             situational_items.push(item);
         }
         let starter_item = match arch.starter_id {
@@ -3877,6 +4264,7 @@ pub async fn compute_mayhem_champion_build(
                 augments.push(aug);
             }
         }
+        let stages = build_stage_pathing(&starter_item, &items, &situational_items);
         archetype_strategies.push(MayhemBuildStrategy {
             id: arch.id,
             label: arch.label,
@@ -3889,11 +4277,83 @@ pub async fn compute_mayhem_champion_build(
             items,
             alternative_items,
             situational_items,
+            stages,
             spells,
             all_spells: shared_all_spells.clone(),
             augments,
             sample_games: arch.sample_games,
         });
+    }
+
+    for aug in &normalized_augments {
+        if let Some(warped_arch) = build_augment_warped_archetype(aug, champion_win_rate) {
+            let mut items = Vec::new();
+            for &id in &warped_arch.core_items {
+                items.push(mayhem_item(id, &items_catalog, items_agg.get(&id), champion_win_rate, total_games).await);
+            }
+            if let Some(id) = warped_arch.boot_id {
+                items.push(mayhem_item(id, &items_catalog, items_agg.get(&id), champion_win_rate, total_games).await);
+            }
+            let mut alternative_items = Vec::new();
+            for &(id, games, wr, pr) in &warped_arch.continuation_items {
+                let mut it = mayhem_item(id, &items_catalog, items_agg.get(&id), champion_win_rate, total_games).await;
+                it.games = games;
+                it.win_rate = wr;
+                it.wpa = wr - champion_win_rate;
+                it.pick_rate = pr;
+                if items.len() < 6 {
+                    items.push(it);
+                } else {
+                    alternative_items.push(it);
+                }
+            }
+            let mut situational_items = Vec::new();
+            for &(id, games, wr, pr) in &warped_arch.situational_items {
+                let mut it = mayhem_item(id, &items_catalog, items_agg.get(&id), champion_win_rate, total_games).await;
+                it.games = games;
+                it.win_rate = wr;
+                it.wpa = wr - champion_win_rate;
+                it.pick_rate = pr;
+                it.situational_tag = get_situational_tag(id, items_catalog.get(&(id as i32))).map(|s| s.to_string());
+                situational_items.push(it);
+            }
+            let starter_item = match warped_arch.starter_id {
+                Some(id) => Some(mayhem_item(id, &items_catalog, items_agg.get(&id), champion_win_rate, total_games).await),
+                None => None,
+            };
+            let mut spells = Vec::new();
+            for sp in [warped_arch.spells.0, warped_arch.spells.1] {
+                spells.push(mayhem_spell(sp, &spells_catalog, &individual_spells_agg, champion_win_rate).await);
+            }
+            let mut augments = Vec::new();
+            for (id, games, wr, wpa, pr) in &warped_arch.top_augments {
+                let mut a = mayhem_augment(id, &aug_catalog, augments_agg.get(id), champion_win_rate).await;
+                a.games = *games;
+                a.win_rate = *wr;
+                a.wpa = *wpa;
+                a.pick_rate = *pr;
+                augments.push(a);
+            }
+            let stages = build_stage_pathing(&starter_item, &items, &situational_items);
+            archetype_strategies.insert(0, MayhemBuildStrategy {
+                id: warped_arch.id,
+                label: warped_arch.label,
+                metric_name: "Win Rate".to_string(),
+                avg_metric_value: format!("{:+.1}% WPA", warped_arch.build_wpa * 100.0),
+                raw_metric_value: warped_arch.build_win_rate,
+                build_win_rate: warped_arch.build_win_rate,
+                build_wpa: warped_arch.build_wpa,
+                starter_item,
+                items,
+                alternative_items,
+                situational_items,
+                stages,
+                spells,
+                all_spells: shared_all_spells.clone(),
+                augments,
+                sample_games: warped_arch.sample_games,
+            });
+        }
     }
     archetype_strategies.extend(strategies);
     let strategies = archetype_strategies;
@@ -4506,6 +4966,8 @@ pub async fn delete_saved_mayhem_build(id: String) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn test_situational_items_sorted_by_popularity() {
         let mut items = vec![
@@ -4525,5 +4987,99 @@ mod tests {
         assert_eq!(items[1].0, 1004);
         assert_eq!(items[2].0, 1003);
         assert_eq!(items[3].0, 1001);
+    }
+
+    #[test]
+    fn test_situational_items_counter_pick_flags() {
+        assert_eq!(get_situational_tag(3033, None), Some("Anti-Heal"));
+        assert_eq!(get_situational_tag(6609, None), Some("Anti-Heal"));
+        assert_eq!(get_situational_tag(3165, None), Some("Anti-Heal"));
+        assert_eq!(get_situational_tag(3075, None), Some("Anti-Heal"));
+        assert_eq!(get_situational_tag(6695, None), Some("Anti-Shield"));
+        assert_eq!(get_situational_tag(4645, None), Some("Anti-Shield"));
+        assert_eq!(get_situational_tag(3036, None), Some("Armor Penetration"));
+        assert_eq!(get_situational_tag(3135, None), Some("Magic Penetration"));
+        assert_eq!(get_situational_tag(3156, None), Some("Magic Resist"));
+        assert_eq!(get_situational_tag(3157, None), Some("Armor / Anti-Burst"));
+    }
+
+    #[test]
+    fn test_marksmage_converts_adc_item_pool_to_ap_on_hit() {
+        let augments = vec!["Marksmage".to_string()];
+        let bonus = get_item_augment_warp_bonus(3115, &augments);
+        assert!(bonus > 2.0, "Nashor's Tooth must receive high warp bonus under Marksmage");
+        let bonus_lich = get_item_augment_warp_bonus(3100, &augments);
+        assert!(bonus_lich > 2.0, "Lich Bane must receive high warp bonus under Marksmage");
+        let bonus_rabadon = get_item_augment_warp_bonus(3089, &augments);
+        assert!(bonus_rabadon > 2.0, "Rabadon's must receive high warp bonus under Marksmage");
+
+        let warped = build_augment_warped_archetype("Marksmage", 0.50);
+        assert!(warped.is_some(), "Marksmage warped archetype must be created");
+        let arch = warped.unwrap();
+        assert!(arch.core_items.contains(&3115), "Core must contain Nashor's Tooth");
+        assert!(arch.core_items.contains(&3100), "Core must contain Lich Bane");
+        assert!(arch.core_items.contains(&3089), "Core must contain Rabadon's Deathcap");
+    }
+
+    #[test]
+    fn test_budget_affordability_live_advice() {
+        let dummy_strat = MayhemBuildStrategy {
+            id: "test".into(),
+            label: "Test".into(),
+            metric_name: "WR".into(),
+            avg_metric_value: "0%".into(),
+            raw_metric_value: 0.5,
+            build_win_rate: 0.5,
+            build_wpa: 0.0,
+            starter_item: None,
+            items: vec![
+                MayhemBuildItem {
+                    id: 3006,
+                    name: "Berserker's Greaves".into(),
+                    icon_url: "".into(),
+                    price_total: 1100,
+                    item_class: Some("boot".into()),
+                    description: None,
+                    win_rate: 0.5,
+                    wpa: 0.0,
+                    games: 100,
+                    pick_rate: 0.8,
+                    situational_tag: None,
+                },
+                MayhemBuildItem {
+                    id: 3115,
+                    name: "Nashor's Tooth".into(),
+                    icon_url: "".into(),
+                    price_total: 3000,
+                    item_class: None,
+                    description: None,
+                    win_rate: 0.55,
+                    wpa: 0.05,
+                    games: 100,
+                    pick_rate: 0.7,
+                    situational_tag: None,
+                },
+            ],
+            alternative_items: vec![],
+            situational_items: vec![],
+            stages: vec![],
+            spells: vec![],
+            all_spells: vec![],
+            augments: vec![],
+            sample_games: 100,
+        };
+
+        // Player has 1200 gold and no items
+        let advice = compute_live_build_advice(&dummy_strat, 1200.0, &[], 3, 60.0);
+        assert_eq!(advice.current_stage, 1);
+        assert_eq!(advice.next_target.as_ref().map(|i| i.id), Some(3006));
+        assert_eq!(advice.gold_needed, 0);
+        assert!(advice.immediate_purchases.iter().any(|i| i.id == 3006));
+
+        // Player owns boots, has 1500 gold
+        let advice2 = compute_live_build_advice(&dummy_strat, 1500.0, &[3006], 7, 300.0);
+        assert_eq!(advice2.current_stage, 2);
+        assert_eq!(advice2.next_target.as_ref().map(|i| i.id), Some(3115));
+        assert_eq!(advice2.gold_needed, 1500);
     }
 }

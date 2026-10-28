@@ -75,17 +75,16 @@
   <!-- Flowbite Modal Backdrop -->
   <div
     class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-fade-in"
-    onclick={onClose}
+    onclick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    onkeydown={(e) => { if (e.key === "Escape") onClose(); }}
     role="dialog"
     aria-modal="true"
+    tabindex="-1"
   >
     <!-- Modal Container -->
     <div
       class="relative w-full max-w-lg max-h-[85vh] rounded-2xl bg-gray-900 border border-gray-700 shadow-2xl shadow-black/80 flex flex-col overflow-hidden animate-scale-up"
       role="document"
-      tabindex="-1"
-      onclick={(e) => e.stopPropagation()}
-      onkeydown={(e) => e.stopPropagation()}
     >
       <!-- Flowbite Modal Header -->
       <div class="flex items-center justify-between p-4 border-b border-gray-800">

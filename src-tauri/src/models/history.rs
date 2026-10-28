@@ -69,6 +69,25 @@ pub struct MayhemBuildItem {
     pub games: usize,
     #[serde(default)]
     pub pick_rate: f64,
+    #[serde(default)]
+    pub situational_tag: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MayhemStageItem {
+    pub stage: u32,
+    pub title: String,
+    pub timing: String,
+    pub items: Vec<MayhemBuildItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MayhemLiveAdvice {
+    pub current_stage: u32,
+    pub stage_title: String,
+    pub immediate_purchases: Vec<MayhemBuildItem>,
+    pub next_target: Option<MayhemBuildItem>,
+    pub gold_needed: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,6 +140,8 @@ pub struct MayhemBuildStrategy {
     pub alternative_items: Vec<MayhemBuildItem>,
     #[serde(default)]
     pub situational_items: Vec<MayhemBuildItem>,
+    #[serde(default)]
+    pub stages: Vec<MayhemStageItem>,
     pub spells: Vec<MayhemBuildSpell>,
     #[serde(default)]
     pub all_spells: Vec<MayhemBuildSpell>,

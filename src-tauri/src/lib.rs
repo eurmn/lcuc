@@ -25,7 +25,7 @@ use commands::{
     api_rune_tree_saved, api_rune_tree_select_perk, api_runes_overview, api_runesets,
     api_save_mayhem_build, api_save_rune_tree, api_set_selected_champion_id,
     api_set_selected_rune_key, api_summoner_profile, api_toggle_favorite_champion,
-    api_update_runeset_champion,
+    api_update_runeset_champion, api_get_live_game_state, api_get_live_build_advice,
 };
 use services::lcu_websocket::LcuWsWatcher;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -163,6 +163,7 @@ pub fn run() {
 
             // Start the legacy Tauri watcher during the migration period.
             LcuWsWatcher::start(app.handle().clone());
+            crate::services::live_game::start_live_game_polling(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -216,6 +217,8 @@ pub fn run() {
             api_list_saved_mayhem_builds,
             api_delete_saved_mayhem_build,
             api_export_mayhem_build,
+            api_get_live_game_state,
+            api_get_live_build_advice,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -8,6 +8,8 @@
     exportMayhemBuild,
     saveMayhemBuild,
     swapChampSelectChampion,
+    getLiveGameState,
+    getLiveBuildAdvice,
   } from "../../api/champ_select";
   import { getChampions } from "../../api/champions";
   import type { ChampionSummary } from "../../types/champions";
@@ -17,11 +19,16 @@
     MayhemChampionBuildSummary,
     MayhemBuildStrategy,
     MayhemBuildAugment,
+    LiveGameState,
+    MayhemLiveAdvice,
   } from "../../types/champ_select";
   import AugmentIcon from "../common/AugmentIcon.svelte";
   import GameEntityPopover from "../common/GameEntityPopover.svelte";
   import MayhemAugmentsCard from "./MayhemAugmentsCard.svelte";
   import MayhemAugmentPicker from "./MayhemAugmentPicker.svelte";
+  import LivePurchaseAdvisor from "./LivePurchaseAdvisor.svelte";
+  import StagePathingTree from "./StagePathingTree.svelte";
+  import MayhemEncyclopediaModal from "./MayhemEncyclopediaModal.svelte";
   import { logger } from "../../utils/logger";
 
   let {
@@ -69,6 +76,11 @@
 
   let unlistenSession: UnlistenFn | null = null;
   let unlistenPhase: UnlistenFn | null = null;
+  let unlistenLiveState: UnlistenFn | null = null;
+  let liveGameState = $state<LiveGameState | null>(null);
+  let liveAdvice = $state<MayhemLiveAdvice | null>(null);
+  let isEncyclopediaOpen = $state(false);
+  let livePollTimer: ReturnType<typeof setInterval> | null = null;
 
   const isInChampSelect = $derived(
     Boolean(
@@ -139,6 +151,8 @@
 
     // Check initial active session and connection
     await refreshSession();
+    await refreshLiveGameState();
+    livePollTimer = setInterval(refreshLiveGameState, 2500);
 
     // Listen to real-time events
     try {
@@ -161,6 +175,16 @@
           await refreshSession();
         }
       });
+
+      unlistenLiveState = await listen("live:game-state", (event) => {
+        const state = event.payload as LiveGameState;
+        liveGameState = state;
+        if (state && state.is_in_game) {
+          void refreshLiveGameState();
+        } else {
+          liveAdvice = null;
+        }
+      });
     } catch (err) {
       logger.error("frontend.mayhem_champ_select", "Failed attaching event listeners", err);
     }
@@ -174,6 +198,8 @@
   onDestroy(() => {
     if (unlistenSession) unlistenSession();
     if (unlistenPhase) unlistenPhase();
+    if (unlistenLiveState) unlistenLiveState();
+    if (livePollTimer) clearInterval(livePollTimer);
   });
 
   async function refreshSession() {
@@ -189,6 +215,77 @@
       session = null;
       logger.warn("frontend.mayhem_champ_select", "Champ select session unavailable", err);
     }
+  }
+
+  async function refreshLiveGameState() {
+    try {
+      const state = await getLiveGameState();
+      liveGameState = state;
+      if (state && state.is_in_game && state.champion_name) {
+        const matched = allChampions.find(
+          (c) => c.name.toLowerCase() === state.champion_name.toLowerCase()
+        );
+        if (matched && matched.id !== selectedChampionId) {
+          selectedChampionId = matched.id;
+          void loadSingleChampionBuild(matched.id);
+        }
+
+        const activeChampId = matched ? matched.id : selectedChampionId;
+        if (activeChampId > 0 && activeStrategy) {
+          const inventoryIds = state.items.map((i) => i.item_id);
+          try {
+            liveAdvice = await getLiveBuildAdvice({
+              championId: activeChampId,
+              strategyId: selectedStrategyId,
+              currentGold: state.current_gold,
+              inventoryItemIds: inventoryIds,
+              level: state.level,
+              gameTime: state.game_time,
+              augmentIds,
+            });
+          } catch (err) {
+            logger.warn("frontend.live_advice", "Failed computing live advice", err);
+          }
+        }
+      } else {
+        liveAdvice = null;
+      }
+    } catch {
+      liveGameState = null;
+      liveAdvice = null;
+    }
+  }
+
+  function toggleSimulatedAugment(augName: string) {
+    if (augmentIds.includes(augName)) {
+      augmentIds = augmentIds.filter((id) => id !== augName);
+    } else {
+      if (augmentIds.length >= 4) {
+        augmentIds = [...augmentIds.slice(1), augName];
+      } else {
+        augmentIds = [...augmentIds, augName];
+      }
+    }
+    const newSlots: (MayhemAugmentItem | null)[] = [null, null, null, null];
+    augmentIds.forEach((id, idx) => {
+      if (idx < 4) {
+        newSlots[idx] = {
+          id,
+          name: id,
+          icon_url: "",
+          categories: [],
+          games: 100,
+          wins: 50,
+          win_rate: 0.5,
+          wpa: 0.05,
+          global_games: 0,
+          global_win_rate: 0,
+          global_wpa: 0,
+        };
+      }
+    });
+    pickerSlots = newSlots;
+    void loadSingleChampionBuild(selectedChampionId);
   }
 
   async function handleSessionUpdated(sess: ChampSelectSession) {
@@ -294,7 +391,6 @@
   }
 
   function handleSelectBuildAugment(aug: MayhemBuildAugment) {
-    if (!isInProgress) return;
     if (pickerSlots.some((s) => s?.id === aug.id)) return;
     const nextEmptyIdx = pickerSlots.findIndex((s) => s === null);
     if (nextEmptyIdx !== -1) {
@@ -430,6 +526,24 @@
 
       <!-- Status Indicators -->
       <div class="flex items-center gap-2">
+        <!-- Encyclopedia Button -->
+        <button
+          type="button"
+          onclick={() => isEncyclopediaOpen = true}
+          class="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold bg-gray-800/80 hover:bg-gray-700 text-gray-200 border border-gray-700/60 transition shadow-sm cursor-pointer"
+        >
+          <span class="icon-[heroicons--book-open] text-purple-400 text-sm"></span>
+          Encyclopedia
+        </button>
+
+        <!-- Live Match Active Badge -->
+        {#if liveGameState?.is_in_game}
+          <span class="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/50 bg-emerald-950/80 px-2.5 py-0.5 text-[11px] font-bold text-emerald-200 shadow-sm animate-pulse">
+            <span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span>
+            Match: {liveGameState.champion_name} (Lv {liveGameState.level})
+          </span>
+        {/if}
+
         <!-- Champ Select Status Indicator -->
         {#if isInChampSelect}
           <span class="inline-flex items-center gap-1.5 rounded-full border border-purple-500/40 bg-purple-950/70 px-2.5 py-0.5 text-[11px] font-semibold text-purple-200 animate-pulse">
@@ -446,6 +560,50 @@
             <span class="h-1.5 w-1.5 rounded-full bg-gray-600"></span>
             Champ Select: Offline
           </span>
+        {/if}
+      </div>
+    </div>
+
+    <!-- Live In-Game Purchase Advisor -->
+    {#if liveGameState?.is_in_game}
+      <LivePurchaseAdvisor {liveGameState} {liveAdvice} {activeStrategy} />
+    {/if}
+
+    <!-- Augment Simulation Quick-Toggles -->
+    <div class="rounded-xl border border-gray-800 bg-gray-900/40 p-3 flex flex-wrap items-center justify-between gap-3">
+      <div class="flex items-center gap-2">
+        <span class="text-xs font-bold text-gray-300 uppercase tracking-wide flex items-center gap-1.5">
+          <span class="icon-[heroicons--adjustments-horizontal] text-purple-400 text-sm"></span>
+          Augment Build Warping Simulator:
+        </span>
+        <span class="text-[11px] text-gray-400">Click to preview adaptive build paths</span>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-1.5">
+        {#each ["Marksmage", "ADAPt", "Big Shot", "Apex Inventor", "Vulnerability", "Goliath", "Draw Your Sword"] as augName}
+          {@const isSimulated = augmentIds.includes(augName)}
+          <button
+            type="button"
+            onclick={() => toggleSimulatedAugment(augName)}
+            class="px-2.5 py-1 rounded-lg text-xs font-semibold transition border flex items-center gap-1 cursor-pointer {isSimulated
+              ? 'border-purple-400 bg-purple-950/80 text-purple-200 shadow-[0_0_8px_rgba(192,132,252,0.3)]'
+              : 'border-gray-800 bg-gray-950 text-gray-400 hover:text-gray-200 hover:border-gray-700'}"
+          >
+            <span>{augName}</span>
+            {#if isSimulated}
+              <span class="icon-[heroicons--x-mark] text-[10px]"></span>
+            {/if}
+          </button>
+        {/each}
+
+        {#if augmentIds.length > 0}
+          <button
+            type="button"
+            onclick={() => { augmentIds = []; pickerSlots = [null, null, null, null]; void loadSingleChampionBuild(selectedChampionId); }}
+            class="px-2 py-1 rounded-lg text-[11px] font-semibold text-rose-400 hover:bg-rose-950/30 transition border border-rose-900/50 cursor-pointer"
+          >
+            Reset
+          </button>
         {/if}
       </div>
     </div>
@@ -824,6 +982,13 @@
               </div>
             </div>
 
+            <!-- Stage-Based Build Pathing Tree -->
+            {#if activeStrategy.stages && activeStrategy.stages.length > 0}
+              <div class="pt-3 border-t border-gray-800/80">
+                <StagePathingTree stages={activeStrategy.stages} />
+              </div>
+            {/if}
+
             <!-- Lower section: Alternative Items & Situational Items side-by-side -->
             {#if (activeStrategy.alternative_items && activeStrategy.alternative_items.length > 0) || sortedSituationalItems.length > 0}
               <div class="grid grid-cols-1 {activeStrategy.alternative_items && activeStrategy.alternative_items.length > 0 && sortedSituationalItems.length > 0 ? 'lg:grid-cols-2' : ''} gap-4 pt-3 border-t border-gray-800/80">
@@ -887,14 +1052,19 @@
                       </span>
                       <span class="text-[9px] text-gray-500">Sorted by games</span>
                     </div>
-                    <div class="flex flex-wrap gap-1.5 p-2 rounded-lg border border-gray-800/80 bg-gray-900/40">
+                    <div class="flex flex-wrap gap-2 p-2 rounded-lg border border-gray-800/80 bg-gray-900/40">
                       {#each sortedSituationalItems as sit, idx (`sit-${sit.id}-${idx}`)}
-                        <div id={`sit-item-${sit.id}-${idx}`} class="relative">
+                        <div id={`sit-item-${sit.id}-${idx}`} class="relative group">
                           <img
                             src={sit.icon_url}
                             alt={sit.name}
-                            class="h-8 w-8 rounded-md border border-gray-700 bg-gray-950 object-cover hover:border-gray-500 transition-colors cursor-pointer"
+                            class="h-9 w-9 rounded-lg border border-gray-700 bg-gray-950 object-cover hover:border-gray-500 transition-colors cursor-pointer"
                           />
+                          {#if sit.situational_tag}
+                            <span class="absolute -top-1.5 -right-1 px-1 rounded bg-rose-600/95 text-white text-[8px] font-bold tracking-tight shadow pointer-events-none whitespace-nowrap">
+                              {sit.situational_tag}
+                            </span>
+                          {/if}
                           <GameEntityPopover
                             targetId={`sit-item-${sit.id}-${idx}`}
                             name={sit.name}
@@ -987,14 +1157,12 @@
               {#if activeStrategy.augments && activeStrategy.augments.length > 0}
                 <div class="grid grid-cols-3 gap-2 overflow-y-auto max-h-64 scrollbar-thin flex-1">
                   {#each activeStrategy.augments as aug, idx (`build-aug-${aug.id}-${idx}`)}
-                    <div
+                    <button
+                      type="button"
                       id={`build-aug-${aug.id}-${idx}`}
-                      role={isInProgress ? "button" : undefined}
-                      tabindex={isInProgress ? 0 : undefined}
                       onclick={() => handleSelectBuildAugment(aug)}
-                      onkeydown={(e) => e.key === "Enter" && handleSelectBuildAugment(aug)}
-                      class="group relative flex flex-col items-center p-2 rounded-lg border border-gray-800 bg-gray-900/70 hover:border-gray-700 transition-colors {isInProgress ? 'cursor-pointer hover:border-purple-500/60 hover:bg-purple-950/20' : ''}"
-                      title={isInProgress ? "Click to add to augment tracker" : aug.name}
+                      class="group relative flex flex-col items-center p-2 rounded-lg border border-gray-800 bg-gray-900/70 hover:border-gray-700 transition-colors cursor-pointer hover:border-purple-500/60 hover:bg-purple-950/20 w-full text-center"
+                      title={`Click to simulate or track ${aug.name}`}
                     >
                       <div class="relative mb-1">
                         <AugmentIcon
@@ -1037,7 +1205,7 @@
                         rarity={aug.rarity}
                         placement="top"
                       />
-                    </div>
+                    </button>
                   {/each}
                 </div>
               {:else}
@@ -1127,4 +1295,11 @@
       {/if}
     </div>
   {/if}
+
+  <!-- Mayhem Encyclopedia Modal -->
+  <MayhemEncyclopediaModal
+    isOpen={isEncyclopediaOpen}
+    onClose={() => isEncyclopediaOpen = false}
+    onSimulateAugment={(aug) => toggleSimulatedAugment(aug)}
+  />
 </div>

@@ -3,9 +3,11 @@ import type {
   ChampSelectSession,
   ExportBuildPayload,
   ExportBuildResult,
+  LiveGameState,
   MayhemAugmentsQuery,
   MayhemAugmentsResponse,
   MayhemChampionBuildSummary,
+  MayhemLiveAdvice,
   SaveMayhemBuildPayload,
   SavedMayhemBuild,
 } from "../types/champ_select";
@@ -72,4 +74,28 @@ export async function exportMayhemBuild(
 
 export async function swapChampSelectChampion(championId: number): Promise<boolean> {
   return invoke<boolean>("api_champ_select_swap", { championId });
+}
+
+export async function getLiveGameState(): Promise<LiveGameState> {
+  return invoke<LiveGameState>("api_get_live_game_state");
+}
+
+export async function getLiveBuildAdvice(params: {
+  championId: number;
+  strategyId?: string;
+  currentGold: number;
+  inventoryItemIds: number[];
+  level?: number;
+  gameTime?: number;
+  augmentIds?: string[];
+}): Promise<MayhemLiveAdvice> {
+  return invoke<MayhemLiveAdvice>("api_get_live_build_advice", {
+    championId: params.championId,
+    strategyId: params.strategyId ?? null,
+    currentGold: params.currentGold,
+    inventoryItemIds: params.inventoryItemIds,
+    level: params.level ?? null,
+    gameTime: params.gameTime ?? null,
+    augmentIds: params.augmentIds ?? [],
+  });
 }

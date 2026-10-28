@@ -23,6 +23,6 @@ cargo test
 
 echo "=== 4. Running frontend build ==="
 cd "$SCRIPT_DIR"
-pnpm build
+bun run build
 
 echo "=== All validation checks passed successfully! ==="

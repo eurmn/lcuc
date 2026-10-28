@@ -104,7 +104,7 @@ from `agent_operations` and `global_aram_config`.
 ## Development rules
 
 - Windows paths use backslashes (`\`).
-- Use `pnpm`, not `npm`.
+- Use `bun`, not `npm` or `pnpm`.
 - Use lowercase CommunityDragon asset paths.
 - Keep Svelte thin; domain calculations belong in Rust.
 - Preserve backend cached assets and data URIs.
@@ -115,7 +115,7 @@ from `agent_operations` and `global_aram_config`.
 ```bash
 cargo fmt --manifest-path src-tauri\Cargo.toml -- --check
 cargo build --manifest-path src-tauri\Cargo.toml --bin lcu-companion-agent
-pnpm svelte-check
+bun run check
 git diff --check
 ```
 
@@ -271,7 +271,7 @@ For detailed specifications and domain knowledge, consult the specialized docume
 ```cmd
 # Build the standalone agent, then start frontend and Tauri in development mode.
 # Tauri's debug supervisor also invokes Cargo for the agent on each restart.
-pnpm tauri dev
+bun run tauri dev
 ```
 
 ### Planning & Walkthrough Persistence
@@ -282,11 +282,11 @@ pnpm tauri dev
 - **No Unsolicited Checks or Tests**: **DO NOT** run check, build, or test commands (such as `cargo check`, `cargo test`, `svelte-check`, `vite build`, etc.) without the user's direct and explicit request.
 
 ## Package Manager & Tooling
-- Always use `pnpm` instead of `npm` for installing dependencies, running scripts, and managing packages in this repository.
-- Do not run `pnpm svelte-check` automatically or proactively without the user explicitly asking for it.
+- Always use `bun` instead of `npm` or `pnpm` for installing dependencies, running scripts, and managing packages in this repository.
+- Do not run `bun run check` automatically or proactively without the user explicitly asking for it.
 - When the user explicitly requests type-checking Svelte components and TypeScript in this project, use:
   ```bash
-  pnpm svelte-check
+  bun run check
   ```
 - Do not run `cargo check` or `cargo build` proactively before finishing code changes. Only run check/test commands after all code modifications are complete.
 

@@ -1,0 +1,32 @@
+# ARAM MAYHEM RULES & MECHANICS
+
+## Overview
+- Mode: Featured queue based on ARAM (Howling Abyss, Butcher's Bridge, Koeshin's Crossing).
+- Loadout: Runes disabled entirely. Keystone runes are only accessible as augments. Exhaust disabled.
+- Spells exclusive: A Dance with Death, Brass Blast, Get Jinxed!, Growth Spurt, Poltergeist.
+
+## Augment Structure
+- Breakpoints: Levels 3 (spawn), 7, 11, 15. Total 4 base slots. 5th slot reserved for Quest reward augments.
+- Screen: 3 augment choices per tier. 1 reroll per offering (6 possible per round).
+- Tiers: Silver, Gold, Prismatic. Same tier offered to all players simultaneously.
+- First two rounds cannot both be Silver. Augments offered once per game.
+
+## Global Stat Alterations
+- Overcap Critical Strike: Every 1% Crit over 100% converts to +0.45 bonus AD or +0.75 AP (Adaptive).
+- Attack Speed Cap: Raised to 5.0 (from 2.5).
+- Combo Breaker: 5 out of last 7 seconds CC'd -> instant cleanse + 3s CC immunity. Stacking tenacity outside concurrent chains.
+- Innate Runes: All champions possess Presence of Mind permanently.
+- Base Stats: Bonus HP (+20-600), mana/energy regen +10%, bonus resistances (+15-25 armor/MR for melee).
+- Relics: 22% missing HP and 22% missing mana.
+
+## Headliners
+- Random event roll at match start.
+- Command Line: Hacked rerolls upgrade offering tier (Silver -> Gold, Gold -> Prismatic).
+- Cafe Cuties: Health relics gain 20% missing HP beam + base relics between Nexus turrets.
+- HEARTSTEEL: Augment cards with stickers give bonus: Aphelios (2 Stat Anvils), Ezreal (AD+AP), Kayn (5% Omnivamp), K'Sante (+1 Level cap 19), Sett (bonus HP), Yone (AS + AH).
+- K/DA: Collect photocards dropped every 12s; complete all 4 -> bonus augment selection on death.
+- PENTAKILL: Exclusive augment screen for Q/W/E haste+damage boost; at level 18 grant DOOM (Ult boost).
+- SPACE GROOVE: Center dance floor disco ball charges up -> 100g every 0.5s up to 1000g for nearby champions.
+- THE BEE BAND: Bees/honey fly across lane; bees deal 10-20% max HP true damage, honey heals 15-30% and grants gold.
+- TRUE DAMAGE: Kills and turrets drop Stat Anvils of random tier.
+

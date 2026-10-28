@@ -1,0 +1,29 @@
+# ARAM MAYHEM ITEMS & EXCLUSIVES
+
+## Mayhem-Exclusive Legendary Items
+- Atma's Reckoning (Price: 3000g):
+  - Stats: +700 Health, +30 Armor, +30 Magic Resist.
+  - Passive (Intimidate): Gain bonus Attack Damage equal to 2% of bonus health.
+  - Ideal for: Heavy tanks, juggernauts, Goliath augment users.
+- Rite of Ruin (Price: 2800g):
+  - Stats: +70 Ability Power, +400 Mana, +25 Ability Haste.
+  - Passive: Casting spells grants shields to nearby allies and bursts damage.
+  - Ideal for: Enchanter/battle mages, high AP casters.
+- Sword of Blossoming Dawn (Price: 2700g):
+  - Stats: +40 Ability Power, +20% Attack Speed, +200 Health, +15 Ability Haste.
+  - Passive: Basic attacks heal lowest health nearby ally based on AP and attack speed.
+  - Ideal for: Enchanters, hybrid on-hit, Marksmage enchanters (Kayle, Lulu, Milio).
+
+## Augment Quest Reward Items
+- Wooglet's Witchcap (AP Capstone): Huge AP boost + Stasis active (combines Rabadon's and Zhonya's).
+- Golden Spatula (All-Rounder Capstone): Grants AD, AP, AS, Armor, MR, MS, and On-Hit procs.
+- Ultra Hydra: Massive cleave damage scaling with maximum HP and AD.
+- Void Immolation: Mega Sunfire aura burning nearby enemies with true damage.
+- Jarvan I's: Grants extreme armor, MR, and aura durability.
+
+## Item Lock Groups (Mutually Exclusive)
+- `hydra`: Ravenous Hydra, Titanic Hydra, Profane Hydra (Can only equip 1).
+- `lifeline`: Sterak's Gage, Maw of Malmortius, Immortal Shieldbow (Can only equip 1).
+- `last_whisper`: Lord Dominik's Regards, Mortal Reminder, Serylda's Grudge, Terminus (Can only equip 1).
+- `crit_modifier`: Infinity Edge, Navori Flickerblade, Guinsoo's Rageblade (Can only equip 1).
+- `tear`: Archangel's Staff/Seraph's Embrace, Manamune/Muramana, Winter's Approach/Fimbulwinter (Can only equip 1).

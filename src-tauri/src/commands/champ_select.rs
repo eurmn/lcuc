@@ -1,13 +1,14 @@
 use crate::logger;
 use crate::models::{
-    MayhemAugmentsQuery, MayhemAugmentsResponse, MayhemChampionBuildSummary,
+    MayhemAugmentsQuery, MayhemAugmentsResponse, MayhemChampionBuildSummary, MayhemLiveAdvice,
     SaveMayhemBuildPayload, SavedMayhemBuild,
 };
 use crate::services::history::{
-    compute_mayhem_champion_build, delete_saved_mayhem_build, get_mayhem_augments,
-    list_saved_mayhem_builds, save_mayhem_build,
+    compute_live_build_advice, compute_mayhem_champion_build, delete_saved_mayhem_build,
+    get_mayhem_augments, list_saved_mayhem_builds, save_mayhem_build,
 };
 use crate::services::lcu_client::LcuClient;
+use crate::services::live_game::{fetch_live_game_state, LiveGameState};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -334,3 +335,35 @@ pub async fn api_champ_select_swap(champion_id: i64) -> Result<bool, String> {
     ))
 }
 
+#[tauri::command]
+pub async fn api_get_live_game_state() -> Result<LiveGameState, String> {
+    fetch_live_game_state().await
+}
+
+#[tauri::command]
+pub async fn api_get_live_build_advice(
+    champion_id: i64,
+    strategy_id: Option<String>,
+    current_gold: f64,
+    inventory_item_ids: Vec<i64>,
+    level: Option<u32>,
+    game_time: Option<f64>,
+    augment_ids: Option<Vec<String>>,
+) -> Result<MayhemLiveAdvice, String> {
+    let summary = compute_mayhem_champion_build(champion_id, augment_ids.unwrap_or_default()).await?;
+    let strat = if let Some(ref sid) = strategy_id {
+        summary.strategies.iter().find(|s| &s.id == sid)
+    } else {
+        None
+    }
+    .or_else(|| summary.strategies.first())
+    .ok_or_else(|| "No build strategy found".to_string())?;
+
+    Ok(compute_live_build_advice(
+        strat,
+        current_gold,
+        &inventory_item_ids,
+        level.unwrap_or(1),
+        game_time.unwrap_or(0.0),
+    ))
+}

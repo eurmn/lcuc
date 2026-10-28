@@ -39,6 +39,7 @@ incremental = true
 opt-level = 0
 debug = 1
 codegen-units = 256
+split-debuginfo = "unpacked"
 
 [profile.release]
 codegen-units = 1

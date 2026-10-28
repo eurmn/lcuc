@@ -113,9 +113,10 @@
   }
 </script>
 
+<svelte:window onkeydown={handleKeydown} />
+
 <div
   class="flex flex-1 min-w-0 items-center gap-2.5 px-1 h-[3.25rem] overflow-hidden select-none"
-  onkeydown={handleKeydown}
   role="region"
   aria-label="Champion selection and search"
 >

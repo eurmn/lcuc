@@ -1,0 +1,23 @@
+# ARAM MAYHEM AUGMENTS CATALOG
+
+## Build-Warping Augments (Crucial for Item Pathing Engine)
+- Marksmage (Prismatic): Basic attacks deal bonus magic damage equal to 100% AP. [WARP: AD champions build AP / Nashor's Tooth / Lich Bane / Rabadon's].
+- ADAPt (Silver): Converts all bonus AD into AP (1 AP per 0.6 bonus AD) + 15% total AP. [WARP: AD items become massive AP power].
+- EscAPADe (Silver): Converts all AP into bonus AD (1 AD per 1.6 AP) + 10% total AD. [WARP: AP items become massive AD power].
+- Big Shot (Prismatic): Converts 75% attack speed into crit damage (0.67% per 1% AS) + 25% bonus AD + 35% crit damage. [WARP: Stacks AS/Crit into massive single-hit crits].
+- Back to Basics (Prismatic): +35% ability damage, +70 ability haste, +35% heal/shield. Ultimate ability sealed. [WARP: Avoid Malignance/Axiom Arc; stack raw AH and spell damage].
+- Apex Inventor (Gold): +100 Item Haste (50% item CDR). [WARP: Prioritize active/proc items: Heartsteel, Sundered Sky, Unending Despair, Eclipse, Zhonya's, Luden's].
+- Vulnerability (Gold): Item and damage-over-time effects can critically strike (+20% crit chance). [WARP: Liandry's / Blackfire Torch / Sunfire synergize with Infinity Edge & crit].
+- Phenomenal Evil (Gold): Hitting enemies with abilities grants permanent stacking AP (+1 AP per hit, 1s cd). [WARP: High-frequency mages rush defensive/mana items since AP scales infinitely].
+- Tap Dancer (Prismatic): Basic attacks grant stacking movement speed and attack speed uncapped. [WARP: On-hit / kiting builds].
+- Jeweled Gauntlet (Prismatic): Abilities can critically strike. Gain 20% crit chance. [WARP: Spellcasters build Infinity Edge and crit items].
+- Symphony of War (Prismatic): Gain Lethal Tempo and Conqueror simultaneously. [WARP: High sustained DPS / attack speed / bruiser synergy].
+- Draw Your Sword (Prismatic): Ranged champions become melee, gaining massive bonus AD, HP, AS, MS, and lifesteal. [WARP: Ranged marksmen build melee bruiser / Hydra items].
+
+## Common Synergies & Archetype Tags
+- `ap_on_hit`: Marksmage, Lightning Strike, With Haste. Builds: Nashor's, Lich Bane, Guinsoo's.
+- `burn_crit`: Vulnerability, Magic Missile, Infernal Conduit. Builds: Liandry's, Blackfire, Shadowflame.
+- `tank_engine`: Goliath, Courage of the Colossus, Heavy Hitter, Raid Boss. Builds: Heartsteel, Warmog's, Jak'Sho.
+- `infinite_scaling`: Phenomenal Evil, Quest: Wooglet's, Master of Duality, Chauffeur.
+- `burst_assassin`: Quantum Computing, Earthwake, Shadow Runner. Builds: Opportunity, Ghostblade, Hubris.
+- `heal_shield`: All For You, First Aid Kit, Restless Restoration, Holy Fire. Builds: Moonstone, Dawncore, Redemption.

@@ -129,7 +129,7 @@
 {#if isOpen}
   <div
     class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-fade-in"
-    onclick={onClose}
+    onclick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     onkeydown={(e) => { if (e.key === 'Escape') onClose(); }}
     role="dialog"
     aria-modal="true"
@@ -138,9 +138,6 @@
     <div
       class="relative w-full max-w-4xl max-h-[85vh] h-[650px] rounded-2xl bg-gray-900 border border-gray-700 shadow-2xl shadow-black/80 flex flex-col overflow-hidden animate-scale-up"
       role="document"
-      tabindex="-1"
-      onclick={(e) => e.stopPropagation()}
-      onkeydown={(e) => e.stopPropagation()}
     >
       <!-- Modal Header -->
       <div class="flex items-center justify-between px-5 py-3.5 border-b border-gray-800 bg-gray-900/90">
@@ -218,6 +215,7 @@
           {#if searchQuery}
             <button
               type="button"
+              aria-label="Clear search"
               onclick={() => (searchQuery = '')}
               class="absolute inset-y-0 right-0 pr-2 flex items-center text-gray-500 hover:text-gray-300"
             >
