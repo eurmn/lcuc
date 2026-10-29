@@ -49,6 +49,11 @@ pub fn run() {
                 .map_err(|error| std::io::Error::new(std::io::ErrorKind::Other, error))?;
             app.manage(supervisor);
 
+        if let Some(overlay_win) = app.get_webview_window("overlay") {
+            let _ = overlay_win.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+            crate::services::live_overlay::apply_overlay_win32_styles(&overlay_win, true);
+        }
+
             let status_item =
                 MenuItem::with_id(app, "status", "Crawler: Idle", false, None::<&str>)?;
             let toggle_item = MenuItem::with_id(

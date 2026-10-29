@@ -389,14 +389,19 @@ pub fn api_sync_overlay_window(
 
 #[tauri::command]
 pub async fn api_scan_live_augment_cards(
+    app: tauri::AppHandle,
     champion_id: Option<i64>,
     with_augment_ids: Option<Vec<String>>,
-) -> Result<Vec<crate::models::history::MayhemAugmentItem>, String> {
-    crate::services::live_overlay::scan_in_game_augment_cards(
+) -> Result<Vec<crate::models::history::OverlayAugmentCard>, String> {
+    use tauri::Emitter;
+    let cards = crate::services::live_overlay::scan_in_game_augment_cards(
         champion_id,
         with_augment_ids.unwrap_or_default(),
     )
-    .await
+    .await?;
+
+    let _ = app.emit("overlay:cards-updated", &cards);
+    Ok(cards)
 }
 
 #[tauri::command]

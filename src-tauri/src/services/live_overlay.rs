@@ -1,15 +1,21 @@
-use crate::models::history::{MayhemAugmentItem, MayhemAugmentsQuery};
+use crate::models::history::{MayhemAugmentItem, MayhemAugmentsQuery, OverlayAugmentCard};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
 
 pub static OVERLAY_ENABLED: AtomicBool = AtomicBool::new(false);
 pub static OVERLAY_HAS_CARDS: AtomicBool = AtomicBool::new(false);
-pub static OVERLAY_HUD_EXPANDED: AtomicBool = AtomicBool::new(true);
-pub static OVERLAY_CURSOR_THREAD_STARTED: AtomicBool = AtomicBool::new(false);
 
-lazy_static::lazy_static! {
-    pub static ref OVERLAY_INTERACTIVE_RECTS: Mutex<Vec<(i32, i32, i32, i32)>> = Mutex::new(Vec::new());
+pub fn is_overlay_enabled() -> bool {
+    OVERLAY_ENABLED.load(Ordering::Relaxed)
+}
+
+pub fn get_league_window_rect() -> Option<GameWindowRect> {
+    let r = get_league_game_window_rect();
+    if r.found {
+        Some(r)
+    } else {
+        None
+    }
 }
 
 pub fn update_overlay_ui_state(payload: &serde_json::Value) {
@@ -17,24 +23,6 @@ pub fn update_overlay_ui_state(payload: &serde_json::Value) {
         OVERLAY_HAS_CARDS.store(b, Ordering::Relaxed);
     } else if let Some(arr) = payload.get("offeredAugments").and_then(|v| v.as_array()) {
         OVERLAY_HAS_CARDS.store(!arr.is_empty(), Ordering::Relaxed);
-    }
-
-    if let Some(b) = payload.get("hudExpanded").and_then(|v| v.as_bool()) {
-        OVERLAY_HUD_EXPANDED.store(b, Ordering::Relaxed);
-    }
-
-    if let Some(arr) = payload.get("interactiveRects").and_then(|v| v.as_array()) {
-        let mut rects = Vec::new();
-        for item in arr {
-            let x = item.get("x").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            let y = item.get("y").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            let width = item.get("width").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            let height = item.get("height").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            rects.push((x, y, width, height));
-        }
-        if let Ok(mut lock) = OVERLAY_INTERACTIVE_RECTS.lock() {
-            *lock = rects;
-        }
     }
 }
 
@@ -138,182 +126,108 @@ pub fn get_league_game_window_rect() -> GameWindowRect {
     }
 }
 
-#[cfg(windows)]
-unsafe extern "system" fn enum_child_proc(
-    child: windows_sys::Win32::Foundation::HWND,
-    lparam: isize,
-) -> i32 {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-        WS_EX_TRANSPARENT,
-    };
-
-    let cur = GetWindowLongPtrW(child, GWL_EXSTYLE) as u32;
-    let mut target = cur | WS_EX_LAYERED | WS_EX_NOACTIVATE;
-    if lparam != 0 {
-        target |= WS_EX_TRANSPARENT;
-    } else {
-        target &= !WS_EX_TRANSPARENT;
-    }
-    if cur != target {
-        SetWindowLongPtrW(child, GWL_EXSTYLE, target as isize);
-    }
-    1
+#[inline]
+fn overlay_safe_height(h: i32) -> i32 {
+    (h - 1).max(1)
 }
 
 #[cfg(windows)]
-pub fn apply_overlay_win32_styles(window: &tauri::WebviewWindow, ignore_cursor: bool) {
-    let _ = window.set_ignore_cursor_events(ignore_cursor);
+pub fn apply_overlay_win32_styles(window: &tauri::WebviewWindow, _interactive: bool) {
+    let _ = window.set_ignore_cursor_events(true);
 
     if let Ok(hwnd_val) = window.hwnd() {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            EnumChildWindows, GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_LAYERED,
+            GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_APPWINDOW, WS_EX_LAYERED,
             WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
         };
 
         let hwnd = hwnd_val.0 as windows_sys::Win32::Foundation::HWND;
         unsafe {
             let cur = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
-            let mut target =
-                cur | WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
-            if ignore_cursor {
-                target |= WS_EX_TRANSPARENT;
-            } else {
-                target &= !WS_EX_TRANSPARENT;
-            }
+            let target = (cur
+                | WS_EX_LAYERED
+                | WS_EX_TRANSPARENT
+                | WS_EX_TOPMOST
+                | WS_EX_TOOLWINDOW
+                | WS_EX_NOACTIVATE)
+                & !WS_EX_APPWINDOW;
 
             if cur != target {
                 SetWindowLongPtrW(hwnd, GWL_EXSTYLE, target as isize);
             }
-
-            EnumChildWindows(
-                hwnd,
-                Some(enum_child_proc),
-                if ignore_cursor { 1 } else { 0 },
-            );
         }
     }
 }
 
 #[cfg(not(windows))]
-pub fn apply_overlay_win32_styles(window: &tauri::WebviewWindow, ignore_cursor: bool) {
-    let _ = window.set_ignore_cursor_events(ignore_cursor);
+pub fn apply_overlay_win32_styles(window: &tauri::WebviewWindow, _interactive: bool) {
+    let _ = window.set_ignore_cursor_events(true);
 }
 
-pub fn ensure_overlay_cursor_thread(app: tauri::AppHandle) {
-    if OVERLAY_CURSOR_THREAD_STARTED
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
-        .is_err()
-    {
+pub fn show_overlay_banner_rect(app: &tauri::AppHandle, game_rect: &GameWindowRect) {
+    use tauri::Manager;
+    let Some(window) = app.get_webview_window("overlay") else {
         return;
+    };
+
+    let x = game_rect.x + (game_rect.width as f64 * 0.20) as i32;
+    let y = game_rect.y + (game_rect.height as f64 * 0.11) as i32;
+    let w = (game_rect.width as f64 * 0.60) as i32;
+    let h = (game_rect.height as f64 * 0.075) as i32;
+
+    apply_overlay_win32_styles(&window, false);
+
+    #[cfg(windows)]
+    {
+        if let Ok(hwnd_val) = window.hwnd() {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_SHOWWINDOW,
+                SW_SHOWNOACTIVATE,
+            };
+            let hwnd = hwnd_val.0 as windows_sys::Win32::Foundation::HWND;
+            unsafe {
+                SetWindowPos(
+                    hwnd,
+                    HWND_TOPMOST,
+                    x,
+                    y,
+                    w,
+                    h,
+                    SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                );
+                ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            }
+            return;
+        }
     }
 
-    std::thread::spawn(move || {
-        use tauri::Manager;
-        let mut last_ignore: Option<bool> = None;
+    let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
+    let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize {
+        width: w.max(1) as u32,
+        height: h.max(1) as u32,
+    }));
+    let _ = window.show();
+}
 
-        loop {
-            std::thread::sleep(std::time::Duration::from_millis(40));
+pub fn hide_overlay_window(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    let Some(window) = app.get_webview_window("overlay") else {
+        return;
+    };
 
-            if !OVERLAY_ENABLED.load(Ordering::Relaxed) {
-                last_ignore = None;
-                continue;
+    #[cfg(windows)]
+    {
+        if let Ok(hwnd_val) = window.hwnd() {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+            let hwnd = hwnd_val.0 as windows_sys::Win32::Foundation::HWND;
+            unsafe {
+                ShowWindow(hwnd, SW_HIDE);
             }
-
-            let rect = get_league_game_window_rect();
-            let window = match app.get_webview_window("overlay") {
-                Some(w) => w,
-                None => continue,
-            };
-
-            if !rect.found || !rect.is_foreground {
-                #[cfg(windows)]
-                {
-                    if let Ok(hwnd_val) = window.hwnd() {
-                        use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
-                        unsafe {
-                            ShowWindow(hwnd_val.0 as windows_sys::Win32::Foundation::HWND, SW_HIDE);
-                        }
-                    } else {
-                        let _ = window.hide();
-                    }
-                }
-                #[cfg(not(windows))]
-                {
-                    let _ = window.hide();
-                }
-                last_ignore = None;
-                continue;
-            }
-
-            #[cfg(windows)]
-            {
-                if let Ok(hwnd_val) = window.hwnd() {
-                    use windows_sys::Win32::UI::WindowsAndMessaging::{
-                        GetCursorPos, SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE,
-                        SWP_SHOWWINDOW, SW_SHOWNOACTIVATE,
-                    };
-
-                    let hwnd = hwnd_val.0 as windows_sys::Win32::Foundation::HWND;
-                    unsafe {
-                        SetWindowPos(
-                            hwnd,
-                            HWND_TOPMOST,
-                            rect.x,
-                            rect.y,
-                            rect.width,
-                            rect.height,
-                            SWP_NOACTIVATE | SWP_SHOWWINDOW,
-                        );
-                        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-
-                        let mut pt = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
-                        let got_cursor = GetCursorPos(&mut pt) != 0;
-
-                        let mut over_interactive = false;
-                        if got_cursor {
-                            let rx = pt.x - rect.x;
-                            let ry = pt.y - rect.y;
-
-                            let rects = OVERLAY_INTERACTIVE_RECTS
-                                .lock()
-                                .map(|l| l.clone())
-                                .unwrap_or_default();
-
-                            if !rects.is_empty() {
-                                for (x, y, w, h) in rects {
-                                    if rx >= x && rx < x + w && ry >= y && ry < y + h {
-                                        over_interactive = true;
-                                        break;
-                                    }
-                                }
-                            } else {
-                                let hud_height = if OVERLAY_HUD_EXPANDED.load(Ordering::Relaxed) {
-                                    520
-                                } else {
-                                    64
-                                };
-                                if rx >= (rect.width - 360) && ry <= hud_height {
-                                    over_interactive = true;
-                                }
-                            }
-                        }
-
-                        let target_ignore = !over_interactive;
-                        if last_ignore != Some(target_ignore) {
-                            apply_overlay_win32_styles(&window, target_ignore);
-                            last_ignore = Some(target_ignore);
-                        }
-                    }
-                }
-            }
-
-            #[cfg(not(windows))]
-            {
-                let _ = window.show();
-            }
+            return;
         }
-    });
+    }
+
+    let _ = window.hide();
 }
 
 pub fn sync_overlay_window(
@@ -324,7 +238,6 @@ pub fn sync_overlay_window(
     use tauri::Manager;
 
     OVERLAY_ENABLED.store(enabled, Ordering::Relaxed);
-    ensure_overlay_cursor_thread(app.clone());
 
     let rect = get_league_game_window_rect();
     let window = match app.get_webview_window("overlay") {
@@ -333,30 +246,18 @@ pub fn sync_overlay_window(
     };
 
     if !enabled || !rect.found {
-        #[cfg(windows)]
-        {
-            if let Ok(hwnd_val) = window.hwnd() {
-                use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
-                unsafe {
-                    ShowWindow(hwnd_val.0 as windows_sys::Win32::Foundation::HWND, SW_HIDE);
-                }
-            } else {
-                let _ = window.hide();
-            }
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = window.hide();
-        }
+        hide_overlay_window(app);
         return Ok(rect);
     }
+
+    let safe_h = overlay_safe_height(rect.height);
 
     #[cfg(windows)]
     {
         if let Ok(hwnd_val) = window.hwnd() {
             use windows_sys::Win32::UI::WindowsAndMessaging::{
                 SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_SHOWWINDOW,
-                SW_SHOWNOACTIVATE,
+                SW_HIDE, SW_SHOWNOACTIVATE,
             };
 
             let hwnd = hwnd_val.0 as windows_sys::Win32::Foundation::HWND;
@@ -367,58 +268,38 @@ pub fn sync_overlay_window(
                     rect.x,
                     rect.y,
                     rect.width,
-                    rect.height,
+                    safe_h,
                     SWP_NOACTIVATE | SWP_SHOWWINDOW,
                 );
             }
             apply_overlay_win32_styles(&window, !interactive);
-
             if rect.is_foreground {
                 unsafe {
                     ShowWindow(hwnd, SW_SHOWNOACTIVATE);
                 }
             } else {
-                use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
                 unsafe {
                     ShowWindow(hwnd, SW_HIDE);
                 }
             }
-        } else {
-            let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
-                x: rect.x,
-                y: rect.y,
-            }));
-            let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize {
-                width: rect.width as u32,
-                height: rect.height as u32,
-            }));
-            let _ = window.set_always_on_top(true);
-            apply_overlay_win32_styles(&window, !interactive);
-            if rect.is_foreground {
-                let _ = window.show();
-            } else {
-                let _ = window.hide();
-            }
+            return Ok(rect);
         }
     }
 
-    #[cfg(not(windows))]
-    {
-        let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
-            x: rect.x,
-            y: rect.y,
-        }));
-        let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize {
-            width: rect.width as u32,
-            height: rect.height as u32,
-        }));
-        let _ = window.set_always_on_top(true);
-        apply_overlay_win32_styles(&window, !interactive);
-        if rect.is_foreground {
-            let _ = window.show();
-        } else {
-            let _ = window.hide();
-        }
+    let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
+        x: rect.x,
+        y: rect.y,
+    }));
+    let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize {
+        width: rect.width as u32,
+        height: safe_h as u32,
+    }));
+    let _ = window.set_always_on_top(true);
+    apply_overlay_win32_styles(&window, !interactive);
+    if rect.is_foreground {
+        let _ = window.show();
+    } else {
+        let _ = window.hide();
     }
 
     Ok(rect)
@@ -521,7 +402,7 @@ async fn recognize_text_lines(
     bgra_bytes: &[u8],
     width: u32,
     height: u32,
-) -> Result<Vec<(f64, String)>, String> {
+) -> Result<Vec<(f32, String)>, String> {
     use windows::Graphics::Imaging::{BitmapPixelFormat, SoftwareBitmap};
     use windows::Media::Ocr::OcrEngine;
     use windows::Storage::Streams::DataWriter;
@@ -561,15 +442,27 @@ async fn recognize_text_lines(
     for i in 0..count {
         if let Ok(line) = lines.GetAt(i) {
             let text = line.Text().map(|h| h.to_string()).unwrap_or_default();
-            let mut rel_x = 0.5;
+            let mut rel_x = 0.5f32;
             if let Ok(words) = line.Words() {
                 if let Ok(w_cnt) = words.Size() {
-                    if w_cnt > 0 {
-                        if let Ok(first_word) = words.GetAt(0) {
-                            if let Ok(rect) = first_word.BoundingRect() {
-                                if width > 0 {
-                                    rel_x = rect.X as f64 / width as f64;
+                    if w_cnt > 0 && width > 0 {
+                        let mut min_x = f32::MAX;
+                        let mut max_x = f32::MIN;
+                        let mut found_word = false;
+                        for w_idx in 0..w_cnt {
+                            if let Ok(w) = words.GetAt(w_idx) {
+                                if let Ok(rect) = w.BoundingRect() {
+                                    min_x = min_x.min(rect.X);
+                                    max_x = max_x.max(rect.X + rect.Width);
+                                    found_word = true;
                                 }
+                            }
+                        }
+                        if found_word {
+                            rel_x = ((min_x + max_x) * 0.5) / (width as f32);
+                        } else if let Ok(first_word) = words.GetAt(0) {
+                            if let Ok(rect) = first_word.BoundingRect() {
+                                rel_x = (rect.X + rect.Width * 0.5) / (width as f32);
                             }
                         }
                     }
@@ -614,10 +507,129 @@ fn text_similarity_score(candidate: &str, target: &str) -> f64 {
     (matches as f64) / (t_words.len().max(c_words.len()) as f64)
 }
 
+pub fn is_category_badge_noise(text: &str) -> bool {
+    let lower = text.trim().to_lowercase();
+    matches!(
+        lower.as_str(),
+        "damage" | "utility" | "resilience" | "speed" | "quest"
+    )
+}
+
+pub fn match_ocr_lines_to_augments(
+    lines: &[(f32, String)],
+    all_augments: &[MayhemAugmentItem],
+) -> Vec<(usize, MayhemAugmentItem)> {
+    let mut columns: [Vec<String>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+
+    for (rel_x, text) in lines {
+        let trimmed = text.trim();
+        if trimmed.is_empty() || is_category_badge_noise(trimmed) {
+            continue;
+        }
+
+        let col = if *rel_x < 0.333 {
+            0
+        } else if *rel_x < 0.666 {
+            1
+        } else {
+            2
+        };
+        columns[col].push(trimmed.to_string());
+    }
+
+    let mut matches = Vec::new();
+
+    for (col_idx, col_lines) in columns.iter().enumerate() {
+        if col_lines.is_empty() {
+            continue;
+        }
+
+        let mut best_score = 0.0;
+        let mut best_match: Option<MayhemAugmentItem> = None;
+
+        for line in col_lines {
+            let line_norm = normalize_text(line);
+            if line_norm.is_empty() {
+                continue;
+            }
+
+            for aug in all_augments {
+                let aug_norm = normalize_text(&aug.name);
+                if aug_norm.is_empty() {
+                    continue;
+                }
+
+                let score = if line_norm == aug_norm {
+                    1.0
+                } else if line_norm.contains(&aug_norm) || aug_norm.contains(&line_norm) {
+                    0.95
+                } else {
+                    text_similarity_score(&line_norm, &aug_norm)
+                };
+
+                if score >= 0.60 && score > best_score {
+                    best_score = score;
+                    best_match = Some(aug.clone());
+                }
+            }
+        }
+
+        if let Some(matched) = best_match {
+            matches.push((col_idx, matched));
+        }
+    }
+
+    matches
+}
+
+pub async fn scan_title_band_from_image(
+    img: &image::RgbaImage,
+    champion_id: Option<i64>,
+) -> Result<Vec<OverlayAugmentCard>, String> {
+    #[cfg(not(windows))]
+    {
+        let _ = (img, champion_id);
+        return Ok(Vec::new());
+    }
+
+    #[cfg(windows)]
+    {
+        let width = img.width();
+        let height = img.height();
+        if width == 0 || height == 0 {
+            return Ok(Vec::new());
+        }
+
+        // Convert RGBA to BGRA
+        let mut bgra = Vec::with_capacity((width * height * 4) as usize);
+        for pixel in img.pixels() {
+            bgra.push(pixel[2]); // B
+            bgra.push(pixel[1]); // G
+            bgra.push(pixel[0]); // R
+            bgra.push(pixel[3]); // A
+        }
+
+        let lines = recognize_text_lines(&bgra, width, height).await?;
+        let resp = crate::services::history::get_mayhem_augments(MayhemAugmentsQuery {
+            champion_id,
+            page_size: Some(300),
+            ..Default::default()
+        })
+        .await?;
+
+        let matches = match_ocr_lines_to_augments(&lines, &resp.items);
+        if matches.len() < 2 {
+            return Ok(Vec::new());
+        }
+
+        Ok(crate::services::history::enrich_overlay_augment_cards(champion_id, matches).await)
+    }
+}
+
 pub async fn scan_in_game_augment_cards(
     champion_id: Option<i64>,
     with_augment_ids: Vec<String>,
-) -> Result<Vec<MayhemAugmentItem>, String> {
+) -> Result<Vec<OverlayAugmentCard>, String> {
     #[cfg(not(windows))]
     {
         let _ = (champion_id, with_augment_ids);
@@ -626,32 +638,71 @@ pub async fn scan_in_game_augment_cards(
 
     #[cfg(windows)]
     {
-        let rect = get_league_game_window_rect();
-        if !rect.found || rect.width <= 100 || rect.height <= 100 {
-            return Err("League game window not found or minimized".to_string());
-        }
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Foundation::{POINT, RECT};
+        use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            FindWindowW, GetClientRect, GetForegroundWindow, IsIconic, IsWindowVisible,
+        };
 
-        // Augment selection popup strip: rx = 0.18, ry = 0.20, rw = 0.64, rh = 0.42
-        let strip_x = rect.x + (rect.width as f64 * 0.18) as i32;
-        let strip_y = rect.y + (rect.height as f64 * 0.20) as i32;
-        let strip_w = (rect.width as f64 * 0.64) as i32;
-        let strip_h = (rect.height as f64 * 0.42) as i32;
+        let title_wide: Vec<u16> = OsStr::new("League of Legends (TM) Client")
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        let (hwnd, rect) = unsafe {
+            let hwnd = FindWindowW(std::ptr::null(), title_wide.as_ptr());
+            if hwnd.is_null() || IsWindowVisible(hwnd) == 0 || IsIconic(hwnd) != 0 {
+                return Ok(Vec::new());
+            }
+
+            let fg = GetForegroundWindow();
+            if fg != hwnd {
+                return Ok(Vec::new());
+            }
+
+            let mut rc = RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            };
+            if GetClientRect(hwnd, &mut rc) == 0 {
+                return Ok(Vec::new());
+            }
+
+            let width = rc.right - rc.left;
+            let height = rc.bottom - rc.top;
+            if width <= 100 || height <= 100 {
+                return Ok(Vec::new());
+            }
+
+            let mut pt = POINT { x: 0, y: 0 };
+            ClientToScreen(hwnd, &mut pt);
+
+            (
+                hwnd,
+                GameWindowRect {
+                    found: true,
+                    is_foreground: true,
+                    x: pt.x,
+                    y: pt.y,
+                    width,
+                    height,
+                },
+            )
+        };
+
+        let _ = hwnd;
+
+        let strip_x = rect.x + (rect.width as f64 * 0.21) as i32;
+        let strip_y = rect.y + (rect.height as f64 * 0.385) as i32;
+        let strip_w = (rect.width as f64 * 0.58) as i32;
+        let strip_h = (rect.height as f64 * 0.065) as i32;
 
         let (bgra, bw, bh) = capture_bgra_rect(strip_x, strip_y, strip_w, strip_h)?;
         let lines = recognize_text_lines(&bgra, bw, bh).await?;
-
-        let mut col_texts = [String::new(), String::new(), String::new()];
-        for (rel_x, text) in lines {
-            let col = if rel_x < 0.33 {
-                0
-            } else if rel_x < 0.66 {
-                1
-            } else {
-                2
-            };
-            col_texts[col].push(' ');
-            col_texts[col].push_str(&text);
-        }
 
         let resp = crate::services::history::get_mayhem_augments(MayhemAugmentsQuery {
             champion_id,
@@ -661,33 +712,142 @@ pub async fn scan_in_game_augment_cards(
         })
         .await?;
 
-        let all_augments = resp.items;
-        let mut results = Vec::new();
-
-        for text in &col_texts {
-            let trimmed = text.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-
-            let mut best_score = 0.0;
-            let mut best_match: Option<MayhemAugmentItem> = None;
-
-            for aug in &all_augments {
-                let score = text_similarity_score(trimmed, &aug.name);
-                if score > best_score && score >= 0.35 {
-                    best_score = score;
-                    best_match = Some(aug.clone());
-                }
-            }
-
-            if let Some(matched) = best_match {
-                if !results.iter().any(|r: &MayhemAugmentItem| r.id == matched.id) {
-                    results.push(matched);
-                }
-            }
+        let matches = match_ocr_lines_to_augments(&lines, &resp.items);
+        if matches.len() < 2 {
+            return Ok(Vec::new());
         }
 
-        Ok(results)
+        Ok(crate::services::history::enrich_overlay_augment_cards(champion_id, matches).await)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_category_badge_noise() {
+        assert!(is_category_badge_noise("Damage"));
+        assert!(is_category_badge_noise("UTILITY"));
+        assert!(is_category_badge_noise(" Resilience "));
+        assert!(is_category_badge_noise("speed"));
+        assert!(is_category_badge_noise("quest"));
+        assert!(!is_category_badge_noise("Giant Slayer"));
+    }
+
+    #[test]
+    fn test_match_ocr_lines_to_augments() {
+        let fake_augments = vec![
+            MayhemAugmentItem {
+                id: "1".into(),
+                name: "Phenomenal Evil".into(),
+                icon_url: "".into(),
+                rarity: Some("Gold".into()),
+                tooltip: None,
+                categories: vec![],
+                games: 10,
+                wins: 5,
+                win_rate: 0.5,
+                wpa: 0.02,
+                pick_rate: None,
+                global_games: 100,
+                global_win_rate: 0.5,
+                global_wpa: 0.02,
+                global_pick_rate: None,
+            },
+            MayhemAugmentItem {
+                id: "2".into(),
+                name: "Eureka".into(),
+                icon_url: "".into(),
+                rarity: Some("Prismatic".into()),
+                tooltip: None,
+                categories: vec![],
+                games: 10,
+                wins: 5,
+                win_rate: 0.5,
+                wpa: 0.05,
+                pick_rate: None,
+                global_games: 100,
+                global_win_rate: 0.5,
+                global_wpa: 0.05,
+                global_pick_rate: None,
+            },
+        ];
+
+        let lines = vec![
+            (0.1f32, "Damage".to_string()),
+            (0.2f32, "Phenomenal Evil".to_string()),
+            (0.5f32, "Utility".to_string()),
+            (0.55f32, "Eureka".to_string()),
+        ];
+
+        let matched = match_ocr_lines_to_augments(&lines, &fake_augments);
+        assert_eq!(matched.len(), 2);
+        assert_eq!(matched[0].0, 0);
+        assert_eq!(matched[0].1.name, "Phenomenal Evil");
+        assert_eq!(matched[1].0, 1);
+        assert_eq!(matched[1].1.name, "Eureka");
+    }
+
+    #[tokio::test]
+    #[cfg(windows)]
+    async fn test_scan_title_band_from_example_image() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let path = std::path::Path::new(manifest_dir)
+            .parent()
+            .unwrap()
+            .join("@llm")
+            .join("cache")
+            .join("augment-selection-examples")
+            .join("Screen15.png");
+
+        if !path.exists() {
+            eprintln!("Skipping test, image file not found: {:?}", path);
+            return;
+        }
+
+        let dynamic_img = match image::open(&path) {
+            Ok(img) => img,
+            Err(e) => {
+                eprintln!("Failed to open test image: {e}");
+                return;
+            }
+        };
+
+        let rgba = dynamic_img.to_rgba8();
+        let width = rgba.width();
+        let height = rgba.height();
+
+        // Crop title strip: rx = 0.21, ry = 0.385, rw = 0.58, rh = 0.065
+        let strip_x = (width as f64 * 0.21) as u32;
+        let strip_y = (height as f64 * 0.385) as u32;
+        let strip_w = (width as f64 * 0.58) as u32;
+        let strip_h = (height as f64 * 0.065) as u32;
+
+        let cropped = image::imageops::crop_imm(&rgba, strip_x, strip_y, strip_w, strip_h).to_image();
+        let (cw, ch) = cropped.dimensions();
+        assert!(cw > 0 && ch > 0);
+
+        let mut bgra = Vec::with_capacity((cw * ch * 4) as usize);
+        for pixel in cropped.pixels() {
+            bgra.push(pixel[2]);
+            bgra.push(pixel[1]);
+            bgra.push(pixel[0]);
+            bgra.push(pixel[3]);
+        }
+
+        let lines = recognize_text_lines(&bgra, cw, ch).await;
+        match lines {
+            Ok(lines) => {
+                println!("OCR detected {} lines from Screen15.png title band:", lines.len());
+                for (rel_x, text) in &lines {
+                    println!("  [{:.2}] {}", rel_x, text);
+                }
+                assert!(!lines.is_empty(), "Expected OCR to find title band lines");
+            }
+            Err(e) => {
+                eprintln!("OCR recognition failed in test environment: {e}");
+            }
+        }
     }
 }

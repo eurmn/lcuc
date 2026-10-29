@@ -12,9 +12,7 @@ const isOverlay = new URLSearchParams(window.location.search).get("window") === 
 
 if (isOverlay) {
   document.documentElement.classList.add("overlay-window");
-  document.body.classList.remove("bg-gray-900");
   document.body.classList.add("overlay-window");
-  target.classList.remove("bg-gray-900");
   target.classList.add("overlay-window");
 
   document.documentElement.style.background = "transparent";
@@ -23,6 +21,9 @@ if (isOverlay) {
   document.body.style.backgroundColor = "rgba(0, 0, 0, 0)";
   target.style.background = "transparent";
   target.style.backgroundColor = "rgba(0, 0, 0, 0)";
+} else {
+  document.body.classList.add("bg-gray-900");
+  target.classList.add("bg-gray-900");
 }
 
 const app = mount(isOverlay ? LiveMayhemOverlay : App, {

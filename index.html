@@ -5,10 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/png" href="/src/assets/logo.png" />
     <title>LCU Companion</title>
+    <script>
+      if (new URLSearchParams(window.location.search).get("window") === "overlay") {
+        document.documentElement.classList.add("overlay-window");
+        document.documentElement.style.background = "transparent";
+        document.documentElement.style.backgroundColor = "rgba(0, 0, 0, 0)";
+      }
+    </script>
     <script type="module" src="/src/main.ts" defer></script>
   </head>
-  <body class="dark bg-gray-900 text-gray-100 antialiased selection:bg-purple-600 selection:text-white">
-    <div id="app" class="h-screen w-screen overflow-hidden bg-gray-900 text-gray-100"></div>
+  <body class="dark text-gray-100 antialiased selection:bg-purple-600 selection:text-white">
+    <div id="app" class="h-screen w-screen overflow-hidden text-gray-100"></div>
   </body>
 </html>
 

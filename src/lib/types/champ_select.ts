@@ -137,6 +137,27 @@ export interface SaveMayhemBuildPayload {
   build: MayhemBuildStrategy;
 }
 
+export interface OverlaySynergyItem {
+  id: number;
+  name: string;
+  icon_url: string;
+  item_type: string;
+  total_games: number;
+  win_rate: number;
+  wpa: number;
+}
+
+export interface OverlayAugmentCard {
+  slot: number;
+  id: string;
+  name: string;
+  rarity?: string;
+  wpa: number;
+  win_rate: number;
+  games: number;
+  synergy_items: OverlaySynergyItem[];
+}
+
 export interface MayhemAugmentItem {
   id: string;
   name: string;

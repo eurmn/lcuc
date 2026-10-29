@@ -3,7 +3,8 @@ use crate::models::{
     ChampionSummary, MatchHistoryAugmentInfo, MatchHistoryItem, MatchHistoryItemInfo,
     MayhemAugmentItem, MayhemAugmentsQuery, MayhemAugmentsResponse, MayhemBuildAugment,
     MayhemBuildItem, MayhemBuildSpell, MayhemBuildStrategy, MayhemChampionBuildSummary,
-    MayhemLiveAdvice, MayhemStageItem, SaveMayhemBuildPayload, SavedMayhemBuild,
+    MayhemLiveAdvice, MayhemStageItem, OverlayAugmentCard, OverlaySynergyItem,
+    SaveMayhemBuildPayload, SavedMayhemBuild,
 };
 use crate::services::asset_cache::{get_cache_dir, get_cached_asset_data_uri};
 use crate::services::champions::get_all_champions;
@@ -6423,6 +6424,88 @@ pub async fn delete_saved_mayhem_build(id: String) -> Result<(), String> {
     })
     .await
     .map_err(|e| format!("spawn_blocking failed: {e}"))?
+}
+
+pub async fn enrich_overlay_augment_cards(
+    champion_id: Option<i64>,
+    cards: Vec<(usize, MayhemAugmentItem)>,
+) -> Vec<OverlayAugmentCard> {
+    let items_catalog = get_items_by_id().await.ok();
+    let mut enriched_cards = Vec::with_capacity(cards.len());
+
+    for (slot, aug) in cards {
+        let mut synergy_items: Vec<OverlaySynergyItem> = Vec::new();
+
+        let wpa = if aug.games >= 5 {
+            aug.wpa
+        } else if aug.wpa != 0.0 || aug.global_wpa != 0.0 {
+            (aug.wpa * aug.games as f64 + aug.global_wpa * 15.0) / (aug.games as f64 + 15.0)
+        } else {
+            0.0
+        };
+
+        if let Some(cid) = champion_id.filter(|&id| id > 0) {
+            if let Ok(summary) =
+                compute_mayhem_champion_build(cid, vec![aug.name.clone()], Some("v2".to_string()))
+                    .await
+            {
+                let chosen_strat = summary
+                    .strategies
+                    .iter()
+                    .find(|s| s.id.starts_with("aug_"))
+                    .or_else(|| summary.strategies.iter().find(|s| s.id == "highest_wr"))
+                    .or_else(|| summary.strategies.first());
+
+                if let Some(strat) = chosen_strat {
+                    let candidates: Vec<&MayhemBuildItem> = strat
+                        .items
+                        .iter()
+                        .filter(|it| {
+                            it.id > 0
+                                && it.item_class.as_deref() != Some("boot")
+                                && !it.name.to_lowercase().contains("boots")
+                                && !it.name.to_lowercase().contains("greaves")
+                                && !it.name.to_lowercase().contains("shoes")
+                                && !it.name.to_lowercase().contains("treads")
+                        })
+                        .take(2)
+                        .collect();
+
+                    for item in candidates {
+                        let (name, icon_url) = if let Some(cat) = &items_catalog {
+                            if let Some(cached) = cat.get(&(item.id as i32)) {
+                                (cached.name.clone(), cached.icon_url.clone())
+                            } else {
+                                (item.name.clone(), item.icon_url.clone())
+                            }
+                        } else {
+                            (item.name.clone(), item.icon_url.clone())
+                        };
+
+                        let final_icon = get_cached_asset_data_uri(&icon_url).await;
+                        synergy_items.push(OverlaySynergyItem {
+                            id: item.id,
+                            name,
+                            icon_url: final_icon,
+                        });
+                    }
+                }
+            }
+        }
+
+        enriched_cards.push(OverlayAugmentCard {
+            slot,
+            id: aug.id,
+            name: aug.name,
+            rarity: aug.rarity,
+            wpa,
+            win_rate: aug.win_rate,
+            games: aug.games,
+            synergy_items,
+        });
+    }
+
+    enriched_cards
 }
 
 #[cfg(test)]

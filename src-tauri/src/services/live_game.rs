@@ -31,6 +31,8 @@ pub struct LiveGameState {
     pub champion_name: String,
     pub level: u32,
     pub current_gold: f64,
+    pub is_dead: bool,
+    pub respawn_timer: f64,
     pub items: Vec<LivePlayerItem>,
     pub stats: LivePlayerStats,
 }
@@ -44,6 +46,8 @@ impl LiveGameState {
             champion_name: String::new(),
             level: 0,
             current_gold: 0.0,
+            is_dead: false,
+            respawn_timer: 0.0,
             items: Vec::new(),
             stats: LivePlayerStats::default(),
         }
@@ -130,6 +134,8 @@ pub async fn fetch_live_game_state() -> Result<LiveGameState, String> {
 
     let mut items = Vec::new();
     let mut champ_name = String::new();
+    let mut is_dead = false;
+    let mut respawn_timer = 0.0;
 
     if let Some(all_players) = data.get("allPlayers").and_then(|v| v.as_array()) {
         for player in all_players {
@@ -148,6 +154,14 @@ pub async fn fetch_live_game_state() -> Result<LiveGameState, String> {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
+                is_dead = player
+                    .get("isDead")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                respawn_timer = player
+                    .get("respawnTimer")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0);
                 if let Some(raw_items) = player.get("items").and_then(|v| v.as_array()) {
                     for it in raw_items {
                         let item_id = it.get("itemID").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -178,6 +192,8 @@ pub async fn fetch_live_game_state() -> Result<LiveGameState, String> {
         champion_name: champ_name,
         level,
         current_gold,
+        is_dead,
+        respawn_timer,
         items,
         stats,
     })
@@ -186,8 +202,16 @@ pub async fn fetch_live_game_state() -> Result<LiveGameState, String> {
 pub fn start_live_game_polling(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut was_in_game = false;
+        let mut armed_milestone: Option<u32> = None;
+        let mut completed_milestones: u8 = 0;
+        let mut was_dead = false;
+        let mut cards_visible = false;
+        let mut scan_attempts: u32 = 0;
+        let mut last_scan_time = std::time::Instant::now();
+        let mut last_card_ids: Vec<String> = Vec::new();
+
         loop {
-            tokio::time::sleep(Duration::from_millis(1500)).await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
             let window_rect = crate::services::live_overlay::get_league_game_window_rect();
             let _ = app.emit("live:window-rect", &window_rect);
 
@@ -197,8 +221,143 @@ pub fn start_live_game_polling(app: AppHandle) {
                         was_in_game = true;
                         let _ = app.emit("live:game-state", &state);
                         let _ = app.emit("live:state-updated", &state);
+
+                        let overlay_enabled = crate::services::live_overlay::is_overlay_enabled();
+                        if overlay_enabled {
+                            // Resolve champion ID by name
+                            let champion_id = if !state.champion_name.is_empty() {
+                                crate::services::champions::get_all_champions()
+                                    .await
+                                    .ok()
+                                    .and_then(|champs| {
+                                        champs
+                                            .into_iter()
+                                            .find(|c| {
+                                                c.name.eq_ignore_ascii_case(&state.champion_name)
+                                                    || c.alias
+                                                        .eq_ignore_ascii_case(&state.champion_name)
+                                            })
+                                            .map(|c| c.id)
+                                    })
+                            } else {
+                                None
+                            };
+
+                            let current_augments = Vec::<String>::new();
+
+                            // Arming logic
+                            if state.level >= 3 && (completed_milestones & 1 == 0) {
+                                if state.game_time < 95.0 || !state.is_dead {
+                                    armed_milestone = Some(3);
+                                }
+                            }
+                            if (7..11).contains(&state.level) && (completed_milestones & 2 == 0) {
+                                if (was_dead && !state.is_dead) || state.game_time < 90.0 {
+                                    armed_milestone = Some(7);
+                                }
+                            }
+                            if (11..15).contains(&state.level) && (completed_milestones & 4 == 0) {
+                                if was_dead && !state.is_dead {
+                                    armed_milestone = Some(11);
+                                }
+                            }
+                            if state.level >= 15 && (completed_milestones & 8 == 0) {
+                                if was_dead && !state.is_dead {
+                                    armed_milestone = Some(15);
+                                }
+                            }
+
+                            // Active card display logic
+                            let now = std::time::Instant::now();
+                            if cards_visible {
+                                if now.duration_since(last_scan_time) >= Duration::from_millis(600)
+                                {
+                                    last_scan_time = now;
+                                    let is_foreground = crate::services::live_overlay::get_league_window_rect()
+                                        .map(|r| r.is_foreground)
+                                        .unwrap_or(false);
+
+                                    let cards = if is_foreground {
+                                        crate::services::live_overlay::scan_in_game_augment_cards(
+                                            champion_id,
+                                            current_augments.clone(),
+                                        )
+                                        .await
+                                        .unwrap_or_default()
+                                    } else {
+                                        Vec::new()
+                                    };
+
+                                    if cards.len() < 2 || !is_foreground {
+                                        crate::services::live_overlay::hide_overlay_window(&app);
+                                        let _ = app.emit(
+                                            "overlay:cards-updated",
+                                            &Vec::<crate::models::history::OverlayAugmentCard>::new(),
+                                        );
+                                        cards_visible = false;
+                                        if let Some(m) = armed_milestone {
+                                            let bit = match m {
+                                                3 => 1,
+                                                7 => 2,
+                                                11 => 4,
+                                                15 => 8,
+                                                _ => 0,
+                                            };
+                                            completed_milestones |= bit;
+                                            armed_milestone = None;
+                                        }
+                                    } else {
+                                        let new_ids: Vec<String> =
+                                            cards.iter().map(|c| c.id.clone()).collect();
+                                        if new_ids != last_card_ids {
+                                            last_card_ids = new_ids;
+                                            let _ = app.emit("overlay:cards-updated", &cards);
+                                        }
+                                    }
+                                }
+                            } else if armed_milestone.is_some() {
+                                let interval = if scan_attempts < 25 {
+                                    Duration::from_millis(750)
+                                } else {
+                                    Duration::from_millis(2500)
+                                };
+
+                                if now.duration_since(last_scan_time) >= interval {
+                                    last_scan_time = now;
+                                    scan_attempts += 1;
+                                    let cards =
+                                        crate::services::live_overlay::scan_in_game_augment_cards(
+                                            champion_id,
+                                            current_augments,
+                                        )
+                                        .await
+                                        .unwrap_or_default();
+
+                                    if cards.len() >= 2 {
+                                        cards_visible = true;
+                                        scan_attempts = 0;
+                                        last_card_ids =
+                                            cards.iter().map(|c| c.id.clone()).collect();
+                                        if let Some(rect) =
+                                            crate::services::live_overlay::get_league_window_rect()
+                                        {
+                                            crate::services::live_overlay::show_overlay_banner_rect(
+                                                &app, &rect,
+                                            );
+                                        }
+                                        let _ = app.emit("overlay:cards-updated", &cards);
+                                    }
+                                }
+                            }
+                        }
+
+                        was_dead = state.is_dead;
                     } else if was_in_game {
                         was_in_game = false;
+                        completed_milestones = 0;
+                        armed_milestone = None;
+                        cards_visible = false;
+                        crate::services::live_overlay::hide_overlay_window(&app);
                         let not_in_game = LiveGameState::not_in_game();
                         let _ = app.emit("live:game-state", &not_in_game);
                         let _ = app.emit("live:state-updated", &not_in_game);
@@ -207,6 +366,10 @@ pub fn start_live_game_polling(app: AppHandle) {
                 Err(_) => {
                     if was_in_game {
                         was_in_game = false;
+                        completed_milestones = 0;
+                        armed_milestone = None;
+                        cards_visible = false;
+                        crate::services::live_overlay::hide_overlay_window(&app);
                         let not_in_game = LiveGameState::not_in_game();
                         let _ = app.emit("live:game-state", &not_in_game);
                         let _ = app.emit("live:state-updated", &not_in_game);

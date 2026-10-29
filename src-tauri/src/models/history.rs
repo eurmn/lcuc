@@ -195,6 +195,25 @@ pub struct MayhemAugmentItem {
     pub global_pick_rate: f64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OverlaySynergyItem {
+    pub id: i64,
+    pub name: String,
+    pub icon_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OverlayAugmentCard {
+    pub slot: usize,
+    pub id: String,
+    pub name: String,
+    pub rarity: Option<String>,
+    pub wpa: f64,
+    pub win_rate: f64,
+    pub games: usize,
+    pub synergy_items: Vec<OverlaySynergyItem>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MayhemAugmentsQuery {
     pub champion_id: Option<i64>,

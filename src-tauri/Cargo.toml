@@ -33,6 +33,7 @@ tokio-tungstenite = { version = "0.24", default-features = false, features = ["c
 native-tls = "0.2"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 async-trait = "0.1"
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [profile.dev]
 incremental = true

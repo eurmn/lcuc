@@ -4,11 +4,19 @@
 - **Main Chat (`orchestrator` -> `9router/ag/gemini-3.8-flash-medium`)**: Coordinates tasks, keeps main chat context small, and dispatches parallel subagents. Never edits code directly.
 - **Stateless Brain (`architect` -> `9router/ag/gemini-4-argon-medium` / `low`)**: Never use Argon-4 as the main chat. Invoke `architect` as a subagent with compact `file:line` and symbol signatures from `scout` to design complex Rust/Tokio/SQLite/Svelte 5 solutions and return a YAML execution plan.
 - **Claude Quota Protection (`9router/ag/claude-*`)**: Reserve Claude strictly as a last-resort fallback if `worker` + `architect` fail twice; fall back immediately to `gemini-4-argon-medium` or `gemini-3.8-flash-high` on quota exhaustion.
-- **Fast Codebase Discovery (`scout` -> `9router/ag/gemini-3.8-flash-low`)**: Never read full large files to explore. Use `jcodemunch` (`search_symbols`, `get_file_outline`, `get_symbol_source`), `ast-grep` (`find_code`, `find_code_by_rule`), and `lsp` (`workspaceSymbol`, `goToDefinition`, `findReferences`) first, plus `exa` for ARAM Mayhem mechanics, `rust-docs` for crates, and `svelte` MCP (`svelte-autofixer` / `get-documentation`) for Svelte 5.
+- **Fast Codebase Discovery (`scout` -> `9router/ag/gemini-3.8-flash-low`)**: Never read full large files to explore. Use `type-inject` (`search_symbols`, `get_file_outline`, `get_symbol_source`), `ast-grep` (`find_code`, `find_code_by_rule`), and `lsp` (`workspaceSymbol`, `goToDefinition`, `findReferences`) first, plus `exa` for ARAM Mayhem mechanics, `rust-docs` for crates, and `svelte` MCP (`svelte-autofixer` / `get-documentation`) for Svelte 5.
 - **Minimal Subagent Prompts**: Never dump full source files into subagent prompts. Provide only:
   1. Target file paths and line ranges (e.g. `src-tauri/src/agent/mod.rs:45-80`).
   2. The specific function/struct/component identifier to modify.
   3. Desired behavior or signature diff.
+- **Explicit Tool Directives in Subagent Prompts**: When spawning `scout`, `architect`, `worker`, or `reviewer`, explicitly name the tool they must use based on the target:
+  - **Rust / TS AST & Function Calls** -> instruct subagent to use `ast-grep` (`find_code` / `find_code_by_rule`) or `lsp` (`workspaceSymbol`, `goToDefinition`, `findReferences`).
+  - **TypeScript / Svelte 5 Types & Props** -> instruct subagent to use `type-inject` (`lookup_type`, `list_types`, `type_check`).
+  - **Svelte 5 Runes & Components (`.svelte`)** -> instruct `worker`/`reviewer` to run `svelte` MCP (`svelte-autofixer`, `get-documentation`).
+  - **Rust Crate APIs** -> instruct subagent to use `rust-docs` MCP.
+  - **Live Tauri Window / IPC Inspection** -> instruct subagent to use `tauri` MCP.
+  - **ARAM Mayhem Patch / Augment Data** -> instruct `scout` to use `exa` / `websearch`.
+  - **JSON, CSS, Env Vars, or String Literals** -> instruct `scout` to use `grep` followed by scoped `read` (`offset` + `limit` <= 60 lines).
 
 ## Mission and architecture
 

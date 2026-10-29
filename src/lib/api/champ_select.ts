@@ -106,12 +106,27 @@ export async function getLiveBuildAdvice(params: {
   });
 }
 
+import type {
+  ChampSelectSession,
+  ChampionBuildResponse,
+  ExportBuildPayload,
+  GameWindowRect,
+  MayhemAugmentItem,
+  MayhemAugmentsQuery,
+  MayhemAugmentsResponse,
+  OverlayAugmentCard,
+  SavedMayhemBuild,
+} from "$lib/types/champ_select";
+
 export async function syncOverlayWindow(enabled: boolean, interactive: boolean): Promise<GameWindowRect> {
   return invoke<GameWindowRect>("api_sync_overlay_window", { enabled, interactive });
 }
 
-export async function scanLiveAugmentCards(championId?: number, withAugmentIds?: string[]): Promise<MayhemAugmentItem[]> {
-  return invoke<MayhemAugmentItem[]>("api_scan_live_augment_cards", {
+export async function scanLiveAugmentCards(
+  championId?: number,
+  withAugmentIds?: string[],
+): Promise<OverlayAugmentCard[]> {
+  return invoke<OverlayAugmentCard[]>("api_scan_live_augment_cards", {
     championId: championId ?? null,
     withAugmentIds: withAugmentIds ?? [],
   });
