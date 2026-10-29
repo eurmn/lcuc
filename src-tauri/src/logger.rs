@@ -213,13 +213,16 @@ pub fn write(level: Level, source: &str, message: &str, context: Option<&str>) {
                 }
             }
             if let Some(handle) = APP_HANDLE.get() {
-                let _ = handle.emit("log_entry", LogEntry {
-                    timestamp: ts,
-                    level: level.as_str().to_string(),
-                    source: source.to_string(),
-                    target: source.to_string(),
-                    message: format!("{}{}", message, suffix),
-                });
+                let _ = handle.emit(
+                    "log_entry",
+                    LogEntry {
+                        timestamp: ts,
+                        level: level.as_str().to_string(),
+                        source: source.to_string(),
+                        target: source.to_string(),
+                        message: format!("{}{}", message, suffix),
+                    },
+                );
             }
         }
     }

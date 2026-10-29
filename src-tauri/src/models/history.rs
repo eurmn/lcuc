@@ -253,4 +253,3 @@ pub struct SaveMayhemBuildPayload {
     pub augment_ids: Vec<String>,
     pub build: MayhemBuildStrategy,
 }
-

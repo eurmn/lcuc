@@ -17,14 +17,18 @@ lazy_static! {
     static ref ASSET_MEMORY_CACHE: RwLock<HashMap<String, String>> = RwLock::new(HashMap::new());
 }
 
-/// Returns the local directory path used for CDragon in-disk asset caching.
-pub fn get_asset_cache_dir() -> PathBuf {
+/// Returns the local base directory path used for file and asset caching.
+pub fn get_cache_dir() -> PathBuf {
     dirs::data_local_dir()
         .or_else(dirs::home_dir)
         .unwrap_or_else(|| PathBuf::from("."))
         .join("lcu-companion")
         .join("cache")
-        .join("cdragon")
+}
+
+/// Returns the local directory path used for CDragon in-disk asset caching.
+pub fn get_asset_cache_dir() -> PathBuf {
+    get_cache_dir().join("cdragon")
 }
 
 /// Clears both the in-memory and on-disk CDragon asset caches (triggered on patch updates).

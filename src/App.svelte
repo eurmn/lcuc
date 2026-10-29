@@ -631,69 +631,112 @@ import { isLcuConnected as fetchIsLcuConnected } from "./lib/api/champ_select";
     onToggleFavoriteChampion={handleToggleFavorite}
   />
 
-  <!-- Global Crawler Progress Banner across all tabs -->
-  {#if globalCollectorState.startsWith("global-aram:") || globalCollectorState === "collecting" || crawlerPaused || agentOperations.some((op) => op.id === "global-database")}
+  <!-- Global Crawler & Operations Progress Banner across all tabs -->
+  {#if globalCollectorState.startsWith("global-aram:") || globalCollectorState === "collecting" || crawlerPaused || agentOperations.length > 0}
     {@const crawlerOp = agentOperations.find((op) => op.id === "global-database")}
-    {@const currentCount = crawlerOp?.current ?? globalGames}
-    {@const totalLimit = crawlerOp?.total ?? globalLimit}
-    {@const progressPct = Math.min(100, Math.max(0, Math.round((currentCount / Math.max(1, totalLimit)) * 100)))}
-    <div class="relative w-full z-20 select-none bg-gray-950 border-b border-cyan-900/30">
-      <!-- Vivid thin progress bar line -->
-      <div class="h-[2px] w-full bg-cyan-950/60 overflow-hidden">
-        <div
-          class="h-full bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.8)] transition-[width] duration-300 ease-out"
-          style={`width: ${progressPct}%`}
-        ></div>
-      </div>
+    {@const otherOp = agentOperations.find((op) => op.id !== "global-database")}
+    {#if crawlerOp || globalCollectorState.startsWith("global-aram:") || globalCollectorState === "collecting" || crawlerPaused}
+      {@const currentCount = crawlerOp?.current ?? globalGames}
+      {@const totalLimit = crawlerOp?.total ?? globalLimit}
+      {@const progressPct = Math.min(100, Math.max(0, Math.round((currentCount / Math.max(1, totalLimit)) * 100)))}
+      <div class="relative w-full z-20 select-none bg-gray-950 border-b border-cyan-900/30">
+        <!-- Vivid thin progress bar line -->
+        <div class="h-[2px] w-full bg-cyan-950/60 overflow-hidden">
+          <div
+            class="h-full bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.8)] transition-[width] duration-300 ease-out"
+            style={`width: ${progressPct}%`}
+          ></div>
+        </div>
 
-      <!-- Status row: counter, percentage, rate, ETA -->
-      <div class="flex items-center justify-between px-4 py-1.5 text-xs bg-gray-950/90">
-        <div class="flex items-center gap-2.5">
-          <svg class="h-3.5 w-3.5 -rotate-90 shrink-0" viewBox="0 0 24 24">
-            <circle
-              class="text-cyan-950/80"
-              stroke="currentColor"
-              stroke-width="3"
-              fill="transparent"
-              cx="12"
-              cy="12"
-              r="9"
-            />
-            <circle
-              class="text-cyan-400 transition-[stroke-dashoffset] duration-300 ease-out"
-              stroke="currentColor"
-              stroke-width="3"
-              stroke-linecap="round"
-              fill="transparent"
-              cx="12"
-              cy="12"
-              r="9"
-              stroke-dasharray="56.548"
-              stroke-dashoffset={56.548 - (progressPct / 100) * 56.548}
-            />
-          </svg>
-          <span class="tabular-nums font-semibold tracking-wider text-cyan-200">
-            {currentCount.toLocaleString()} / {totalLimit.toLocaleString()}
-          </span>
-          <span class="text-[11px] font-medium text-cyan-400/90 tabular-nums">
-            ({progressPct}%)
-          </span>
-          <span class="text-[11px] font-medium text-cyan-300/80 tabular-nums">
-            · {crawlerRateText}
-          </span>
-          {#if crawlerEtaText}
-            <span class="text-[11px] font-semibold text-amber-300/90 tabular-nums">
-              · ETA {crawlerEtaText}
+        <!-- Status row: counter, percentage, rate, ETA -->
+        <div class="flex items-center justify-between px-4 py-1.5 text-xs bg-gray-950/90">
+          <div class="flex items-center gap-2.5">
+            <svg class="h-3.5 w-3.5 -rotate-90 shrink-0" viewBox="0 0 24 24">
+              <circle
+                class="text-cyan-950/80"
+                stroke="currentColor"
+                stroke-width="3"
+                fill="transparent"
+                cx="12"
+                cy="12"
+                r="9"
+              />
+              <circle
+                class="text-cyan-400 transition-[stroke-dashoffset] duration-300 ease-out"
+                stroke="currentColor"
+                stroke-width="3"
+                stroke-linecap="round"
+                fill="transparent"
+                cx="12"
+                cy="12"
+                r="9"
+                stroke-dasharray="56.548"
+                stroke-dashoffset={56.548 - (progressPct / 100) * 56.548}
+              />
+            </svg>
+            <span class="tabular-nums font-semibold tracking-wider text-cyan-200">
+              {currentCount.toLocaleString()} / {totalLimit.toLocaleString()}
             </span>
+            <span class="text-[11px] font-medium text-cyan-400/90 tabular-nums">
+              ({progressPct}%)
+            </span>
+            <span class="text-[11px] font-medium text-cyan-300/80 tabular-nums">
+              · {crawlerRateText}
+            </span>
+            {#if crawlerEtaText}
+              <span class="text-[11px] font-semibold text-amber-300/90 tabular-nums">
+                · ETA {crawlerEtaText}
+              </span>
+            {/if}
+            {#if crawlerPaused}
+              <span class="px-1.5 py-0.2 rounded bg-amber-950/60 text-amber-400 border border-amber-800 text-[10px] font-bold uppercase tracking-wider">
+                Paused
+              </span>
+            {/if}
+          </div>
+        </div>
+      </div>
+    {:else if otherOp}
+      {@const opCurrent = otherOp.current ?? 0}
+      {@const opTotal = otherOp.total ?? 1}
+      {@const opPct = otherOp.total && otherOp.total > 0 ? Math.min(100, Math.max(0, Math.round((opCurrent / opTotal) * 100))) : null}
+      <div class="relative w-full z-20 select-none bg-gray-950 border-b border-cyan-900/30">
+        <!-- Vivid thin progress bar line -->
+        <div class="h-[2px] w-full bg-cyan-950/60 overflow-hidden">
+          {#if opPct !== null}
+            <div
+              class="h-full bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.8)] transition-[width] duration-300 ease-out"
+              style={`width: ${opPct}%`}
+            ></div>
+          {:else}
+            <div class="h-full w-1/3 bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.8)] animate-pulse"></div>
           {/if}
-          {#if crawlerPaused}
-            <span class="px-1.5 py-0.2 rounded bg-amber-950/60 text-amber-400 border border-amber-800 text-[10px] font-bold uppercase tracking-wider">
-              Paused
+        </div>
+
+        <!-- Status row: operation description & stage -->
+        <div class="flex items-center justify-between px-4 py-1.5 text-xs bg-gray-950/90">
+          <div class="flex items-center gap-2.5">
+            <span class="relative flex h-2 w-2 shrink-0">
+              <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-cyan-400 opacity-75"></span>
+              <span class="relative inline-flex h-2 w-2 rounded-full bg-cyan-400"></span>
+            </span>
+            <span class="font-medium text-cyan-200">
+              {otherOp.message}
+            </span>
+            {#if otherOp.current !== null && otherOp.total !== null}
+              <span class="text-[11px] font-mono text-cyan-400 tabular-nums">
+                ({otherOp.current}/{otherOp.total})
+              </span>
+            {/if}
+          </div>
+          {#if agentOperations.length > 1}
+            <span class="text-[10px] font-mono text-gray-400">
+              +{agentOperations.length - 1} background task{agentOperations.length > 2 ? 's' : ''}
             </span>
           {/if}
         </div>
       </div>
-    </div>
+    {/if}
   {/if}
 
   <!-- Main App Shell -->
@@ -757,6 +800,7 @@ import { isLcuConnected as fetchIsLcuConnected } from "./lib/api/champ_select";
               onSelectChampion={handleSelectChampionFilter}
               {hideLowPickrate}
               {isLcuConnected}
+              {agentOperations}
             />
           {:else}
           <!-- Content container for Statistics -->

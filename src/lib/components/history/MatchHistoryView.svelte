@@ -1,6 +1,8 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { getMatchHistory } from "../../api/history";
+  import { isLcuConnected } from "../../api/champ_select";
   import type { MatchHistoryItem } from "../../types/history";
   import { logger } from "../../utils/logger";
   import GameEntityPopover from "../common/GameEntityPopover.svelte";
@@ -10,9 +12,13 @@
   let loading = $state(true);
   let refreshing = $state(false);
   let error = $state<string | null>(null);
+  let isOffline = $state(false);
   let currentPage = $state(1);
   const pageSize = 10;
   const historyCacheKey = "lcu-match-history";
+
+  let unlistenConnected: UnlistenFn | null = null;
+  let unlistenDisconnected: UnlistenFn | null = null;
 
   const totalPages = $derived(Math.max(1, Math.ceil(matches.length / pageSize)));
   const visibleMatches = $derived(
@@ -65,6 +71,13 @@
 
   async function loadHistory() {
     try {
+      const connected = await isLcuConnected();
+      isOffline = !connected;
+    } catch {
+      isOffline = true;
+    }
+
+    try {
       const pageSize = 20;
       refreshing = true;
       error = null;
@@ -74,6 +87,10 @@
       currentPage = 1;
       localStorage.setItem(historyCacheKey, JSON.stringify(matches));
       logger.info("frontend.history", `Loaded page 0..${pageSize - 1} with ${firstPage.length} matches; ${matches.length} available after cache merge`);
+
+      if (isOffline) {
+        return;
+      }
 
       const seenGameIds = new Set(firstPage.map((match) => match.game_id));
       let begin = pageSize;
@@ -140,9 +157,32 @@
     }
   }
 
-  onMount(() => {
+  onMount(async () => {
     restoreCachedHistory();
+    try {
+      const connected = await isLcuConnected();
+      isOffline = !connected;
+    } catch {
+      isOffline = true;
+    }
     loadHistory();
+
+    try {
+      unlistenConnected = await listen("lcu:connected", () => {
+        isOffline = false;
+        loadHistory();
+      });
+      unlistenDisconnected = await listen("lcu:disconnected", () => {
+        isOffline = true;
+      });
+    } catch (err) {
+      logger.error("frontend.history", "Failed to attach LCU listeners", err);
+    }
+  });
+
+  onDestroy(() => {
+    if (unlistenConnected) unlistenConnected();
+    if (unlistenDisconnected) unlistenDisconnected();
   });
 </script>
 
@@ -160,6 +200,13 @@
       {refreshing ? "Updating..." : "Refresh"}
     </button>
   </div>
+
+  {#if isOffline && matches.length > 0}
+    <div class="mt-3 flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+      <span class="icon-[heroicons--information-circle] h-4 w-4 shrink-0 text-amber-400"></span>
+      <span>League Client offline — displaying cached match history</span>
+    </div>
+  {/if}
 
   {#if loading && matches.length === 0}
     <div class="mt-3 min-h-0 flex-1 overflow-y-auto overflow-x-auto rounded-lg border border-gray-800 bg-black/50 scrollbar-thin scrollbar-thumb-gray-800 scrollbar-track-gray-950">
@@ -200,7 +247,7 @@
     </div>
   {:else}
     <div class="mt-3 min-h-0 flex-1 overflow-y-auto overflow-x-auto rounded-lg border border-gray-800 bg-black/50 scrollbar-thin scrollbar-thumb-gray-800 scrollbar-track-gray-950">
-      {#if error}
+      {#if error && !isOffline}
         <div class="border-b border-red-500/30 bg-red-950/20 px-3 py-1.5 text-xs text-red-300">
           Showing cached history. Refresh failed: {error}
         </div>

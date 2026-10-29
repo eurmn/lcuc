@@ -18,18 +18,19 @@
     MayhemAugmentItem,
     MayhemChampionBuildSummary,
     MayhemBuildStrategy,
-    MayhemBuildAugment,
+    MayhemBuildItem,
     LiveGameState,
     MayhemLiveAdvice,
   } from "../../types/champ_select";
   import AugmentIcon from "../common/AugmentIcon.svelte";
   import GameEntityPopover from "../common/GameEntityPopover.svelte";
   import SituationalTagBadge from "../common/SituationalTagBadge.svelte";
-  import MayhemAugmentsCard from "./MayhemAugmentsCard.svelte";
+  import MayhemCombosCard from "./MayhemCombosCard.svelte";
   import MayhemAugmentPicker from "./MayhemAugmentPicker.svelte";
   import LivePurchaseAdvisor from "./LivePurchaseAdvisor.svelte";
   import StagePathingTree from "./StagePathingTree.svelte";
   import MayhemEncyclopediaModal from "./MayhemEncyclopediaModal.svelte";
+  import type { AgentOperationDto } from "../../api/agent";
   import { logger } from "../../utils/logger";
 
   let {
@@ -37,11 +38,13 @@
     onSelectChampion,
     hideLowPickrate = false,
     isLcuConnected = false,
+    agentOperations = [],
   }: {
     selectedChampion?: ChampionSummary | null;
     onSelectChampion?: (champ: ChampionSummary | null) => void;
     hideLowPickrate?: boolean;
     isLcuConnected?: boolean;
+    agentOperations?: AgentOperationDto[];
   } = $props();
 
   let session = $state<ChampSelectSession | null>(null);
@@ -85,6 +88,11 @@
   let buildAlgorithmVersion = $state<"v1" | "v2">(
     (typeof localStorage !== "undefined" && (localStorage.getItem("mayhem-build-algorithm-version") as "v1" | "v2")) || "v2"
   );
+  let userBuildSlots = $state<(MayhemBuildItem | null)[]>(Array(6).fill(null));
+  let selectedBuildSlotIndex = $state<number | null>(null);
+  let isBuildCustomized = $state(false);
+  let prevChampId = $state<number | null>(null);
+  let prevStrategyId = $state<string | null>(null);
 
   function setBuildAlgorithmVersion(v: "v1" | "v2") {
     if (buildAlgorithmVersion === v) return;
@@ -150,6 +158,38 @@
           (a, b) => (b.games ?? 0) - (a.games ?? 0) || (b.win_rate ?? 0) - (a.win_rate ?? 0)
         )
       : []
+  );
+
+  $effect(() => {
+    const champId = selectedChampionId;
+    const stratId = activeStrategy?.id ?? null;
+    if (champId !== prevChampId || stratId !== prevStrategyId) {
+      prevChampId = champId;
+      prevStrategyId = stratId;
+      isBuildCustomized = false;
+      const slots: (MayhemBuildItem | null)[] = Array(6).fill(null);
+      if (activeStrategy?.items) {
+        activeStrategy.items.slice(0, 6).forEach((item, idx) => {
+          slots[idx] = item;
+        });
+      }
+      userBuildSlots = slots;
+      selectedBuildSlotIndex = null;
+    } else if (!isBuildCustomized && activeStrategy?.items) {
+      const slots: (MayhemBuildItem | null)[] = Array(6).fill(null);
+      activeStrategy.items.slice(0, 6).forEach((item, idx) => {
+        slots[idx] = item;
+      });
+      userBuildSlots = slots;
+    }
+  });
+
+  const userBuildItemIds = $derived<number[]>(
+    userBuildSlots.filter((i): i is MayhemBuildItem => i !== null).map((i) => i.id)
+  );
+
+  const isCustomBuild = $derived(
+    userBuildSlots.some((slot, idx) => slot?.id !== activeStrategy?.items[idx]?.id)
   );
 
 
@@ -405,16 +445,28 @@
     void loadSingleChampionBuild(selectedChampionId);
   }
 
-  function handleSelectBuildAugment(aug: MayhemBuildAugment) {
-    if (pickerSlots.some((s) => s?.id === aug.id)) return;
+  function handleSelectBuildAugment(aug: {
+    id: string;
+    name: string;
+    icon_url: string;
+    rarity?: string;
+    tooltip?: string;
+    description?: string;
+    games?: number;
+    win_rate?: number;
+    wpa?: number;
+    pick_rate?: number;
+  }) {
+    const rawAugId = aug.id.replace(/^augment:/, "");
+    if (pickerSlots.some((s) => s?.id === rawAugId || s?.id === aug.id)) return;
     const nextEmptyIdx = pickerSlots.findIndex((s) => s === null);
     if (nextEmptyIdx !== -1) {
       const item: MayhemAugmentItem = {
-        id: aug.id,
+        id: rawAugId,
         name: aug.name,
         icon_url: aug.icon_url,
         rarity: aug.rarity,
-        tooltip: aug.tooltip,
+        tooltip: aug.tooltip ?? aug.description,
         categories: [],
         games: aug.games ?? 0,
         wins: 0,
@@ -430,6 +482,88 @@
       const ids = pickerSlots.filter((s): s is MayhemAugmentItem => s !== null).map((s) => s.id);
       handleAugmentsChanged(ids);
     }
+  }
+
+  function handleSelectBuildItem(item: {
+    id: number | string;
+    name: string;
+    icon_url: string;
+    price_total?: number;
+    item_class?: string;
+    description?: string;
+    win_rate?: number;
+    wpa?: number;
+    games?: number;
+    pick_rate?: number;
+    situational_tag?: string;
+  }) {
+    const rawIdStr = typeof item.id === "string" ? item.id.replace(/^item:/, "") : String(item.id);
+    const numericId = parseInt(rawIdStr, 10);
+    if (isNaN(numericId)) return;
+
+    isBuildCustomized = true;
+
+    const buildItem: MayhemBuildItem = {
+      id: numericId,
+      name: item.name,
+      icon_url: item.icon_url,
+      price_total: item.price_total ?? 0,
+      item_class: item.item_class,
+      description: item.description,
+      win_rate: item.win_rate,
+      wpa: item.wpa,
+      games: item.games,
+      pick_rate: item.pick_rate,
+      situational_tag: item.situational_tag,
+    };
+
+    if (selectedBuildSlotIndex !== null && selectedBuildSlotIndex >= 0 && selectedBuildSlotIndex < 6) {
+      userBuildSlots[selectedBuildSlotIndex] = buildItem;
+      selectedBuildSlotIndex = null;
+      return;
+    }
+
+    const existingIdx = userBuildSlots.findIndex((s) => s?.id === numericId);
+    if (existingIdx !== -1) {
+      return;
+    }
+
+    const emptyIdx = userBuildSlots.findIndex((s) => s === null);
+    if (emptyIdx !== -1) {
+      userBuildSlots[emptyIdx] = buildItem;
+    } else {
+      userBuildSlots[5] = buildItem;
+    }
+  }
+
+  function handleSlotClick(idx: number) {
+    if (selectedBuildSlotIndex === idx) {
+      selectedBuildSlotIndex = null;
+    } else {
+      selectedBuildSlotIndex = idx;
+    }
+  }
+
+  function handleClearBuildSlot(idx: number) {
+    isBuildCustomized = true;
+    userBuildSlots[idx] = null;
+    if (selectedBuildSlotIndex === idx) {
+      selectedBuildSlotIndex = null;
+    }
+  }
+
+  function handleResetBuildItems() {
+    isBuildCustomized = false;
+    if (activeStrategy) {
+      const slots: (MayhemBuildItem | null)[] = Array(6).fill(null);
+      (activeStrategy.items ?? []).slice(0, 6).forEach((item, idx) => {
+        slots[idx] = item;
+      });
+      userBuildSlots = slots;
+    } else {
+      userBuildSlots = Array(6).fill(null);
+    }
+    selectedBuildSlotIndex = null;
   }
 
   async function handleSaveBuild() {
@@ -490,7 +624,10 @@
     exporting = true;
     exportToast = null;
     try {
-      const itemIds = activeStrategy.items.map((i) => i.id);
+      const buildItemIds = userBuildSlots
+        .filter((i): i is MayhemBuildItem => i !== null)
+        .map((i) => i.id);
+      const itemIds = buildItemIds.length > 0 ? buildItemIds : activeStrategy.items.map((i) => i.id);
       const starterId = activeStrategy.starter_item?.id ?? null;
       const spell1 = activeStrategy.spells[0]?.id ?? 4;
       const spell2 = activeStrategy.spells[1]?.id ?? 32;
@@ -932,87 +1069,161 @@
             </div>
           </div>
 
-          <!-- 1. Recommended Items (100% Horizontal Space) -->
+          <!-- 1. Active Build Items (100% Horizontal Space) -->
           <div class="rounded-xl border border-gray-800 bg-gray-950/60 p-4 space-y-4">
             <div class="flex items-center justify-between border-b border-gray-800 pb-2">
-              <span class="text-xs font-semibold uppercase tracking-wider text-gray-300 flex items-center gap-1.5">
-                <span class="icon-[heroicons--cube] h-4 w-4 text-amber-400"></span>
-                Recommended Items ({activeStrategy.items.length})
+              <div class="flex items-center gap-2">
+                <span class="text-xs font-semibold uppercase tracking-wider text-gray-300 flex items-center gap-1.5">
+                  <span class="icon-[heroicons--cube] h-4 w-4 text-amber-400"></span>
+                  Active Build Items ({userBuildSlots.filter(Boolean).length}/6)
+                </span>
+                {#if isCustomBuild}
+                  <button
+                    type="button"
+                    onclick={handleResetBuildItems}
+                    class="rounded px-2 py-0.5 text-[10px] font-medium text-amber-300 bg-amber-950/40 hover:bg-amber-900/50 border border-amber-600/40 transition-colors cursor-pointer"
+                    title="Reset to recommended default items"
+                  >
+                    Reset Defaults
+                  </button>
+                {/if}
+              </div>
+              <span class="text-[10px] text-gray-400">
+                {#if selectedBuildSlotIndex !== null}
+                  <span class="text-amber-300 font-semibold">Targeting Slot {selectedBuildSlotIndex + 1}</span> — click an item to place
+                {:else}
+                  Click slot to target/clear, or click items below to add
+                {/if}
               </span>
-              <span class="text-[10px] text-gray-500">{activeStrategy.starter_item ? "Starter + 6 Core Items" : "6 Core Items"}</span>
             </div>
 
-            <!-- Horizontal Items Flow: Starter (if present) + 6 Core Recommended Items -->
+            <!-- Horizontal Items Flow: Starter (if present) + 6 Active Build Slots -->
             <div class="flex flex-col sm:flex-row items-stretch gap-2.5">
               {#if activeStrategy.starter_item}
+                {@const starter = activeStrategy.starter_item}
+                {@const inBuild = userBuildItemIds.includes(starter.id)}
                 <div
                   id="build-starter-item"
-                  class="sm:w-36 shrink-0 flex flex-col items-center justify-center p-2.5 rounded-lg border border-amber-500/40 bg-amber-950/20 hover:border-amber-500/60 transition-colors text-center relative group"
+                  role="button"
+                  tabindex="0"
+                  onclick={() => handleSelectBuildItem(starter)}
+                  onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleSelectBuildItem(starter); }}
+                  class="sm:w-36 shrink-0 flex flex-col items-center justify-center p-2.5 rounded-lg border {inBuild ? 'border-emerald-500/60 bg-emerald-950/20' : 'border-amber-500/40 bg-amber-950/20'} hover:border-amber-500/60 transition-colors text-center relative group cursor-pointer"
+                  title={inBuild ? "Starter item (already in build)" : "Starter item (click to add to build)"}
                 >
                   <div class="relative h-11 w-11 rounded-lg overflow-hidden border border-amber-500/50 bg-gray-950 mb-1">
-                    <img src={activeStrategy.starter_item.icon_url} alt={activeStrategy.starter_item.name} class="h-full w-full object-cover" />
+                    <img src={starter.icon_url} alt={starter.name} class="h-full w-full object-cover" />
                     <span class="absolute left-0 top-0 rounded-br bg-amber-950/90 border-r border-b border-amber-500/40 px-1 text-[8px] font-bold text-amber-300 uppercase">
                       Start
                     </span>
-                  </div>
-                  <span class="text-[10px] font-semibold text-amber-200 truncate max-w-full">{activeStrategy.starter_item.name}</span>
-                  <div class="flex items-center gap-1.5 mt-0.5">
-                    <span class="text-[9px] font-mono text-amber-400/90">{activeStrategy.starter_item.price_total}g</span>
-                    {#if activeStrategy.starter_item.pick_rate !== undefined && activeStrategy.starter_item.pick_rate > 0}
-                      <span class="text-[9px] font-mono text-gray-400">{formatPct(activeStrategy.starter_item.pick_rate)}</span>
+                    {#if inBuild}
+                      <span class="absolute top-0 right-0 h-3 w-3 rounded-bl bg-emerald-500 flex items-center justify-center" title="In Build">
+                        <span class="icon-[heroicons--check] h-2.5 w-2.5 text-white"></span>
+                      </span>
                     {/if}
-                    {#if activeStrategy.starter_item.wpa !== undefined}
-                      <span class="text-[9px] font-mono font-bold {activeStrategy.starter_item.wpa >= 0 ? 'text-emerald-400' : 'text-rose-400'}">
-                        {formatWpa(activeStrategy.starter_item.wpa)}
+                  </div>
+                  <span class="text-[10px] font-semibold text-amber-200 truncate max-w-full">{starter.name}</span>
+                  <div class="flex items-center gap-1.5 mt-0.5">
+                    <span class="text-[9px] font-mono text-amber-400/90">{starter.price_total}g</span>
+                    {#if starter.pick_rate !== undefined && starter.pick_rate > 0}
+                      <span class="text-[9px] font-mono text-gray-400">{formatPct(starter.pick_rate)}</span>
+                    {/if}
+                    {#if starter.wpa !== undefined}
+                      <span class="text-[9px] font-mono font-bold {starter.wpa >= 0 ? 'text-emerald-400' : 'text-rose-400'}">
+                        {formatWpa(starter.wpa)}
                       </span>
                     {/if}
                   </div>
 
                   <GameEntityPopover
                     targetId="build-starter-item"
-                    name={activeStrategy.starter_item.name}
-                    iconUrl={activeStrategy.starter_item.icon_url}
-                    description={activeStrategy.starter_item.description}
-                    priceTotal={activeStrategy.starter_item.price_total}
-                    itemClass={activeStrategy.starter_item.item_class}
+                    name={starter.name}
+                    iconUrl={starter.icon_url}
+                    description={starter.description}
+                    priceTotal={starter.price_total}
+                    itemClass={starter.item_class}
                     placement="top"
                   />
                 </div>
                 <div class="hidden sm:block w-px bg-gray-800 self-stretch my-0.5"></div>
               {/if}
 
-              <!-- 6 Core Recommended Items Grid -->
+              <!-- 6 Active Build Slots Grid -->
               <div class="flex-1 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
-                {#each activeStrategy.items as item, idx (`item-${item.id}-${idx}`)}
-                  <div id={`build-item-${item.id}-${idx}`} class="group relative flex flex-col items-center justify-center p-2 rounded-lg border border-gray-800 bg-gray-900/70 hover:border-gray-700 transition-colors">
-                    <div class="relative h-11 w-11 rounded-lg overflow-hidden border border-gray-700 bg-gray-950 mb-1">
-                      <img src={item.icon_url} alt={item.name} class="h-full w-full object-cover" />
-                      <span class="absolute left-0 top-0 rounded-br bg-gray-950/80 px-1 text-[9px] font-bold text-gray-300" title="Approximate build order">{idx + 1}</span>
-                    </div>
-                    <span class="text-[10px] font-medium text-gray-200 truncate max-w-full text-center">{item.name}</span>
-                    <div class="flex items-center gap-1.5 mt-0.5">
-                      <span class="text-[9px] font-mono text-amber-400/90">{item.price_total}g</span>
-                      {#if item.pick_rate !== undefined && item.pick_rate > 0}
-                        <span class="text-[9px] font-mono text-gray-400">{formatPct(item.pick_rate)}</span>
-                      {/if}
-                      {#if item.wpa !== undefined}
-                        <span class="text-[9px] font-mono font-bold {item.wpa >= 0 ? 'text-emerald-400' : 'text-rose-400'}">
-                          {formatWpa(item.wpa)}
-                        </span>
-                      {/if}
-                    </div>
+                {#each userBuildSlots as item, idx (`build-slot-${idx}`)}
+                  {#if item}
+                    <div
+                      id={`build-item-${item.id}-${idx}`}
+                      role="button"
+                      tabindex="0"
+                      onclick={() => handleSlotClick(idx)}
+                      onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleSlotClick(idx); }}
+                      class="group relative flex flex-col items-center justify-center p-2 rounded-lg border transition-all cursor-pointer {selectedBuildSlotIndex === idx
+                        ? 'border-amber-400 bg-amber-950/30 ring-2 ring-amber-400/40 shadow-lg'
+                        : 'border-gray-800 bg-gray-900/70 hover:border-gray-700'}"
+                      title="Click to select/replace slot"
+                    >
+                      <!-- Clear button on hover -->
+                      <button
+                        type="button"
+                        onclick={(e) => { e.stopPropagation(); handleClearBuildSlot(idx); }}
+                        class="absolute -top-1.5 -right-1.5 hidden group-hover:flex h-4 w-4 items-center justify-center rounded-full bg-rose-600 hover:bg-rose-500 text-white text-[10px] shadow z-10 font-bold"
+                        title="Clear item from slot"
+                      >
+                        ×
+                      </button>
 
-                    <!-- Rich Item Popover -->
-                    <GameEntityPopover
-                      targetId={`build-item-${item.id}-${idx}`}
-                      name={item.name}
-                      iconUrl={item.icon_url}
-                      description={item.description}
-                      priceTotal={item.price_total}
-                      itemClass={item.item_class}
-                      placement="top"
-                    />
-                  </div>
+                      <div class="relative h-11 w-11 rounded-lg overflow-hidden border border-gray-700 bg-gray-950 mb-1">
+                        <img src={item.icon_url} alt={item.name} class="h-full w-full object-cover" />
+                        <span class="absolute left-0 top-0 rounded-br bg-gray-950/80 px-1 text-[9px] font-bold text-gray-300" title="Slot number">{idx + 1}</span>
+                        {#if selectedBuildSlotIndex === idx}
+                          <span class="absolute inset-0 bg-amber-500/20 ring-1 ring-inset ring-amber-400 pointer-events-none"></span>
+                        {/if}
+                      </div>
+                      <span class="text-[10px] font-medium text-gray-200 truncate max-w-full text-center">{item.name}</span>
+                      <div class="flex items-center gap-1.5 mt-0.5">
+                        <span class="text-[9px] font-mono text-amber-400/90">{item.price_total}g</span>
+                        {#if item.pick_rate !== undefined && item.pick_rate > 0}
+                          <span class="text-[9px] font-mono text-gray-400">{formatPct(item.pick_rate)}</span>
+                        {/if}
+                        {#if item.wpa !== undefined}
+                          <span class="text-[9px] font-mono font-bold {item.wpa >= 0 ? 'text-emerald-400' : 'text-rose-400'}">
+                            {formatWpa(item.wpa)}
+                          </span>
+                        {/if}
+                      </div>
+
+                      <GameEntityPopover
+                        targetId={`build-item-${item.id}-${idx}`}
+                        name={item.name}
+                        iconUrl={item.icon_url}
+                        description={item.description}
+                        priceTotal={item.price_total}
+                        itemClass={item.item_class}
+                        placement="top"
+                      />
+                    </div>
+                  {:else}
+                    <!-- Empty Slot Placeholder -->
+                    <button
+                      type="button"
+                      onclick={() => handleSlotClick(idx)}
+                      class="flex flex-col items-center justify-center p-2 rounded-lg border-2 border-dashed transition-all cursor-pointer {selectedBuildSlotIndex === idx
+                        ? 'border-amber-400 bg-amber-950/30 text-amber-300 ring-2 ring-amber-400/40'
+                        : 'border-gray-800/90 bg-gray-950/30 text-gray-600 hover:border-gray-600 hover:text-gray-400'}"
+                      title="Click to target this slot for next item pick"
+                    >
+                      <div class="h-11 w-11 rounded-lg border border-dashed {selectedBuildSlotIndex === idx ? 'border-amber-400/80 bg-amber-500/10' : 'border-gray-800 bg-gray-900/40'} flex items-center justify-center mb-1">
+                        <span class="icon-[heroicons--plus] h-5 w-5 {selectedBuildSlotIndex === idx ? 'text-amber-400 animate-pulse' : 'text-gray-500'}"></span>
+                      </div>
+                      <span class="text-[10px] font-medium {selectedBuildSlotIndex === idx ? 'text-amber-300 font-bold' : 'text-gray-500'}">
+                        Slot {idx + 1}
+                      </span>
+                      <span class="text-[9px] {selectedBuildSlotIndex === idx ? 'text-amber-400 font-semibold' : 'text-gray-600'}">
+                        {selectedBuildSlotIndex === idx ? "Targeted" : "Empty"}
+                      </span>
+                    </button>
+                  {/if}
                 {/each}
               </div>
             </div>
@@ -1038,14 +1249,34 @@
                     </div>
                     <div class="max-h-44 overflow-y-auto scrollbar-thin space-y-1 pr-1">
                       {#each activeStrategy.alternative_items as altItem, idx (`alt-${altItem.id}-${idx}`)}
+                        {@const inBuild = userBuildItemIds.includes(altItem.id)}
                         <div
                           id={`alt-item-${altItem.id}-${idx}`}
-                          class="flex items-center justify-between p-1.5 rounded-lg border border-gray-800/80 bg-gray-900/50 hover:bg-gray-800/60 hover:border-gray-700 transition-colors"
+                          role="button"
+                          tabindex="0"
+                          onclick={() => handleSelectBuildItem(altItem)}
+                          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleSelectBuildItem(altItem); }}
+                          class="flex items-center justify-between p-1.5 rounded-lg border transition-colors cursor-pointer group {inBuild
+                            ? 'border-emerald-500/50 bg-emerald-950/20'
+                            : 'border-gray-800/80 bg-gray-900/50 hover:bg-gray-800/60 hover:border-gray-700'}"
+                          title={inBuild ? "Already in build (click to place into targeted slot)" : "Click to add to your build"}
                         >
                           <div class="flex items-center gap-2 min-w-0">
-                            <img src={altItem.icon_url} alt={altItem.name} class="h-7 w-7 rounded-md object-cover bg-gray-950 border border-gray-700 shrink-0" />
+                            <div class="relative shrink-0">
+                              <img src={altItem.icon_url} alt={altItem.name} class="h-7 w-7 rounded-md object-cover bg-gray-950 border border-gray-700 shrink-0" />
+                              {#if inBuild}
+                                <span class="absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full bg-emerald-400 border border-gray-950 shadow-sm" title="In build"></span>
+                              {/if}
+                            </div>
                             <div class="flex flex-col min-w-0">
-                              <span class="text-xs font-semibold text-gray-200 truncate">{altItem.name}</span>
+                              <div class="flex items-center gap-1.5">
+                                <span class="text-xs font-semibold text-gray-200 truncate">{altItem.name}</span>
+                                {#if inBuild}
+                                  <span class="rounded bg-emerald-950/80 border border-emerald-700/50 px-1 py-0.2 text-[8px] font-bold text-emerald-300">
+                                    In Build
+                                  </span>
+                                {/if}
+                              </div>
                               <span class="text-[9px] font-mono text-amber-400/80">{altItem.price_total}g</span>
                             </div>
                           </div>
@@ -1089,12 +1320,24 @@
                     </div>
                     <div class="flex flex-wrap gap-2 p-2 rounded-lg border border-gray-800/80 bg-gray-900/40">
                       {#each sortedSituationalItems as sit, idx (`sit-${sit.id}-${idx}`)}
-                        <div id={`sit-item-${sit.id}-${idx}`} class="relative group">
+                        {@const inBuild = userBuildItemIds.includes(sit.id)}
+                        <div
+                          id={`sit-item-${sit.id}-${idx}`}
+                          role="button"
+                          tabindex="0"
+                          onclick={() => handleSelectBuildItem(sit)}
+                          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleSelectBuildItem(sit); }}
+                          class="relative group cursor-pointer"
+                          title={inBuild ? "Already in build (click to place into targeted slot)" : "Click to add to your build"}
+                        >
                           <img
                             src={sit.icon_url}
                             alt={sit.name}
-                            class="h-9 w-9 rounded-lg border border-gray-700 bg-gray-950 object-cover hover:border-gray-500 transition-colors cursor-pointer"
+                            class="h-9 w-9 rounded-lg border {inBuild ? 'border-emerald-400 ring-1 ring-emerald-400' : 'border-gray-700'} bg-gray-950 object-cover hover:border-gray-500 transition-colors cursor-pointer"
                           />
+                          {#if inBuild}
+                            <span class="absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full bg-emerald-400 border border-gray-950 shadow-sm" title="In build"></span>
+                          {/if}
                           <SituationalTagBadge tag={sit.situational_tag} />
                           <GameEntityPopover
                             targetId={`sit-item-${sit.id}-${idx}`}
@@ -1256,14 +1499,17 @@
     {/if}
       </div>
 
-      <!-- Right Column: Dedicated Complete Augments Card -->
+      <!-- Right Column: Dedicated Combos Card -->
       <div class="xl:col-span-5 space-y-4 min-w-0">
-        <MayhemAugmentsCard
+        <MayhemCombosCard
           championId={selectedChampionId}
           championName={inspectedBuild?.champion_name || currentSelectedChampion?.name || ""}
-          championWinRate={inspectedBuild?.champion_win_rate ?? 0.5}
-          totalGames={inspectedBuild?.total_games ?? 0}
+          currentAugmentIds={augmentIds}
+          currentBuildItemIds={userBuildItemIds}
           hideLowPickrate={hideLowPickrate}
+          {agentOperations}
+          onSelectAugment={handleSelectBuildAugment}
+          onSelectItem={handleSelectBuildItem}
         />
       </div>
     </div>

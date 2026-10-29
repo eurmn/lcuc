@@ -15,7 +15,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System, UpdateKind};
 
 #[derive(Debug, Clone)]
@@ -178,6 +178,19 @@ impl LcuClient {
         // 1. First priority: Check common install paths for lockfile
         if let Some(creds) = Self::find_credentials_from_known_lockfiles() {
             return Some(creds);
+        }
+
+        // Throttle full process scanning when lockfile is absent to avoid CPU/IO spikes
+        static LAST_SYSINFO_SCAN: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+        {
+            if let Ok(mut last) = LAST_SYSINFO_SCAN.lock() {
+                if let Some(instant) = *last {
+                    if instant.elapsed() < Duration::from_secs(5) {
+                        return None;
+                    }
+                }
+                *last = Some(Instant::now());
+            }
         }
 
         // 2. Second priority: Process scanning with full command-line refresh

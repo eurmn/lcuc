@@ -5,7 +5,7 @@ use crate::models::{
     MayhemBuildItem, MayhemBuildSpell, MayhemBuildStrategy, MayhemChampionBuildSummary,
     MayhemLiveAdvice, MayhemStageItem, SaveMayhemBuildPayload, SavedMayhemBuild,
 };
-use crate::services::asset_cache::get_cached_asset_data_uri;
+use crate::services::asset_cache::{get_cache_dir, get_cached_asset_data_uri};
 use crate::services::champions::get_all_champions;
 use crate::services::lcu_client::LcuClient;
 use futures_util::future::join_all;
@@ -91,14 +91,40 @@ fn detail_cache_path(game_id: u64) -> PathBuf {
         .join(format!("{game_id}.json"))
 }
 
-fn read_detail_cache(game_id: u64) -> Option<Value> {
+pub(crate) fn read_detail_cache(game_id: u64) -> Option<Value> {
     let path = detail_cache_path(game_id);
-    fs::read(path)
+    if let Some(detail) = fs::read(&path)
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+    {
+        return Some(detail);
+    }
+
+    // Secondary check: global-aram.db aram_games table
+    let db_path = crate::agent::global_aram_database_path();
+    if db_path.exists() {
+        if let Ok(conn) = rusqlite::Connection::open_with_flags(
+            &db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        ) {
+            let row_res: Result<String, _> = conn.query_row(
+                "SELECT detail_json FROM aram_games WHERE game_id = ?1 LIMIT 1",
+                rusqlite::params![game_id as i64],
+                |row| row.get(0),
+            );
+            if let Ok(detail_json) = row_res {
+                if let Ok(parsed) = serde_json::from_str::<Value>(&detail_json) {
+                    write_detail_cache(game_id, &parsed);
+                    return Some(parsed);
+                }
+            }
+        }
+    }
+
+    None
 }
 
-fn write_detail_cache(game_id: u64, response: &Value) {
+pub(crate) fn write_detail_cache(game_id: u64, response: &Value) {
     let path = detail_cache_path(game_id);
     if let Some(directory) = path.parent() {
         if let Err(error) = fs::create_dir_all(directory) {
@@ -1440,7 +1466,80 @@ async fn resolve_augments(raw: Option<&Value>) -> Vec<MatchHistoryAugmentInfo> {
     resolved
 }
 
+fn match_history_list_cache_path() -> PathBuf {
+    get_cache_dir().join("last_match_history_list.json")
+}
+
+fn read_cached_match_history_list() -> Option<Vec<MatchHistoryItem>> {
+    let path = match_history_list_cache_path();
+    let bytes = fs::read(path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn write_cached_match_history_list(new_matches: &[MatchHistoryItem], is_first_page: bool) {
+    let path = match_history_list_cache_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let to_write: Vec<MatchHistoryItem> = if is_first_page {
+        let existing = read_cached_match_history_list().unwrap_or_default();
+        let mut seen: HashSet<u64> = new_matches.iter().map(|m| m.game_id).collect();
+        let mut combined = new_matches.to_vec();
+        for item in existing {
+            if seen.insert(item.game_id) {
+                combined.push(item);
+            }
+        }
+        combined
+    } else {
+        let mut existing = read_cached_match_history_list().unwrap_or_default();
+        let mut seen: HashSet<u64> = existing.iter().map(|m| m.game_id).collect();
+        for item in new_matches {
+            if seen.insert(item.game_id) {
+                existing.push(item.clone());
+            }
+        }
+        existing
+    };
+    if let Ok(bytes) = serde_json::to_vec_pretty(&to_write) {
+        let _ = fs::write(path, bytes);
+    }
+}
+
 pub async fn get_current_summoner_match_history(
+    beg_index: u32,
+    end_index: u32,
+) -> Result<Vec<MatchHistoryItem>, String> {
+    if LcuClient::find_credentials().is_none() {
+        if let Some(cached) = read_cached_match_history_list() {
+            if beg_index == 0 {
+                return Ok(cached);
+            } else {
+                return Ok(Vec::new());
+            }
+        }
+        return Err("League Client is not running. Please launch League of Legends.".to_string());
+    }
+
+    match fetch_live_summoner_match_history(beg_index, end_index).await {
+        Ok(history_items) => {
+            write_cached_match_history_list(&history_items, beg_index == 0);
+            Ok(history_items)
+        }
+        Err(err) => {
+            if let Some(cached) = read_cached_match_history_list() {
+                if beg_index == 0 {
+                    return Ok(cached);
+                } else {
+                    return Ok(Vec::new());
+                }
+            }
+            Err(err)
+        }
+    }
+}
+
+async fn fetch_live_summoner_match_history(
     beg_index: u32,
     end_index: u32,
 ) -> Result<Vec<MatchHistoryItem>, String> {
@@ -1511,7 +1610,11 @@ pub async fn get_current_summoner_match_history(
     let mut details_by_game_id = HashMap::new();
     let mut uncached_game_ids = Vec::new();
     for game_id in game_ids {
-        if let Some(detail) = read_detail_cache(game_id) {
+        let cached = tokio::task::spawn_blocking(move || read_detail_cache(game_id))
+            .await
+            .ok()
+            .flatten();
+        if let Some(detail) = cached {
             logger::debug(
                 "tauri.history",
                 &format!("Detail cache hit for game {game_id}"),
@@ -1529,17 +1632,12 @@ pub async fn get_current_summoner_match_history(
             uncached_game_ids.len()
         ),
     );
-    for batch in uncached_game_ids.chunks(10) {
-        let fetched = join_all(
-            batch
-                .iter()
-                .map(|game_id| fetch_game_detail(&client, *game_id)),
-        )
-        .await;
-        for (game_id, detail) in batch.iter().zip(fetched) {
-            if let Some(detail) = detail {
-                details_by_game_id.insert(*game_id, detail);
-            }
+    for (i, game_id) in uncached_game_ids.into_iter().enumerate() {
+        if i > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(75)).await;
+        }
+        if let Some(detail) = fetch_game_detail(&client, game_id).await {
+            details_by_game_id.insert(game_id, detail);
         }
     }
 
@@ -1913,7 +2011,7 @@ pub async fn enrich_statistics_response(mut response: Value) -> Result<Value, St
     .map(|augment| (augment.id.clone(), augment))
     .collect::<HashMap<_, _>>();
 
-    for row in rows {
+    for row in rows.iter_mut() {
         let Some(object) = row.as_object_mut() else {
             continue;
         };
@@ -2187,6 +2285,51 @@ pub async fn enrich_statistics_response(mut response: Value) -> Result<Value, St
             }
         }
     }
+
+    // Filter out any combo rows containing boots or starters
+    rows.retain(|row| {
+        let is_combo = row
+            .get("id")
+            .and_then(Value::as_str)
+            .map_or(false, |id| id.starts_with("combo:"));
+        if !is_combo {
+            return true;
+        }
+        if let Some(components) = row.get("components").and_then(Value::as_array) {
+            for comp in components {
+                if comp.get("kind").and_then(Value::as_str) == Some("item") {
+                    if let Some(id_val) = comp.get("id") {
+                        let id = id_val
+                            .as_i64()
+                            .or_else(|| id_val.as_str().and_then(|s| s.parse::<i64>().ok()));
+                        if let Some(id) = id {
+                            if crate::agent::is_boot_item_id(id)
+                                || crate::agent::is_starter_item_id(id)
+                            {
+                                return false;
+                            }
+                        }
+                    }
+                    if comp.get("item_class").and_then(Value::as_str) == Some("boot") {
+                        return false;
+                    }
+                    if let Some(name) = comp.get("name").and_then(Value::as_str) {
+                        let low = name.to_lowercase();
+                        if low.contains("boot")
+                            || low.contains("greaves")
+                            || low.contains("shoes")
+                            || low.contains("steelcaps")
+                            || low.contains("treads")
+                        {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+        true
+    });
+
     Ok(response)
 }
 
@@ -2293,7 +2436,17 @@ fn get_item_exclusive_group(id: i64, item_info: Option<&CachedItemInfo>) -> Opti
             || desc.contains("<passive>Cleave</passive>")
             || matches!(
                 id,
-                3074 | 3077 | 3748 | 6631 | 6698 | 223074 | 223748 | 226631 | 226668 | 226698 | 773074 | 773077
+                3074 | 3077
+                    | 3748
+                    | 6631
+                    | 6698
+                    | 223074
+                    | 223748
+                    | 226631
+                    | 226668
+                    | 226698
+                    | 773074
+                    | 773077
             )
         {
             return Some("hydra");
@@ -2343,7 +2496,17 @@ fn get_item_exclusive_group(id: i64, item_info: Option<&CachedItemInfo>) -> Opti
             || desc.contains("<passive>Spellblade</passive>")
             || matches!(
                 id,
-                3057 | 3078 | 3100 | 3508 | 3869 | 6662 | 6901 | 223078 | 223100 | 223508 | 226662 | 773057
+                3057 | 3078
+                    | 3100
+                    | 3508
+                    | 3869
+                    | 6662
+                    | 6901
+                    | 223078
+                    | 223100
+                    | 223508
+                    | 226662
+                    | 773057
             )
         {
             return Some("spellblade");
@@ -2360,7 +2523,17 @@ fn get_item_exclusive_group(id: i64, item_info: Option<&CachedItemInfo>) -> Opti
             || desc.contains("<passive>Mana Charge</passive>")
             || matches!(
                 id,
-                3003 | 3004 | 3040 | 3042 | 3070 | 3119 | 3121 | 223003 | 223004 | 223040 | 223042 | 323040
+                3003 | 3004
+                    | 3040
+                    | 3042
+                    | 3070
+                    | 3119
+                    | 3121
+                    | 223003
+                    | 223004
+                    | 223040
+                    | 223042
+                    | 323040
             )
         {
             return Some("tear");
@@ -2377,13 +2550,17 @@ fn get_item_exclusive_group(id: i64, item_info: Option<&CachedItemInfo>) -> Opti
         }
 
         // 8. Glory items
-        if matches!(id, 1082 | 3041) || name_low.contains("mejai") || name_low.contains("dark seal") {
+        if matches!(id, 1082 | 3041) || name_low.contains("mejai") || name_low.contains("dark seal")
+        {
             return Some("glory");
         }
 
         // 9. Boots (only 1 pair of boots can be bought)
         if info.item_class.as_deref() == Some("boot")
-            || info.categories.iter().any(|c| c.eq_ignore_ascii_case("boots"))
+            || info
+                .categories
+                .iter()
+                .any(|c| c.eq_ignore_ascii_case("boots"))
             || name_low.contains("greaves")
             || name_low.contains("shoes")
             || name_low.contains("steelcaps")
@@ -2449,7 +2626,8 @@ pub fn get_situational_tag(id: i64, item_info: Option<&CachedItemInfo>) -> Optio
                 }
                 if lower.contains("serpent's fang")
                     || lower.contains("shadowflame")
-                    || (desc.contains("shield") && (desc.contains("destroy") || desc.contains("reduce")))
+                    || (desc.contains("shield")
+                        && (desc.contains("destroy") || desc.contains("reduce")))
                 {
                     return Some("Anti-Shield");
                 }
@@ -2472,7 +2650,10 @@ pub fn get_situational_tag(id: i64, item_info: Option<&CachedItemInfo>) -> Optio
                 {
                     return Some("Magic Resist");
                 }
-                if lower.contains("zhonya") || lower.contains("frozen heart") || lower.contains("randuin") {
+                if lower.contains("zhonya")
+                    || lower.contains("frozen heart")
+                    || lower.contains("randuin")
+                {
                     return Some("Armor / Anti-Burst");
                 }
             }
@@ -2486,7 +2667,10 @@ pub fn get_item_augment_warp_bonus(item_id: i64, augments: &[String]) -> f64 {
     for aug in augments {
         let low = aug.to_lowercase();
         if low == "marksmage" {
-            if matches!(item_id, 3115 | 3100 | 3089 | 3124 | 4645 | 3302 | 3091 | 3020) {
+            if matches!(
+                item_id,
+                3115 | 3100 | 3089 | 3124 | 4645 | 3302 | 3091 | 3020
+            ) {
                 bonus += 3.0;
             }
         } else if low == "adapt" {
@@ -2498,7 +2682,10 @@ pub fn get_item_augment_warp_bonus(item_id: i64, augments: &[String]) -> f64 {
                 bonus += 2.5;
             }
         } else if low == "apex inventor" || low == "apexinventor" {
-            if matches!(item_id, 3084 | 6610 | 6665 | 6692 | 3157 | 6653 | 3074 | 3748) {
+            if matches!(
+                item_id,
+                3084 | 6610 | 6665 | 6692 | 3157 | 6653 | 3074 | 3748
+            ) {
                 bonus += 2.5;
             }
         } else if low == "vulnerability" {
@@ -2518,7 +2705,10 @@ pub fn get_item_augment_warp_bonus(item_id: i64, augments: &[String]) -> f64 {
     bonus
 }
 
-pub fn build_augment_warped_archetype(augment: &str, champion_win_rate: f64) -> Option<MinedArchetype> {
+pub fn build_augment_warped_archetype(
+    augment: &str,
+    champion_win_rate: f64,
+) -> Option<MinedArchetype> {
     let lower = augment.to_lowercase();
     if lower == "marksmage" {
         Some(MinedArchetype {
@@ -2607,10 +2797,7 @@ pub fn build_augment_warped_archetype(augment: &str, champion_win_rate: f64) -> 
                 (3157, 80, 0.62, 0.35),
                 (3074, 75, 0.61, 0.30),
             ],
-            situational_items: vec![
-                (3075, 50, 0.60, 0.20),
-                (6701, 55, 0.61, 0.22),
-            ],
+            situational_items: vec![(3075, 50, 0.60, 0.20), (6701, 55, 0.61, 0.22)],
             sample_games: 40,
             build_win_rate: (champion_win_rate + 0.06).clamp(0.5, 0.75),
             build_wpa: 0.06,
@@ -2686,7 +2873,8 @@ pub fn build_stage_pathing(
     });
 
     // Stage 4: Capstone & Situational (Lv 15+)
-    let mut stage4_items: Vec<MayhemBuildItem> = non_boots.iter().skip(4).take(2).cloned().collect();
+    let mut stage4_items: Vec<MayhemBuildItem> =
+        non_boots.iter().skip(4).take(2).cloned().collect();
     for sit in situational_items.iter().take(2) {
         if !stage4_items.iter().any(|x| x.id == sit.id) {
             stage4_items.push(sit.clone());
@@ -2752,14 +2940,20 @@ pub fn compute_live_build_advice(
     }
 
     for it in &strategy.items {
-        if !owned_ids.contains(&it.id) && !seen_ids.contains(&it.id) && (it.price_total as f64) <= current_gold {
+        if !owned_ids.contains(&it.id)
+            && !seen_ids.contains(&it.id)
+            && (it.price_total as f64) <= current_gold
+        {
             immediate_purchases.push(it.clone());
             seen_ids.insert(it.id);
         }
     }
 
     for it in &strategy.situational_items {
-        if !owned_ids.contains(&it.id) && !seen_ids.contains(&it.id) && (it.price_total as f64) <= current_gold {
+        if !owned_ids.contains(&it.id)
+            && !seen_ids.contains(&it.id)
+            && (it.price_total as f64) <= current_gold
+        {
             immediate_purchases.push(it.clone());
             seen_ids.insert(it.id);
         }
@@ -2769,7 +2963,10 @@ pub fn compute_live_build_advice(
         if immediate_purchases.len() >= 6 {
             break;
         }
-        if !owned_ids.contains(&it.id) && !seen_ids.contains(&it.id) && (it.price_total as f64) <= current_gold {
+        if !owned_ids.contains(&it.id)
+            && !seen_ids.contains(&it.id)
+            && (it.price_total as f64) <= current_gold
+        {
             immediate_purchases.push(it.clone());
             seen_ids.insert(it.id);
         }
@@ -2799,7 +2996,10 @@ pub struct MinedArchetype {
     pub top_augments: Vec<(String, usize, f64, f64, f64)>,
 }
 
-fn classify_archetype_prefix(core_items: &[i64], items_catalog: &HashMap<i32, CachedItemInfo>) -> &'static str {
+fn classify_archetype_prefix(
+    core_items: &[i64],
+    items_catalog: &HashMap<i32, CachedItemInfo>,
+) -> &'static str {
     let mut crit_count = 0;
     let mut ap_count = 0;
     let mut tank_count = 0;
@@ -2809,16 +3009,38 @@ fn classify_archetype_prefix(core_items: &[i64], items_catalog: &HashMap<i32, Ca
         if let Some(info) = items_catalog.get(&(id as i32)) {
             let desc = info.description.as_deref().unwrap_or("").to_lowercase();
             let name = info.name.to_lowercase();
-            if desc.contains("critical strike") || desc.contains("crit") || name.contains("infinity") || name.contains("collector") || name.contains("wildarrows") {
+            if desc.contains("critical strike")
+                || desc.contains("crit")
+                || name.contains("infinity")
+                || name.contains("collector")
+                || name.contains("wildarrows")
+            {
                 crit_count += 1;
             }
-            if desc.contains("ability power") || desc.contains("<ap>") || desc.contains("magic damage") || name.contains("rabadon") || name.contains("liandry") || name.contains("luden") {
+            if desc.contains("ability power")
+                || desc.contains("<ap>")
+                || desc.contains("magic damage")
+                || name.contains("rabadon")
+                || name.contains("liandry")
+                || name.contains("luden")
+            {
                 ap_count += 1;
             }
-            if desc.contains("armor") || desc.contains("magic resist") || desc.contains("health") || name.contains("heartsteel") || name.contains("warmog") || name.contains("jak'sho") {
+            if desc.contains("armor")
+                || desc.contains("magic resist")
+                || desc.contains("health")
+                || name.contains("heartsteel")
+                || name.contains("warmog")
+                || name.contains("jak'sho")
+            {
                 tank_count += 1;
             }
-            if desc.contains("lethality") || desc.contains("armor penetration") || name.contains("hubris") || name.contains("opportunity") || name.contains("ghostblade") {
+            if desc.contains("lethality")
+                || desc.contains("armor penetration")
+                || name.contains("hubris")
+                || name.contains("opportunity")
+                || name.contains("ghostblade")
+            {
                 lethality_count += 1;
             }
         }
@@ -2839,7 +3061,10 @@ fn classify_archetype_prefix(core_items: &[i64], items_catalog: &HashMap<i32, Ca
     }
 }
 
-fn generate_archetype_label(core_items: &[i64], items_catalog: &HashMap<i32, CachedItemInfo>) -> String {
+fn generate_archetype_label(
+    core_items: &[i64],
+    items_catalog: &HashMap<i32, CachedItemInfo>,
+) -> String {
     if core_items.is_empty() {
         return "Core Build".to_string();
     }
@@ -2864,7 +3089,10 @@ fn generate_archetype_label(core_items: &[i64], items_catalog: &HashMap<i32, Cac
                 } else if name.starts_with("Immortal Shieldbow") {
                     "Shieldbow".to_string()
                 } else {
-                    name.split_whitespace().take(2).collect::<Vec<_>>().join(" ")
+                    name.split_whitespace()
+                        .take(2)
+                        .collect::<Vec<_>>()
+                        .join(" ")
                 }
             } else {
                 format!("Item #{id}")
@@ -2960,9 +3188,7 @@ fn mine_build_archetypes(
                         let g1 = get_item_exclusive_group(it1, items_catalog.get(&(it1 as i32)));
                         let g2 = get_item_exclusive_group(it2, items_catalog.get(&(it2 as i32)));
                         let g3 = get_item_exclusive_group(it3, items_catalog.get(&(it3 as i32)));
-                        if (g1.is_some() && (g1 == g2 || g1 == g3))
-                            || (g2.is_some() && g2 == g3)
-                        {
+                        if (g1.is_some() && (g1 == g2 || g1 == g3)) || (g2.is_some() && g2 == g3) {
                             continue;
                         }
 
@@ -3038,13 +3264,21 @@ fn mine_build_archetypes(
         })
         .collect();
 
-    scored_triples.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    scored_triples.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let mut selected_cores: Vec<ScoredCore> = Vec::new();
     for cand in scored_triples {
         let cand_set: HashSet<i64> = cand.items.iter().copied().collect();
         let overlap = selected_cores.iter().any(|existing| {
-            let shared = existing.items.iter().filter(|x| cand_set.contains(x)).count();
+            let shared = existing
+                .items
+                .iter()
+                .filter(|x| cand_set.contains(x))
+                .count();
             shared >= 2
         });
         if !overlap {
@@ -3074,11 +3308,19 @@ fn mine_build_archetypes(
                 }
             })
             .collect();
-        scored_pairs.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        scored_pairs.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         for cand in scored_pairs {
             let cand_set: HashSet<i64> = cand.items.iter().copied().collect();
             let overlap = selected_cores.iter().any(|existing| {
-                let shared = existing.items.iter().filter(|x| cand_set.contains(x)).count();
+                let shared = existing
+                    .items
+                    .iter()
+                    .filter(|x| cand_set.contains(x))
+                    .count();
                 shared >= 1
             });
             if !overlap {
@@ -3125,10 +3367,7 @@ fn mine_build_archetypes(
                 *boot_counts.entry(b).or_default() += 1;
             }
         }
-        let boot_id = boot_counts
-            .into_iter()
-            .max_by_key(|x| x.1)
-            .map(|x| x.0);
+        let boot_id = boot_counts.into_iter().max_by_key(|x| x.1).map(|x| x.0);
 
         let mut starter_counts: HashMap<i64, usize> = HashMap::new();
         for p in &sub_facts {
@@ -3211,8 +3450,10 @@ fn mine_build_archetypes(
                 }
             }
         }
-        let mut sorted_augs: Vec<(String, usize, usize)> =
-            aug_counts.into_iter().map(|(id, (g, w))| (id, g, w)).collect();
+        let mut sorted_augs: Vec<(String, usize, usize)> = aug_counts
+            .into_iter()
+            .map(|(id, (g, w))| (id, g, w))
+            .collect();
         sorted_augs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.2.cmp(&a.2)));
 
         let sample_g = sample_games.max(1) as f64;
@@ -3266,11 +3507,19 @@ async fn mayhem_item(
         })
         .unwrap_or(false);
     let raw_icon = info.map(|i| i.icon_url.clone()).unwrap_or_default();
-    let (games, wins) = agg.map(|a| (a.games as usize, a.wins as f64)).unwrap_or((0, 0.0));
-    let win_rate = if games > 0 { wins / games as f64 } else { champion_win_rate };
+    let (games, wins) = agg
+        .map(|a| (a.games as usize, a.wins as f64))
+        .unwrap_or((0, 0.0));
+    let win_rate = if games > 0 {
+        wins / games as f64
+    } else {
+        champion_win_rate
+    };
     MayhemBuildItem {
         id,
-        name: info.map(|i| i.name.clone()).unwrap_or_else(|| format!("Item #{id}")),
+        name: info
+            .map(|i| i.name.clone())
+            .unwrap_or_else(|| format!("Item #{id}")),
         icon_url: get_cached_asset_data_uri(&raw_icon).await,
         price_total: info.map(|i| i.price_total).unwrap_or(0),
         item_class: info.and_then(|i| i.item_class.clone()),
@@ -3292,10 +3541,16 @@ async fn mayhem_spell(
     let info = catalog.get(&id);
     let raw_icon = info.map(|s| s.icon_url.clone()).unwrap_or_default();
     let (games, wins) = individual.get(&id).copied().unwrap_or((0, 0));
-    let win_rate = if games > 0 { wins as f64 / games as f64 } else { champion_win_rate };
+    let win_rate = if games > 0 {
+        wins as f64 / games as f64
+    } else {
+        champion_win_rate
+    };
     MayhemBuildSpell {
         id,
-        name: info.map(|s| s.name.clone()).unwrap_or_else(|| format!("Spell #{id}")),
+        name: info
+            .map(|s| s.name.clone())
+            .unwrap_or_else(|| format!("Spell #{id}")),
         icon_url: get_cached_asset_data_uri(&raw_icon).await,
         description: info.and_then(|s| s.description.clone()),
         win_rate,
@@ -3312,11 +3567,19 @@ async fn mayhem_augment(
 ) -> MayhemBuildAugment {
     let info = catalog.get(id).or_else(|| catalog.get(&id.to_lowercase()));
     let raw_icon = info.map(|a| a.icon_url.clone()).unwrap_or_default();
-    let (games, wins) = agg.map(|a| (a.games as usize, a.wins as f64)).unwrap_or((0, 0.0));
-    let win_rate = if games > 0 { wins / games as f64 } else { champion_win_rate };
+    let (games, wins) = agg
+        .map(|a| (a.games as usize, a.wins as f64))
+        .unwrap_or((0, 0.0));
+    let win_rate = if games > 0 {
+        wins / games as f64
+    } else {
+        champion_win_rate
+    };
     MayhemBuildAugment {
         id: id.to_string(),
-        name: info.map(|a| a.name.clone()).unwrap_or_else(|| format!("Augment #{id}")),
+        name: info
+            .map(|a| a.name.clone())
+            .unwrap_or_else(|| format!("Augment #{id}")),
         icon_url: get_cached_asset_data_uri(&raw_icon).await,
         rarity: info.and_then(|a| a.rarity.clone()),
         tooltip: info.and_then(|a| a.tooltip.clone()),
@@ -3504,7 +3767,14 @@ async fn enrich_v2_item_from_refs(
                 || i.categories.iter().any(|c| c.eq_ignore_ascii_case("boots"))
         })
         .unwrap_or(false);
-    let mut it = mayhem_item(id, items_catalog, None, champion_win_rate, total_champ_games).await;
+    let mut it = mayhem_item(
+        id,
+        items_catalog,
+        None,
+        champion_win_rate,
+        total_champ_games,
+    )
+    .await;
     it.games = it_games;
     it.win_rate = if it_games > 0 {
         it_wins as f64 / it_games as f64
@@ -3581,7 +3851,9 @@ async fn assemble_v2_strategy_for_core(
 
     if let Some(&(second_it, _)) = scored_second.first() {
         ordered_core.push(second_it);
-        if let Some(grp) = get_item_exclusive_group(second_it, items_catalog.get(&(second_it as i32))) {
+        if let Some(grp) =
+            get_item_exclusive_group(second_it, items_catalog.get(&(second_it as i32)))
+        {
             exclusive_groups.insert(grp);
         }
     }
@@ -3634,7 +3906,8 @@ async fn assemble_v2_strategy_for_core(
 
     if let Some(&(third_it, _)) = scored_third.first() {
         ordered_core.push(third_it);
-        if let Some(grp) = get_item_exclusive_group(third_it, items_catalog.get(&(third_it as i32))) {
+        if let Some(grp) = get_item_exclusive_group(third_it, items_catalog.get(&(third_it as i32)))
+        {
             exclusive_groups.insert(grp);
         }
     }
@@ -3646,22 +3919,29 @@ async fn assemble_v2_strategy_for_core(
         if let Some(b) = p.boot {
             let e = boot_counts.entry(b).or_default();
             e.0 += 1;
-            if p.win { e.1 += 1; }
+            if p.win {
+                e.1 += 1;
+            }
         }
         if let Some(s) = p.starter {
             let e = starter_counts.entry(s).or_default();
             e.0 += 1;
-            if p.win { e.1 += 1; }
+            if p.win {
+                e.1 += 1;
+            }
         }
     }
     let boot_id = boot_counts.into_iter().max_by_key(|x| x.1 .0).map(|x| x.0);
-    let starter_id = starter_counts.into_iter().max_by_key(|x| x.1 .0).and_then(|(id, (g, _))| {
-        if g >= 2 && (g as f64 / facts_with_rush.len().max(1) as f64) >= 0.05 {
-            Some(id)
-        } else {
-            None
-        }
-    });
+    let starter_id = starter_counts
+        .into_iter()
+        .max_by_key(|x| x.1 .0)
+        .and_then(|(id, (g, _))| {
+            if g >= 2 && (g as f64 / facts_with_rush.len().max(1) as f64) >= 0.05 {
+                Some(id)
+            } else {
+                None
+            }
+        });
 
     // 4. Find Continuation / Capstones (Items 4 & 5)
     let mut continuation_counts: HashMap<i64, (usize, usize)> = HashMap::new();
@@ -3735,12 +4015,32 @@ async fn assemble_v2_strategy_for_core(
 
     let mut items = Vec::new();
     for &id in &build_item_ids {
-        items.push(enrich_v2_item_from_refs(id, facts, items_catalog, champion_win_rate, total_champ_games, item_aug_synergies).await);
+        items.push(
+            enrich_v2_item_from_refs(
+                id,
+                facts,
+                items_catalog,
+                champion_win_rate,
+                total_champ_games,
+                item_aug_synergies,
+            )
+            .await,
+        );
     }
 
     // Starter item
     let starter_item = if let Some(sid) = starter_id {
-        Some(enrich_v2_item_from_refs(sid, facts, items_catalog, champion_win_rate, total_champ_games, item_aug_synergies).await)
+        Some(
+            enrich_v2_item_from_refs(
+                sid,
+                facts,
+                items_catalog,
+                champion_win_rate,
+                total_champ_games,
+                item_aug_synergies,
+            )
+            .await,
+        )
     } else {
         None
     };
@@ -3753,8 +4053,19 @@ async fn assemble_v2_strategy_for_core(
         if build_item_ids.contains(&c_id) {
             continue;
         }
-        let item = enrich_v2_item_from_refs(c_id, facts, items_catalog, champion_win_rate, total_champ_games, item_aug_synergies).await;
-        let is_situational = item.situational_tag.as_ref().map_or(false, |t| !t.starts_with("Synergy:"));
+        let item = enrich_v2_item_from_refs(
+            c_id,
+            facts,
+            items_catalog,
+            champion_win_rate,
+            total_champ_games,
+            item_aug_synergies,
+        )
+        .await;
+        let is_situational = item
+            .situational_tag
+            .as_ref()
+            .map_or(false, |t| !t.starts_with("Synergy:"));
         if is_situational && situational_items.len() < 12 {
             situational_items.push(item);
         } else if alternative_items.len() < 24 {
@@ -3766,7 +4077,9 @@ async fn assemble_v2_strategy_for_core(
     alternative_items.sort_by(|a, b| {
         let syn_a = item_aug_synergies.get(&a.id).copied().unwrap_or(0.0);
         let syn_b = item_aug_synergies.get(&b.id).copied().unwrap_or(0.0);
-        syn_b.partial_cmp(&syn_a).unwrap_or(std::cmp::Ordering::Equal)
+        syn_b
+            .partial_cmp(&syn_a)
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
 
     let stages = build_stage_pathing(&starter_item, &items, &situational_items);
@@ -3775,7 +4088,11 @@ async fn assemble_v2_strategy_for_core(
     let core_facts: Vec<&V2ParsedFact> = facts
         .iter()
         .copied()
-        .filter(|p| ordered_core.iter().all(|c| p.legendaries.iter().any(|(x, _)| x == c)))
+        .filter(|p| {
+            ordered_core
+                .iter()
+                .all(|c| p.legendaries.iter().any(|(x, _)| x == c))
+        })
         .collect();
     let sample_games = core_facts.len().max(1);
     let sample_wins = core_facts.iter().filter(|p| p.win).count();
@@ -3790,10 +4107,17 @@ async fn assemble_v2_strategy_for_core(
     let mut aug_counts: HashMap<String, (usize, usize)> = HashMap::new();
     for p in &core_facts {
         for a in &p.augments {
-            if !a.is_empty() && a != "0" && !normalized_augments.iter().any(|r| r.eq_ignore_ascii_case(a)) {
+            if !a.is_empty()
+                && a != "0"
+                && !normalized_augments
+                    .iter()
+                    .any(|r| r.eq_ignore_ascii_case(a))
+            {
                 let e = aug_counts.entry(a.clone()).or_default();
                 e.0 += 1;
-                if p.win { e.1 += 1; }
+                if p.win {
+                    e.1 += 1;
+                }
             }
         }
     }
@@ -3853,13 +4177,44 @@ async fn assemble_v2_strategy_from_mined(
 
     let mut items = Vec::new();
     for &id in &arch.core_items {
-        items.push(enrich_v2_item_from_refs(id, &fact_refs, items_catalog, champion_win_rate, total_champ_games, item_aug_synergies).await);
+        items.push(
+            enrich_v2_item_from_refs(
+                id,
+                &fact_refs,
+                items_catalog,
+                champion_win_rate,
+                total_champ_games,
+                item_aug_synergies,
+            )
+            .await,
+        );
     }
     if let Some(bid) = arch.boot_id {
         if items.len() >= 1 {
-            items.insert(1, enrich_v2_item_from_refs(bid, &fact_refs, items_catalog, champion_win_rate, total_champ_games, item_aug_synergies).await);
+            items.insert(
+                1,
+                enrich_v2_item_from_refs(
+                    bid,
+                    &fact_refs,
+                    items_catalog,
+                    champion_win_rate,
+                    total_champ_games,
+                    item_aug_synergies,
+                )
+                .await,
+            );
         } else {
-            items.push(enrich_v2_item_from_refs(bid, &fact_refs, items_catalog, champion_win_rate, total_champ_games, item_aug_synergies).await);
+            items.push(
+                enrich_v2_item_from_refs(
+                    bid,
+                    &fact_refs,
+                    items_catalog,
+                    champion_win_rate,
+                    total_champ_games,
+                    item_aug_synergies,
+                )
+                .await,
+            );
         }
     }
     for &(id, _, _, _) in &arch.continuation_items {
@@ -3867,12 +4222,32 @@ async fn assemble_v2_strategy_from_mined(
             break;
         }
         if !items.iter().any(|x| x.id == id) {
-            items.push(enrich_v2_item_from_refs(id, &fact_refs, items_catalog, champion_win_rate, total_champ_games, item_aug_synergies).await);
+            items.push(
+                enrich_v2_item_from_refs(
+                    id,
+                    &fact_refs,
+                    items_catalog,
+                    champion_win_rate,
+                    total_champ_games,
+                    item_aug_synergies,
+                )
+                .await,
+            );
         }
     }
 
     let starter_item = if let Some(sid) = arch.starter_id {
-        Some(enrich_v2_item_from_refs(sid, &fact_refs, items_catalog, champion_win_rate, total_champ_games, item_aug_synergies).await)
+        Some(
+            enrich_v2_item_from_refs(
+                sid,
+                &fact_refs,
+                items_catalog,
+                champion_win_rate,
+                total_champ_games,
+                item_aug_synergies,
+            )
+            .await,
+        )
     } else {
         None
     };
@@ -3880,19 +4255,41 @@ async fn assemble_v2_strategy_from_mined(
     let mut alternative_items = Vec::new();
     for &(id, _, _, _) in arch.continuation_items.iter().skip(2) {
         if !items.iter().any(|x| x.id == id) && alternative_items.len() < 20 {
-            alternative_items.push(enrich_v2_item_from_refs(id, &fact_refs, items_catalog, champion_win_rate, total_champ_games, item_aug_synergies).await);
+            alternative_items.push(
+                enrich_v2_item_from_refs(
+                    id,
+                    &fact_refs,
+                    items_catalog,
+                    champion_win_rate,
+                    total_champ_games,
+                    item_aug_synergies,
+                )
+                .await,
+            );
         }
     }
     alternative_items.sort_by(|a, b| {
         let syn_a = item_aug_synergies.get(&a.id).copied().unwrap_or(0.0);
         let syn_b = item_aug_synergies.get(&b.id).copied().unwrap_or(0.0);
-        syn_b.partial_cmp(&syn_a).unwrap_or(std::cmp::Ordering::Equal)
+        syn_b
+            .partial_cmp(&syn_a)
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
 
     let mut situational_items = Vec::new();
     for &(id, _, _, _) in &arch.situational_items {
         if !items.iter().any(|x| x.id == id) && situational_items.len() < 12 {
-            situational_items.push(enrich_v2_item_from_refs(id, &fact_refs, items_catalog, champion_win_rate, total_champ_games, item_aug_synergies).await);
+            situational_items.push(
+                enrich_v2_item_from_refs(
+                    id,
+                    &fact_refs,
+                    items_catalog,
+                    champion_win_rate,
+                    total_champ_games,
+                    item_aug_synergies,
+                )
+                .await,
+            );
         }
     }
 
@@ -3900,7 +4297,10 @@ async fn assemble_v2_strategy_from_mined(
 
     let mut augments = Vec::new();
     for (id, g, wr, wpa, pr) in &arch.top_augments {
-        if normalized_augments.iter().any(|r| r.eq_ignore_ascii_case(id)) {
+        if normalized_augments
+            .iter()
+            .any(|r| r.eq_ignore_ascii_case(id))
+        {
             continue;
         }
         let mut a = mayhem_augment(id, aug_catalog, None, champion_win_rate).await;
@@ -4006,13 +4406,17 @@ async fn compute_mayhem_champion_build_v2(
             let pair = (p.spell1.min(p.spell2), p.spell1.max(p.spell2));
             let e = spell_pairs.entry(pair).or_default();
             e.0 += 1;
-            if p.win { e.1 += 1; }
+            if p.win {
+                e.1 += 1;
+            }
         }
         for sp in [p.spell1, p.spell2] {
             if sp > 0 {
                 let e = ind_spells.entry(sp).or_default();
                 e.0 += 1;
-                if p.win { e.1 += 1; }
+                if p.win {
+                    e.1 += 1;
+                }
             }
         }
     }
@@ -4029,7 +4433,13 @@ async fn compute_mayhem_champion_build_v2(
     let all_spells = shared_spells.clone();
 
     // 4. Infer Rush Items by analyzing incomplete games (solo completions & slot positions)
-    let min_rush_games = if total_games <= 15 { 1 } else if total_games <= 50 { 2 } else { 3 };
+    let min_rush_games = if total_games <= 15 {
+        1
+    } else if total_games <= 50 {
+        2
+    } else {
+        3
+    };
     let parsed_refs: Vec<&V2ParsedFact> = parsed.iter().collect();
     let candidates = infer_v2_rush_items_from_refs(&parsed_refs, champion_win_rate, min_rush_games);
 
@@ -4052,7 +4462,8 @@ async fn compute_mayhem_champion_build_v2(
                     &shared_spells,
                     &all_spells,
                     normalized_augments,
-                ).await;
+                )
+                .await;
                 adaptive_strategies.push(strat);
             }
 
@@ -4062,7 +4473,8 @@ async fn compute_mayhem_champion_build_v2(
                 .filter(|p| p.augments.iter().any(|a| a.eq_ignore_ascii_case(aug)))
                 .collect();
             if aug_facts.len() >= 3 {
-                let aug_candidates = infer_v2_rush_items_from_refs(&aug_facts, champion_win_rate, 2);
+                let aug_candidates =
+                    infer_v2_rush_items_from_refs(&aug_facts, champion_win_rate, 2);
                 if let Some(top_aug_cand) = aug_candidates.first() {
                     let strat = assemble_v2_strategy_for_core(
                         &format!("adaptive_{}", aug.to_lowercase().replace(' ', "_")),
@@ -4077,8 +4489,12 @@ async fn compute_mayhem_champion_build_v2(
                         &shared_spells,
                         &all_spells,
                         normalized_augments,
-                    ).await;
-                    if !adaptive_strategies.iter().any(|s| s.items.iter().map(|i| i.id).collect::<Vec<_>>() == strat.items.iter().map(|i| i.id).collect::<Vec<_>>()) {
+                    )
+                    .await;
+                    if !adaptive_strategies.iter().any(|s| {
+                        s.items.iter().map(|i| i.id).collect::<Vec<_>>()
+                            == strat.items.iter().map(|i| i.id).collect::<Vec<_>>()
+                    }) {
                         adaptive_strategies.push(strat);
                     }
                 }
@@ -4101,7 +4517,8 @@ async fn compute_mayhem_champion_build_v2(
             &shared_spells,
             &all_spells,
             normalized_augments,
-        ).await;
+        )
+        .await;
 
         let g1_core_items: HashSet<i64> = general_1.items.iter().take(3).map(|i| i.id).collect();
 
@@ -4122,7 +4539,8 @@ async fn compute_mayhem_champion_build_v2(
                     &shared_spells,
                     &all_spells,
                     normalized_augments,
-                ).await;
+                )
+                .await;
                 let g2_core: HashSet<i64> = strat.items.iter().take(3).map(|i| i.id).collect();
                 if g2_core.intersection(&g1_core_items).count() <= 1 {
                     general_2 = Some(strat);
@@ -4147,7 +4565,14 @@ async fn compute_mayhem_champion_build_v2(
 
     // Fallback if strategies empty:
     if strategies.is_empty() {
-        for (idx, arch) in mine_build_archetypes(&facts.iter().collect::<Vec<_>>(), items_catalog, champion_win_rate).into_iter().enumerate() {
+        for (idx, arch) in mine_build_archetypes(
+            &facts.iter().collect::<Vec<_>>(),
+            items_catalog,
+            champion_win_rate,
+        )
+        .into_iter()
+        .enumerate()
+        {
             let strat = assemble_v2_strategy_from_mined(
                 &arch,
                 &parsed,
@@ -4159,7 +4584,8 @@ async fn compute_mayhem_champion_build_v2(
                 &shared_spells,
                 &all_spells,
                 normalized_augments,
-            ).await;
+            )
+            .await;
             strategies.push(strat);
             if idx >= 1 {
                 break;
@@ -4188,7 +4614,11 @@ pub async fn compute_mayhem_champion_build(
     let version = algorithm_version
         .unwrap_or_else(|| "v2".to_string())
         .to_lowercase();
-    let version = if version == "v1" { "v1".to_string() } else { "v2".to_string() };
+    let version = if version == "v1" {
+        "v1".to_string()
+    } else {
+        "v2".to_string()
+    };
 
     let mut normalized_augments: Vec<String> = requested_augments
         .into_iter()
@@ -4326,7 +4756,11 @@ pub async fn compute_mayhem_champion_build(
 
     let mut filtered_facts: Vec<&ParticipantFact> = facts
         .iter()
-        .filter(|f| applied_augment_ids.iter().all(|a| f.augment_ids.contains(a)))
+        .filter(|f| {
+            applied_augment_ids
+                .iter()
+                .all(|a| f.augment_ids.contains(a))
+        })
         .collect();
 
     while filtered_facts.len() < 15 && !applied_augment_ids.is_empty() {
@@ -4334,7 +4768,11 @@ pub async fn compute_mayhem_champion_build(
         applied_augment_ids.pop();
         filtered_facts = facts
             .iter()
-            .filter(|f| applied_augment_ids.iter().all(|a| f.augment_ids.contains(a)))
+            .filter(|f| {
+                applied_augment_ids
+                    .iter()
+                    .all(|a| f.augment_ids.contains(a))
+            })
             .collect();
     }
 
@@ -4361,7 +4799,12 @@ pub async fn compute_mayhem_champion_build(
         let mut aug_cache = MAYHEM_CHAMPION_AUGMENTS_CACHE.write().await;
         aug_cache.insert(
             (champion_id, normalized_augments.clone()),
-            (Instant::now(), champion_win_rate, active_facts.len(), aug_map),
+            (
+                Instant::now(),
+                champion_win_rate,
+                active_facts.len(),
+                aug_map,
+            ),
         );
     }
 
@@ -4668,7 +5111,8 @@ pub async fn compute_mayhem_champion_build(
             .map(|(&pair, agg)| {
                 // High Bayesian shrinkage (M=40.0) so small-sample flukes never beat proven pairings
                 let m_pair = 40.0;
-                let wr_score = (agg.wins as f64 + m_pair * champion_win_rate) / (agg.games as f64 + m_pair);
+                let wr_score =
+                    (agg.wins as f64 + m_pair * champion_win_rate) / (agg.games as f64 + m_pair);
                 let strat_score = score_metric(agg, strat_id, champion_win_rate);
                 let final_score = if strat_id == "win_rate" {
                     wr_score
@@ -4695,9 +5139,13 @@ pub async fn compute_mayhem_champion_build(
                         (sp_id, bayes_score)
                     })
                     .collect();
-                top_indiv.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                top_indiv
+                    .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
                 if top_indiv.len() >= 2 {
-                    (top_indiv[0].0.min(top_indiv[1].0), top_indiv[0].0.max(top_indiv[1].0))
+                    (
+                        top_indiv[0].0.min(top_indiv[1].0),
+                        top_indiv[0].0.max(top_indiv[1].0),
+                    )
                 } else {
                     (4, 32) // Flash + Mark fallback
                 }
@@ -5020,7 +5468,14 @@ pub async fn compute_mayhem_champion_build(
         for &(id, _, agg) in &core_items {
             if !chosen_item_ids.contains(&id) {
                 if let Some(tag) = get_situational_tag(id, items_catalog.get(&(id as i32))) {
-                    let mut it = mayhem_item(id, &items_catalog, Some(agg), champion_win_rate, total_games).await;
+                    let mut it = mayhem_item(
+                        id,
+                        &items_catalog,
+                        Some(agg),
+                        champion_win_rate,
+                        total_games,
+                    )
+                    .await;
                     it.situational_tag = Some(tag.to_string());
                     strat_situational.push(it);
                     if strat_situational.len() >= 6 {
@@ -5071,18 +5526,38 @@ pub async fn compute_mayhem_champion_build(
                 groups.insert(g);
             }
             items.push(
-                mayhem_item(id, &items_catalog, items_agg.get(&id), champion_win_rate, total_games).await,
+                mayhem_item(
+                    id,
+                    &items_catalog,
+                    items_agg.get(&id),
+                    champion_win_rate,
+                    total_games,
+                )
+                .await,
             );
         }
         if let Some(id) = arch.boot_id {
             items.push(
-                mayhem_item(id, &items_catalog, items_agg.get(&id), champion_win_rate, total_games).await,
+                mayhem_item(
+                    id,
+                    &items_catalog,
+                    items_agg.get(&id),
+                    champion_win_rate,
+                    total_games,
+                )
+                .await,
             );
         }
         let mut alternative_items = Vec::new();
         for &(id, games, wr, pr) in arch.continuation_items.iter().take(20) {
-            let mut item =
-                mayhem_item(id, &items_catalog, items_agg.get(&id), champion_win_rate, total_games).await;
+            let mut item = mayhem_item(
+                id,
+                &items_catalog,
+                items_agg.get(&id),
+                champion_win_rate,
+                total_games,
+            )
+            .await;
             item.games = games;
             item.win_rate = wr;
             item.wpa = wr - champion_win_rate;
@@ -5100,31 +5575,57 @@ pub async fn compute_mayhem_champion_build(
         }
         let mut situational_items = Vec::new();
         for &(id, games, wr, pr) in arch.situational_items.iter().take(12) {
-            let mut item =
-                mayhem_item(id, &items_catalog, items_agg.get(&id), champion_win_rate, total_games).await;
+            let mut item = mayhem_item(
+                id,
+                &items_catalog,
+                items_agg.get(&id),
+                champion_win_rate,
+                total_games,
+            )
+            .await;
             item.games = games;
             item.win_rate = wr;
             item.wpa = wr - champion_win_rate;
             item.pick_rate = pr;
-            item.situational_tag = get_situational_tag(id, items_catalog.get(&(id as i32))).map(|s| s.to_string());
+            item.situational_tag =
+                get_situational_tag(id, items_catalog.get(&(id as i32))).map(|s| s.to_string());
             situational_items.push(item);
         }
         let starter_item = match arch.starter_id {
             Some(id) => Some(
-                mayhem_item(id, &items_catalog, items_agg.get(&id), champion_win_rate, total_games).await,
+                mayhem_item(
+                    id,
+                    &items_catalog,
+                    items_agg.get(&id),
+                    champion_win_rate,
+                    total_games,
+                )
+                .await,
             ),
             None => None,
         };
         let mut spells = Vec::new();
         for sp in [arch.spells.0, arch.spells.1] {
-            spells.push(mayhem_spell(sp, &spells_catalog, &individual_spells_agg, champion_win_rate).await);
+            spells.push(
+                mayhem_spell(
+                    sp,
+                    &spells_catalog,
+                    &individual_spells_agg,
+                    champion_win_rate,
+                )
+                .await,
+            );
         }
         let mut augments = Vec::new();
         for (id, games, wr, wpa, pr) in &arch.top_augments {
-            if normalized_augments.iter().any(|r| r.eq_ignore_ascii_case(id)) {
+            if normalized_augments
+                .iter()
+                .any(|r| r.eq_ignore_ascii_case(id))
+            {
                 continue;
             }
-            let mut aug = mayhem_augment(id, &aug_catalog, augments_agg.get(id), champion_win_rate).await;
+            let mut aug =
+                mayhem_augment(id, &aug_catalog, augments_agg.get(id), champion_win_rate).await;
             aug.games = *games;
             aug.win_rate = *wr;
             aug.wpa = *wpa;
@@ -5136,10 +5637,16 @@ pub async fn compute_mayhem_champion_build(
                 .iter()
                 .filter(|(id, _)| {
                     !augments.iter().any(|a| a.id.eq_ignore_ascii_case(id))
-                        && !normalized_augments.iter().any(|r| r.eq_ignore_ascii_case(id))
+                        && !normalized_augments
+                            .iter()
+                            .any(|r| r.eq_ignore_ascii_case(id))
                 })
                 .collect();
-            general_augs.sort_by(|a, b| b.1.games.cmp(&a.1.games).then_with(|| b.1.wins.cmp(&a.1.wins)));
+            general_augs.sort_by(|a, b| {
+                b.1.games
+                    .cmp(&a.1.games)
+                    .then_with(|| b.1.wins.cmp(&a.1.wins))
+            });
             for (id, agg) in general_augs.into_iter().take(6 - augments.len()) {
                 let mut aug = mayhem_augment(id, &aug_catalog, Some(agg), champion_win_rate).await;
                 if total_games > 0 {
@@ -5173,14 +5680,39 @@ pub async fn compute_mayhem_champion_build(
         if let Some(warped_arch) = build_augment_warped_archetype(aug, champion_win_rate) {
             let mut items = Vec::new();
             for &id in &warped_arch.core_items {
-                items.push(mayhem_item(id, &items_catalog, items_agg.get(&id), champion_win_rate, total_games).await);
+                items.push(
+                    mayhem_item(
+                        id,
+                        &items_catalog,
+                        items_agg.get(&id),
+                        champion_win_rate,
+                        total_games,
+                    )
+                    .await,
+                );
             }
             if let Some(id) = warped_arch.boot_id {
-                items.push(mayhem_item(id, &items_catalog, items_agg.get(&id), champion_win_rate, total_games).await);
+                items.push(
+                    mayhem_item(
+                        id,
+                        &items_catalog,
+                        items_agg.get(&id),
+                        champion_win_rate,
+                        total_games,
+                    )
+                    .await,
+                );
             }
             let mut alternative_items = Vec::new();
             for &(id, games, wr, pr) in &warped_arch.continuation_items {
-                let mut it = mayhem_item(id, &items_catalog, items_agg.get(&id), champion_win_rate, total_games).await;
+                let mut it = mayhem_item(
+                    id,
+                    &items_catalog,
+                    items_agg.get(&id),
+                    champion_win_rate,
+                    total_games,
+                )
+                .await;
                 it.games = games;
                 it.win_rate = wr;
                 it.wpa = wr - champion_win_rate;
@@ -5193,25 +5725,51 @@ pub async fn compute_mayhem_champion_build(
             }
             let mut situational_items = Vec::new();
             for &(id, games, wr, pr) in &warped_arch.situational_items {
-                let mut it = mayhem_item(id, &items_catalog, items_agg.get(&id), champion_win_rate, total_games).await;
+                let mut it = mayhem_item(
+                    id,
+                    &items_catalog,
+                    items_agg.get(&id),
+                    champion_win_rate,
+                    total_games,
+                )
+                .await;
                 it.games = games;
                 it.win_rate = wr;
                 it.wpa = wr - champion_win_rate;
                 it.pick_rate = pr;
-                it.situational_tag = get_situational_tag(id, items_catalog.get(&(id as i32))).map(|s| s.to_string());
+                it.situational_tag =
+                    get_situational_tag(id, items_catalog.get(&(id as i32))).map(|s| s.to_string());
                 situational_items.push(it);
             }
             let starter_item = match warped_arch.starter_id {
-                Some(id) => Some(mayhem_item(id, &items_catalog, items_agg.get(&id), champion_win_rate, total_games).await),
+                Some(id) => Some(
+                    mayhem_item(
+                        id,
+                        &items_catalog,
+                        items_agg.get(&id),
+                        champion_win_rate,
+                        total_games,
+                    )
+                    .await,
+                ),
                 None => None,
             };
             let mut spells = Vec::new();
             for sp in [warped_arch.spells.0, warped_arch.spells.1] {
-                spells.push(mayhem_spell(sp, &spells_catalog, &individual_spells_agg, champion_win_rate).await);
+                spells.push(
+                    mayhem_spell(
+                        sp,
+                        &spells_catalog,
+                        &individual_spells_agg,
+                        champion_win_rate,
+                    )
+                    .await,
+                );
             }
             let mut augments = Vec::new();
             for (id, games, wr, wpa, pr) in &warped_arch.top_augments {
-                let mut a = mayhem_augment(id, &aug_catalog, augments_agg.get(id), champion_win_rate).await;
+                let mut a =
+                    mayhem_augment(id, &aug_catalog, augments_agg.get(id), champion_win_rate).await;
                 a.games = *games;
                 a.win_rate = *wr;
                 a.wpa = *wpa;
@@ -5219,24 +5777,27 @@ pub async fn compute_mayhem_champion_build(
                 augments.push(a);
             }
             let stages = build_stage_pathing(&starter_item, &items, &situational_items);
-            archetype_strategies.insert(0, MayhemBuildStrategy {
-                id: warped_arch.id,
-                label: warped_arch.label,
-                metric_name: "Win Rate".to_string(),
-                avg_metric_value: format!("{:+.1}% WPA", warped_arch.build_wpa * 100.0),
-                raw_metric_value: warped_arch.build_win_rate,
-                build_win_rate: warped_arch.build_win_rate,
-                build_wpa: warped_arch.build_wpa,
-                starter_item,
-                items,
-                alternative_items,
-                situational_items,
-                stages,
-                spells,
-                all_spells: shared_all_spells.clone(),
-                augments,
-                sample_games: warped_arch.sample_games,
-            });
+            archetype_strategies.insert(
+                0,
+                MayhemBuildStrategy {
+                    id: warped_arch.id,
+                    label: warped_arch.label,
+                    metric_name: "Win Rate".to_string(),
+                    avg_metric_value: format!("{:+.1}% WPA", warped_arch.build_wpa * 100.0),
+                    raw_metric_value: warped_arch.build_win_rate,
+                    build_win_rate: warped_arch.build_win_rate,
+                    build_wpa: warped_arch.build_wpa,
+                    starter_item,
+                    items,
+                    alternative_items,
+                    situational_items,
+                    stages,
+                    spells,
+                    all_spells: shared_all_spells.clone(),
+                    augments,
+                    sample_games: warped_arch.sample_games,
+                },
+            );
         }
     }
     archetype_strategies.extend(strategies);
@@ -5329,42 +5890,44 @@ pub async fn get_mayhem_augments(
     with_ids.dedup();
 
     // 1. Resolve champion data if champion_id is specified
-    let (champion_win_rate, champ_total_games, champion_name, champ_augs) = if let Some(cid) = query.champion_id {
-        if cid > 0 {
-            let key = (cid, with_ids.clone());
-            // Check cache or compute
-            let has_valid_cache = {
+    let (champion_win_rate, champ_total_games, champion_name, champ_augs) =
+        if let Some(cid) = query.champion_id {
+            if cid > 0 {
+                let key = (cid, with_ids.clone());
+                // Check cache or compute
+                let has_valid_cache = {
+                    let cache = MAYHEM_CHAMPION_AUGMENTS_CACHE.read().await;
+                    cache
+                        .get(&key)
+                        .map(|(t, _, _, _)| t.elapsed() < std::time::Duration::from_secs(120))
+                        .unwrap_or(false)
+                };
+
+                if !has_valid_cache {
+                    let _ = compute_mayhem_champion_build(cid, with_ids.clone(), None).await;
+                }
+
                 let cache = MAYHEM_CHAMPION_AUGMENTS_CACHE.read().await;
-                cache
-                    .get(&key)
-                    .map(|(t, _, _, _)| t.elapsed() < std::time::Duration::from_secs(120))
-                    .unwrap_or(false)
-            };
+                let (wr, champ_total_games, map) =
+                    if let Some((_, c_wr, t_games, aug_map)) = cache.get(&key) {
+                        (*c_wr, *t_games, aug_map.clone())
+                    } else {
+                        (0.50, 0, HashMap::new())
+                    };
 
-            if !has_valid_cache {
-                let _ = compute_mayhem_champion_build(cid, with_ids.clone(), None).await;
-            }
+                let all_champs = get_all_champions().await.unwrap_or_default();
+                let c_name = all_champs
+                    .iter()
+                    .find(|c| c.id == cid)
+                    .map(|c| c.name.clone());
 
-            let cache = MAYHEM_CHAMPION_AUGMENTS_CACHE.read().await;
-            let (wr, champ_total_games, map) = if let Some((_, c_wr, t_games, aug_map)) = cache.get(&key) {
-                (*c_wr, *t_games, aug_map.clone())
+                (wr, champ_total_games, c_name, map)
             } else {
-                (0.50, 0, HashMap::new())
-            };
-
-            let all_champs = get_all_champions().await.unwrap_or_default();
-            let c_name = all_champs
-                .iter()
-                .find(|c| c.id == cid)
-                .map(|c| c.name.clone());
-
-            (wr, champ_total_games, c_name, map)
+                (0.50, 0, None, HashMap::new())
+            }
         } else {
             (0.50, 0, None, HashMap::new())
-        }
-    } else {
-        (0.50, 0, None, HashMap::new())
-    };
+        };
 
     // 2. Resolve global augment projection cache
     let (global_total_games, global_projection_map) = {
@@ -5383,7 +5946,9 @@ pub async fn get_mayhem_augments(
             (total, map)
         } else {
             let db_path = history_data_dir().join("global-aram.db");
-            let (sample_count, map): (usize, HashMap<String, (usize, f64, f64)>) = if db_path.exists() {
+            let (sample_count, map): (usize, HashMap<String, (usize, f64, f64)>) = if db_path
+                .exists()
+            {
                 tokio::task::spawn_blocking(move || {
                     let mut res = HashMap::new();
                     let mut count = 0usize;
@@ -5488,7 +6053,8 @@ pub async fn get_mayhem_augments(
 
         let global_pick_rate = if global_total_games > 0 {
             let total_global_slots = (global_total_games * 4) as f64;
-            let slot_share = (global_games as f64 + m_slots * p0_slot) / (total_global_slots + m_slots);
+            let slot_share =
+                (global_games as f64 + m_slots * p0_slot) / (total_global_slots + m_slots);
             (slot_share * 4.0).clamp(0.0, 1.0)
         } else {
             0.0
@@ -5505,24 +6071,25 @@ pub async fn get_mayhem_augments(
         let prior_wr = (champion_win_rate + global_wpa).clamp(0.10, 0.90);
         let m_wr = 30.0f64;
 
-        let (games, wins, win_rate, wpa, bayesian_wpa, bayesian_wr, pick_rate) = if let Some(&(g, w)) = champ_stat {
-            let wr = if g > 0 { w as f64 / g as f64 } else { 0.0 };
-            let raw_wpa = if g > 0 { wr - champion_win_rate } else { 0.0 };
-            let bayes_wr = (w as f64 + m_wr * prior_wr) / (g as f64 + m_wr);
-            let bayes_wpa = bayes_wr - champion_win_rate;
+        let (games, wins, win_rate, wpa, bayesian_wpa, bayesian_wr, pick_rate) =
+            if let Some(&(g, w)) = champ_stat {
+                let wr = if g > 0 { w as f64 / g as f64 } else { 0.0 };
+                let raw_wpa = if g > 0 { wr - champion_win_rate } else { 0.0 };
+                let bayes_wr = (w as f64 + m_wr * prior_wr) / (g as f64 + m_wr);
+                let bayes_wpa = bayes_wr - champion_win_rate;
 
-            let pr = if champ_total_games > 0 {
-                let total_champ_slots = (champ_total_games * 4) as f64;
-                let slot_share = (g as f64 + m_slots * p0_slot) / (total_champ_slots + m_slots);
-                (slot_share * 4.0).clamp(0.0, 1.0)
+                let pr = if champ_total_games > 0 {
+                    let total_champ_slots = (champ_total_games * 4) as f64;
+                    let slot_share = (g as f64 + m_slots * p0_slot) / (total_champ_slots + m_slots);
+                    (slot_share * 4.0).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+
+                (g, w, wr, raw_wpa, bayes_wpa, bayes_wr, pr)
             } else {
-                0.0
+                (0, 0, 0.0, 0.0, global_wpa, prior_wr, 0.0)
             };
-
-            (g, w, wr, raw_wpa, bayes_wpa, bayes_wr, pr)
-        } else {
-            (0, 0, 0.0, 0.0, global_wpa, prior_wr, 0.0)
-        };
 
         let item = MayhemAugmentItem {
             id: canonical_id,
@@ -5665,7 +6232,12 @@ pub async fn get_mayhem_augments(
                 .item
                 .games
                 .cmp(&b.item.games)
-                .then_with(|| a.item.pick_rate.partial_cmp(&b.item.pick_rate).unwrap_or(std::cmp::Ordering::Equal))
+                .then_with(|| {
+                    a.item
+                        .pick_rate
+                        .partial_cmp(&b.item.pick_rate)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
                 .then_with(|| a.item.global_games.cmp(&b.item.global_games))
                 .then_with(|| {
                     a.bayesian_wpa
@@ -5736,7 +6308,8 @@ pub async fn get_mayhem_augments(
 fn open_saved_builds_db() -> Result<Connection, String> {
     let dir = history_data_dir();
     fs::create_dir_all(&dir).map_err(|e| format!("failed creating data dir: {e}"))?;
-    let conn = Connection::open(dir.join("agent.db")).map_err(|e| format!("failed opening agent.db: {e}"))?;
+    let conn = Connection::open(dir.join("agent.db"))
+        .map_err(|e| format!("failed opening agent.db: {e}"))?;
     let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
     let _ = conn.pragma_update(None, "journal_mode", "WAL");
     conn.execute_batch(
@@ -5755,7 +6328,9 @@ fn open_saved_builds_db() -> Result<Connection, String> {
     Ok(conn)
 }
 
-pub async fn save_mayhem_build(payload: SaveMayhemBuildPayload) -> Result<SavedMayhemBuild, String> {
+pub async fn save_mayhem_build(
+    payload: SaveMayhemBuildPayload,
+) -> Result<SavedMayhemBuild, String> {
     tokio::task::spawn_blocking(move || {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -5792,7 +6367,9 @@ pub async fn save_mayhem_build(payload: SaveMayhemBuildPayload) -> Result<SavedM
     .map_err(|e| format!("spawn_blocking failed: {e}"))?
 }
 
-pub async fn list_saved_mayhem_builds(champion_id: Option<i64>) -> Result<Vec<SavedMayhemBuild>, String> {
+pub async fn list_saved_mayhem_builds(
+    champion_id: Option<i64>,
+) -> Result<Vec<SavedMayhemBuild>, String> {
     tokio::task::spawn_blocking(move || {
         let conn = open_saved_builds_db()?;
         let mut stmt = conn
@@ -5847,7 +6424,6 @@ pub async fn delete_saved_mayhem_build(id: String) -> Result<(), String> {
     .map_err(|e| format!("spawn_blocking failed: {e}"))?
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5891,18 +6467,39 @@ mod tests {
     fn test_marksmage_converts_adc_item_pool_to_ap_on_hit() {
         let augments = vec!["Marksmage".to_string()];
         let bonus = get_item_augment_warp_bonus(3115, &augments);
-        assert!(bonus > 2.0, "Nashor's Tooth must receive high warp bonus under Marksmage");
+        assert!(
+            bonus > 2.0,
+            "Nashor's Tooth must receive high warp bonus under Marksmage"
+        );
         let bonus_lich = get_item_augment_warp_bonus(3100, &augments);
-        assert!(bonus_lich > 2.0, "Lich Bane must receive high warp bonus under Marksmage");
+        assert!(
+            bonus_lich > 2.0,
+            "Lich Bane must receive high warp bonus under Marksmage"
+        );
         let bonus_rabadon = get_item_augment_warp_bonus(3089, &augments);
-        assert!(bonus_rabadon > 2.0, "Rabadon's must receive high warp bonus under Marksmage");
+        assert!(
+            bonus_rabadon > 2.0,
+            "Rabadon's must receive high warp bonus under Marksmage"
+        );
 
         let warped = build_augment_warped_archetype("Marksmage", 0.50);
-        assert!(warped.is_some(), "Marksmage warped archetype must be created");
+        assert!(
+            warped.is_some(),
+            "Marksmage warped archetype must be created"
+        );
         let arch = warped.unwrap();
-        assert!(arch.core_items.contains(&3115), "Core must contain Nashor's Tooth");
-        assert!(arch.core_items.contains(&3100), "Core must contain Lich Bane");
-        assert!(arch.core_items.contains(&3089), "Core must contain Rabadon's Deathcap");
+        assert!(
+            arch.core_items.contains(&3115),
+            "Core must contain Nashor's Tooth"
+        );
+        assert!(
+            arch.core_items.contains(&3100),
+            "Core must contain Lich Bane"
+        );
+        assert!(
+            arch.core_items.contains(&3089),
+            "Core must contain Rabadon's Deathcap"
+        );
     }
 
     #[test]
@@ -6011,8 +6608,17 @@ mod tests {
         let candidates = infer_v2_rush_items_from_refs(&refs, 0.50, 2);
 
         assert!(!candidates.is_empty(), "Must produce rush candidates");
-        assert_eq!(candidates[0].item_id, 6672, "Item 6672 must be #1 rush item due to solo early completions");
-        let rabadon_score = candidates.iter().find(|c| c.item_id == 3089).map_or(0.0, |c| c.rush_score);
-        assert!(candidates[0].rush_score > rabadon_score, "Rush item must score higher than late capstone 3089");
+        assert_eq!(
+            candidates[0].item_id, 6672,
+            "Item 6672 must be #1 rush item due to solo early completions"
+        );
+        let rabadon_score = candidates
+            .iter()
+            .find(|c| c.item_id == 3089)
+            .map_or(0.0, |c| c.rush_score);
+        assert!(
+            candidates[0].rush_score > rabadon_score,
+            "Rush item must score higher than late capstone 3089"
+        );
     }
 }

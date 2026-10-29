@@ -87,7 +87,12 @@ pub async fn api_mayhem_champion_build(
     augment_ids: Option<Vec<String>>,
     algorithm_version: Option<String>,
 ) -> Result<MayhemChampionBuildSummary, String> {
-    compute_mayhem_champion_build(champion_id, augment_ids.unwrap_or_default(), algorithm_version).await
+    compute_mayhem_champion_build(
+        champion_id,
+        augment_ids.unwrap_or_default(),
+        algorithm_version,
+    )
+    .await
 }
 
 /// Batch-computes or retrieves builds for multiple champions (team roster and bench).
@@ -101,7 +106,9 @@ pub async fn api_mayhem_team_builds(
         if id <= 0 {
             continue;
         }
-        if let Ok(summary) = compute_mayhem_champion_build(id, Vec::new(), algorithm_version.clone()).await {
+        if let Ok(summary) =
+            compute_mayhem_champion_build(id, Vec::new(), algorithm_version.clone()).await
+        {
             results.insert(id, summary);
         }
     }
@@ -295,9 +302,9 @@ pub async fn api_champ_select_swap(champion_id: i64) -> Result<bool, String> {
         .get("benchChampions")
         .and_then(Value::as_array)
         .map(|bench| {
-            bench.iter().any(|b| {
-                b.get("championId").and_then(Value::as_i64) == Some(champion_id)
-            })
+            bench
+                .iter()
+                .any(|b| b.get("championId").and_then(Value::as_i64) == Some(champion_id))
         })
         .unwrap_or(false);
 
@@ -352,7 +359,8 @@ pub async fn api_get_live_build_advice(
     game_time: Option<f64>,
     augment_ids: Option<Vec<String>>,
 ) -> Result<MayhemLiveAdvice, String> {
-    let summary = compute_mayhem_champion_build(champion_id, augment_ids.unwrap_or_default(), None).await?;
+    let summary =
+        compute_mayhem_champion_build(champion_id, augment_ids.unwrap_or_default(), None).await?;
     let strat = if let Some(ref sid) = strategy_id {
         summary.strategies.iter().find(|s| &s.id == sid)
     } else {

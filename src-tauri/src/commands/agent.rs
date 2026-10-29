@@ -77,7 +77,7 @@ pub async fn api_statistics(
     let cached_dataset = {
         let cache = ENRICHED_DATASET_CACHE.read().await;
         cache.get(&cache_key).and_then(|(gen, created_at, val)| {
-            if *gen == current_gen && created_at.elapsed() < std::time::Duration::from_secs(60) {
+            if *gen == current_gen && created_at.elapsed() < std::time::Duration::from_secs(600) {
                 Some(val.clone())
             } else {
                 None

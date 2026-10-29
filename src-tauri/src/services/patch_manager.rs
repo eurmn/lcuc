@@ -167,8 +167,8 @@ pub async fn invalidate_all_caches() {
 pub async fn ensure_patch_freshness(lcu_client: Option<&LcuClient>) -> (Option<String>, bool) {
     let cached_patch = get_cached_patch();
 
-    // Avoid spamming remote CDragon checks if we already checked recently and have no LCU client
-    if lcu_client.is_none() && cached_patch.is_some() {
+    // Avoid spamming patch checks against LCU or remote CDragon if we already checked recently
+    if cached_patch.is_some() {
         let mut last_check = LAST_PATCH_CHECK.lock().await;
         if let Some(instant) = *last_check {
             if instant.elapsed() < Duration::from_secs(300) {

@@ -149,6 +149,8 @@ export interface AgentOperation {
   total: number | null;
 }
 
+export type AgentOperationDto = AgentOperation;
+
 export interface LogEntry {
   timestamp: string;
   level: string;

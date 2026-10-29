@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
@@ -20,6 +20,47 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::Connector;
 
 const PORO_SNAX_IDS: [i64; 2] = [2050, 2052];
+
+pub fn is_boot_item_id(id: i64) -> bool {
+    matches!(
+        id,
+        1001 | 2422
+            | 3005
+            | 3006
+            | 3009
+            | 3020
+            | 3047
+            | 3111
+            | 3117
+            | 3158
+            | 223006
+            | 223009
+            | 223020
+            | 223047
+            | 223111
+            | 223158
+    )
+}
+
+pub fn is_starter_item_id(id: i64) -> bool {
+    matches!(
+        id,
+        1054 | 1055 | 1056 | 1082 | 2051 | 3177 | 3184 | 3112 | 3070
+    )
+}
+
+fn is_boot_combo_id(combo_id: &str) -> bool {
+    for part in combo_id.trim_start_matches("combo:").split('+') {
+        if let Some(item_id_str) = part.strip_prefix("item:") {
+            if let Ok(id) = item_id_str.parse::<i64>() {
+                if is_boot_item_id(id) || is_starter_item_id(id) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
 
 fn open_connection(path: impl AsRef<std::path::Path>) -> rusqlite::Result<Connection> {
     let connection = Connection::open(path)?;
@@ -231,6 +272,34 @@ lazy_static! {
         std::sync::atomic::AtomicBool::new(false);
 }
 
+static ACTIVE_STATS_OPERATION: LazyLock<Mutex<Option<ProgressOperation>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+struct ActiveStatsOpGuard;
+
+impl Drop for ActiveStatsOpGuard {
+    fn drop(&mut self) {
+        clear_active_stats_operation();
+    }
+}
+
+fn set_active_stats_operation(id: &str, message: &str, current: usize, total: usize) {
+    if let Ok(mut guard) = ACTIVE_STATS_OPERATION.lock() {
+        *guard = Some(ProgressOperation {
+            id: id.to_string(),
+            message: message.to_string(),
+            current: Some(current),
+            total: Some(total),
+        });
+    }
+}
+
+fn clear_active_stats_operation() {
+    if let Ok(mut guard) = ACTIVE_STATS_OPERATION.lock() {
+        *guard = None;
+    }
+}
+
 fn json_i64_array(value: &str) -> Vec<i64> {
     serde_json::from_str::<Vec<Value>>(value)
         .unwrap_or_default()
@@ -377,6 +446,7 @@ fn participant_augment_ids(participant: &Value) -> Vec<String> {
 fn read_statistics_facts(
     connection: &Connection,
     global: bool,
+    limit: Option<usize>,
 ) -> Result<Vec<StatisticFact>, String> {
     let table = if global {
         "aram_participants"
@@ -384,8 +454,12 @@ fn read_statistics_facts(
         "game_build_facts"
     };
     let games_table = if global { "aram_games" } else { "games" };
+    let order_and_limit = match limit {
+        Some(max_rows) => format!(" ORDER BY p.rowid DESC LIMIT {max_rows}"),
+        None => String::new(),
+    };
     let sql = format!(
-        "SELECT p.game_id, p.champion_id, p.win, p.item_ids_json, p.augment_ids_json, p.kills, p.deaths, p.assists, COALESCE(p.damage, 0), p.gold, COALESCE(g.game_duration, 0) FROM {table} p LEFT JOIN {games_table} g ON g.game_id = p.game_id"
+        "SELECT p.game_id, p.champion_id, p.win, p.item_ids_json, p.augment_ids_json, p.kills, p.deaths, p.assists, COALESCE(p.damage, 0), p.gold, COALESCE(g.game_duration, 0) FROM {table} p LEFT JOIN {games_table} g ON g.game_id = p.game_id{order_and_limit}"
     );
     let mut statement = connection
         .prepare(&sql)
@@ -667,8 +741,15 @@ fn load_statistics_projection(
         .optional()
         .map_err(|error| format!("failed reading statistics projection: {error}"))?;
     if let Some((sample_count, baseline, rows)) = row {
-        // Invalidate legacy combo projection that lacks structured components
-        if kind == "combo" && rows.iter().any(|r| r.get("components").is_none()) {
+        // Invalidate legacy combo projection that lacks structured components or contains boots/starters
+        if kind == "combo"
+            && rows.iter().any(|r| {
+                r.get("components").is_none()
+                    || r.get("id")
+                        .and_then(Value::as_str)
+                        .map_or(false, is_boot_combo_id)
+            })
+        {
             let _ = connection.execute(
                 "DELETE FROM statistics_projections WHERE kind = 'combo'",
                 [],
@@ -931,7 +1012,7 @@ fn build_statistics_response(
     let cache_key = cache_args.to_string();
     if let Ok(mut cache) = STATISTICS_QUERY_CACHE.lock() {
         if let Some((created_at, cached)) = cache.get(&cache_key) {
-            if created_at.elapsed() < Duration::from_secs(60) {
+            if created_at.elapsed() < Duration::from_secs(600) {
                 let cached_rows = cached
                     .get("rows")
                     .and_then(Value::as_array)
@@ -1192,16 +1273,28 @@ fn build_statistics_response(
             rows,
         ));
     }
+    let _active_op_guard = if kind == "combo" {
+        set_active_stats_operation(
+            "combo-mining",
+            "Mining combos: loading recent match facts",
+            1,
+            4,
+        );
+        Some(ActiveStatsOpGuard)
+    } else {
+        None
+    };
+    let fact_limit = if kind == "combo" { Some(25_000) } else { None };
     let mut facts = Vec::new();
     if scope == "personal" || scope == "both" {
         let connection = open_connection(database)
             .map_err(|error| format!("failed opening statistics database: {error}"))?;
-        facts.extend(read_statistics_facts(&connection, false)?);
+        facts.extend(read_statistics_facts(&connection, false, fact_limit)?);
     }
     if scope == "global" || scope == "both" {
         let connection = open_connection(global_database)
             .map_err(|error| format!("failed opening global statistics database: {error}"))?;
-        facts.extend(read_statistics_facts(&connection, true)?);
+        facts.extend(read_statistics_facts(&connection, true, fact_limit)?);
     }
 
     let sample_count = facts
@@ -1229,7 +1322,12 @@ fn build_statistics_response(
                     + fact
                         .item_ids
                         .iter()
-                        .filter(|id| !PORO_SNAX_IDS.contains(id) && **id > 0)
+                        .filter(|id| {
+                            !PORO_SNAX_IDS.contains(id)
+                                && **id > 0
+                                && !is_boot_item_id(**id)
+                                && !is_starter_item_id(**id)
+                        })
                         .count()
                     + fact
                         .augment_ids
@@ -1251,7 +1349,7 @@ fn build_statistics_response(
         0.0
     };
     let min_combo_games = if population_count > 500 {
-        3
+        ((population_count as f64 * 0.0015).ceil() as i64).clamp(5, 60)
     } else if population_count > 50 {
         2
     } else {
@@ -1259,7 +1357,13 @@ fn build_statistics_response(
     };
 
     // Apriori optimization: pre-calculate candidate frequent components and pairs
-    let (combo_frequent_pairs, combo_fact_components) = if kind == "combo" {
+    let (combo_frequent_pairs, frequent_core_pairs, combo_fact_components) = if kind == "combo" {
+        set_active_stats_operation(
+            "combo-mining",
+            "Mining combos: counting item & augment frequency",
+            2,
+            4,
+        );
         // Step 1: count individual components (champion, item, augment) across facts
         let mut comp_counts: HashMap<String, i64> = HashMap::new();
         for fact in &facts {
@@ -1269,7 +1373,11 @@ fn build_statistics_response(
                     .or_default() += 1;
             }
             for &id in &fact.item_ids {
-                if !PORO_SNAX_IDS.contains(&id) && id > 0 {
+                if !PORO_SNAX_IDS.contains(&id)
+                    && id > 0
+                    && !is_boot_item_id(id)
+                    && !is_starter_item_id(id)
+                {
                     *comp_counts.entry(format!("item:{id}")).or_default() += 1;
                 }
             }
@@ -1288,6 +1396,12 @@ fn build_statistics_response(
             .map(|(id, _)| id)
             .collect();
 
+        set_active_stats_operation(
+            "combo-mining",
+            "Mining combos: extracting frequent synergy pairs",
+            3,
+            4,
+        );
         // Step 2: filter fact components down to frequent items/augments
         let mut filtered_fact_comps = Vec::with_capacity(facts.len());
         let mut pair_counts: HashMap<(String, String), i64> = HashMap::new();
@@ -1302,7 +1416,12 @@ fn build_statistics_response(
             let mut items = fact
                 .item_ids
                 .iter()
-                .filter(|id| !PORO_SNAX_IDS.contains(id) && **id > 0)
+                .filter(|id| {
+                    !PORO_SNAX_IDS.contains(id)
+                        && **id > 0
+                        && !is_boot_item_id(**id)
+                        && !is_starter_item_id(**id)
+                })
                 .copied()
                 .collect::<Vec<_>>();
             items.sort_unstable();
@@ -1342,16 +1461,30 @@ fn build_statistics_response(
         }
 
         let frequent_pairs: HashSet<(String, String)> = pair_counts
+            .iter()
+            .filter(|(_, count)| **count >= min_combo_games)
+            .map(|(pair, _)| pair.clone())
+            .collect();
+
+        let frequent_core_pairs: HashSet<(String, String)> = pair_counts
             .into_iter()
-            .filter(|(_, count)| *count >= min_combo_games)
+            .filter(|(_, count)| *count >= (min_combo_games * 2).max(10))
             .map(|(pair, _)| pair)
             .collect();
 
-        (frequent_pairs, filtered_fact_comps)
+        (frequent_pairs, frequent_core_pairs, filtered_fact_comps)
     } else {
-        (HashSet::new(), Vec::new())
+        (HashSet::new(), HashSet::new(), Vec::new())
     };
 
+    if kind == "combo" {
+        set_active_stats_operation(
+            "combo-mining",
+            "Mining combos: aggregating win rates & WPA",
+            4,
+            4,
+        );
+    }
     let mut aggregates: HashMap<String, (String, Aggregate)> = HashMap::new();
     for (fact_idx, fact) in facts.iter().enumerate() {
         let keys = match kind {
@@ -1408,6 +1541,66 @@ fn build_statistics_response(
                         }
                     }
                 }
+                // Targeted k = 4 (2 augments + 2 items) & k = 5 (2 augments + 3 items) combinations
+                let aug_comps: Vec<&String> = components
+                    .iter()
+                    .filter(|c| c.starts_with("augment:"))
+                    .collect();
+                let item_comps: Vec<&String> = components
+                    .iter()
+                    .filter(|c| c.starts_with("item:"))
+                    .collect();
+
+                if aug_comps.len() >= 2 && item_comps.len() >= 2 {
+                    for a1_idx in 0..aug_comps.len() {
+                        for a2_idx in (a1_idx + 1)..aug_comps.len() {
+                            let a1 = aug_comps[a1_idx];
+                            let a2 = aug_comps[a2_idx];
+                            if !frequent_core_pairs.contains(&(a1.clone(), a2.clone())) {
+                                continue;
+                            }
+                            for i1_idx in 0..item_comps.len() {
+                                let i1 = item_comps[i1_idx];
+                                if !frequent_core_pairs.contains(&(a1.clone(), i1.clone()))
+                                    || !frequent_core_pairs.contains(&(a2.clone(), i1.clone()))
+                                {
+                                    continue;
+                                }
+                                for i2_idx in (i1_idx + 1)..item_comps.len() {
+                                    let i2 = item_comps[i2_idx];
+                                    if !frequent_core_pairs.contains(&(i1.clone(), i2.clone()))
+                                        || !frequent_core_pairs.contains(&(a1.clone(), i2.clone()))
+                                        || !frequent_core_pairs.contains(&(a2.clone(), i2.clone()))
+                                    {
+                                        continue;
+                                    }
+                                    let id4 = format!("combo:{}+{}+{}+{}", a1, a2, i1, i2);
+                                    let name4 = format!("{} + {} + {} + {}", a1, a2, i1, i2);
+                                    tuples.push((id4, name4));
+
+                                    for i3_idx in (i2_idx + 1)..item_comps.len() {
+                                        let i3 = item_comps[i3_idx];
+                                        if !frequent_core_pairs.contains(&(i1.clone(), i3.clone()))
+                                            || !frequent_core_pairs
+                                                .contains(&(i2.clone(), i3.clone()))
+                                            || !frequent_core_pairs
+                                                .contains(&(a1.clone(), i3.clone()))
+                                            || !frequent_core_pairs
+                                                .contains(&(a2.clone(), i3.clone()))
+                                        {
+                                            continue;
+                                        }
+                                        let id5 =
+                                            format!("combo:{}+{}+{}+{}+{}", a1, a2, i1, i2, i3);
+                                        let name5 =
+                                            format!("{} + {} + {} + {} + {}", a1, a2, i1, i2, i3);
+                                        tuples.push((id5, name5));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 tuples
             }
             _ => fact
@@ -1460,141 +1653,79 @@ fn build_statistics_response(
             }
         }
     }
-    let min_combo_games = if population_count > 500 {
-        3
-    } else if population_count > 50 {
-        2
-    } else {
-        1
-    };
-    let mut rows = aggregates
+    let unfiltered_rows = aggregates
         .into_iter()
         .filter_map(|(id, (name, aggregate))| {
             if kind == "combo" && aggregate.games < min_combo_games {
                 return None;
             }
-            let row = statistic_row(id, name, kind, &aggregate, baseline, population_count);
-            if search.is_empty()
-                || row
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_ascii_lowercase()
-                    .contains(&search)
-            {
-                Some(row)
-            } else {
-                None
-            }
-        })
-        .filter(|row| {
-            matches_pick_rate_filter(
+            Some(statistic_row(
+                id,
+                name,
                 kind,
-                row.get("pick_rate").and_then(Value::as_f64).unwrap_or(0.0),
-                hide_low_pickrate,
-            )
+                &aggregate,
+                baseline,
+                population_count,
+            ))
         })
         .collect::<Vec<_>>();
-    rows.sort_by(|left, right| {
-        let value = |row: &Value| match sort_key {
-            "games" => row.get("games").and_then(Value::as_f64).unwrap_or(0.0),
-            "pickRate" => row.get("pick_rate").and_then(Value::as_f64).unwrap_or(0.0),
-            "winRate" => row.get("win_rate").and_then(Value::as_f64).unwrap_or(0.0),
-            "kda" => {
-                let kills = row.get("kills").and_then(Value::as_f64).unwrap_or(0.0);
-                let assists = row.get("assists").and_then(Value::as_f64).unwrap_or(0.0);
-                let deaths = row.get("deaths").and_then(Value::as_f64).unwrap_or(0.0);
-                (kills + assists) / deaths.max(1.0)
-            }
-            "damagePerMinute" => row
-                .get("damage_per_minute")
-                .and_then(Value::as_f64)
-                .unwrap_or(0.0),
-            "champWpa" => row
-                .get("champions")
-                .and_then(Value::as_array)
-                .and_then(|champs| {
-                    champs
-                        .iter()
-                        .filter_map(|c| c.get("wpa").and_then(Value::as_f64))
-                        .fold(None, |acc: Option<f64>, v| {
-                            Some(acc.map_or(v, |m| m.max(v)))
-                        })
-                })
-                .unwrap_or(-999.0),
-            _ => row.get("wpa").and_then(Value::as_f64).unwrap_or(0.0),
-        };
-        let ordering = if sort_key == "name" {
-            let left_name = left.get("name").and_then(Value::as_str).unwrap_or("");
-            let right_name = right.get("name").and_then(Value::as_str).unwrap_or("");
-            left_name.cmp(right_name)
-        } else {
-            value(left)
-                .partial_cmp(&value(right))
+
+    let projection_rows = if kind == "combo" && unfiltered_rows.len() > 1000 {
+        // ponytail: cap projection to top 1000 combos; increase limit if memory allows
+        let mut top_rows = unfiltered_rows.clone();
+        top_rows.sort_by(|a, b| {
+            let wpa_b = b.get("wpa").and_then(Value::as_f64).unwrap_or(0.0);
+            let wpa_a = a.get("wpa").and_then(Value::as_f64).unwrap_or(0.0);
+            wpa_b
+                .partial_cmp(&wpa_a)
                 .unwrap_or(std::cmp::Ordering::Equal)
-        };
-        if descending {
-            ordering.reverse()
+        });
+        top_rows.truncate(1000);
+        top_rows.sort_by(|a, b| {
+            let name_a = a.get("name").and_then(Value::as_str).unwrap_or("");
+            let name_b = b.get("name").and_then(Value::as_str).unwrap_or("");
+            name_a.cmp(name_b)
+        });
+        top_rows
+    } else {
+        unfiltered_rows.clone()
+    };
+    store_statistics_projection(
+        if scope == "global" {
+            global_database
         } else {
-            ordering
+            database
+        },
+        kind,
+        sample_count,
+        baseline,
+        &projection_rows,
+    )?;
+
+    let mut response =
+        render_statistics_response(args, scope, kind, sample_count, baseline, unfiltered_rows);
+    if let Some(obj) = response.as_object_mut() {
+        obj.insert("cached".to_string(), Value::Bool(false));
+    }
+    if let Some(rows_arr) = response.get("rows").and_then(Value::as_array) {
+        if offset == 0 && rows_arr.len() < limit {
+            if let Ok(mut cache) = STATISTICS_QUERY_CACHE.lock() {
+                cache.insert(
+                    cache_key,
+                    (
+                        Instant::now(),
+                        json!({
+                            "sample_count": sample_count,
+                            "baseline": baseline,
+                            "rows": rows_arr
+                        }),
+                    ),
+                );
+            }
         }
-    });
-    if search.is_empty() && !hide_low_pickrate && sort_key == "name" {
-        let projection_rows = if kind == "combo" && rows.len() > 1000 {
-            // ponytail: cap projection to top 1000 combos; increase limit if memory allows
-            let mut top_rows = rows.clone();
-            top_rows.sort_by(|a, b| {
-                let wpa_b = b.get("wpa").and_then(Value::as_f64).unwrap_or(0.0);
-                let wpa_a = a.get("wpa").and_then(Value::as_f64).unwrap_or(0.0);
-                wpa_b
-                    .partial_cmp(&wpa_a)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-            top_rows.truncate(1000);
-            top_rows.sort_by(|a, b| {
-                let name_a = a.get("name").and_then(Value::as_str).unwrap_or("");
-                let name_b = b.get("name").and_then(Value::as_str).unwrap_or("");
-                name_a.cmp(name_b)
-            });
-            top_rows
-        } else {
-            rows.clone()
-        };
-        store_statistics_projection(
-            if scope == "global" {
-                global_database
-            } else {
-                database
-            },
-            kind,
-            sample_count,
-            baseline,
-            &projection_rows,
-        )?;
     }
-    let total = rows.len();
-    let cached_rows = rows.clone();
-    if let Ok(mut cache) = STATISTICS_QUERY_CACHE.lock() {
-        cache.insert(
-            cache_key,
-            (
-                Instant::now(),
-                json!({
-                    "sample_count": sample_count,
-                    "baseline": baseline,
-                    "rows": cached_rows
-                }),
-            ),
-        );
-    }
-    let rows = rows
-        .into_iter()
-        .skip(offset)
-        .take(limit)
-        .collect::<Vec<_>>();
-    Ok(
-        json!({ "scope": scope, "kind": kind, "sample_count": sample_count, "baseline": baseline, "total": total, "offset": offset, "limit": limit, "rows": rows, "cached": false }),
-    )
+
+    Ok(response)
 }
 
 fn compact_stored_projections(path: &PathBuf) -> Result<(), String> {
@@ -2449,6 +2580,30 @@ pub async fn handle_command(
                 }
             };
             let has_patch_mismatch = outdated_games > 0;
+            let mut ops: Vec<Value> = state
+                .operations
+                .iter()
+                .map(|operation| {
+                    json!({
+                        "id": operation.id,
+                        "message": operation.message,
+                        "current": operation.current,
+                        "total": operation.total
+                    })
+                })
+                .collect();
+            if let Ok(guard) = ACTIVE_STATS_OPERATION.lock() {
+                if let Some(ref op) = *guard {
+                    if !state.operations.iter().any(|o| o.id == op.id) {
+                        ops.push(json!({
+                            "id": op.id,
+                            "message": op.message,
+                            "current": op.current,
+                            "total": op.total
+                        }));
+                    }
+                }
+            }
             response_ok(json!({
                 "limit": limit,
                 "games": games,
@@ -2467,12 +2622,7 @@ pub async fn handle_command(
                 "crawler_mpm": state.crawler_mpm,
                 "crawler_paused": state.crawler_paused,
                 "crawler_eta_text": state.crawler_eta_text,
-                "operations": state.operations.iter().map(|operation| json!({
-                    "id": operation.id,
-                    "message": operation.message,
-                    "current": operation.current,
-                    "total": operation.total
-                })).collect::<Vec<_>>()
+                "operations": ops
             }))
         }
         "reset_global_aram" => {
@@ -2601,7 +2751,10 @@ pub async fn handle_command(
                         op.current = Some(count);
                         op.total = Some(count);
                     }
-                    logger::info("agent.crawler", &format!("Crawler stopped at {count} games"));
+                    logger::info(
+                        "agent.crawler",
+                        &format!("Crawler stopped at {count} games"),
+                    );
                     response_ok(json!({ "limit": count, "games": count }))
                 }
                 Ok(Err(error)) => response_error(error),
@@ -3230,23 +3383,9 @@ fn store_global_detail(
     tx.commit()
         .map_err(|error| format!("failed committing global ARAM game {game_id}: {error}"))?;
 
-    // Throttled projection invalidation: only invalidate projections at most once every 60 seconds
-    // during active batch crawling to prevent UI lockup and disk I/O thrashing.
-    static LAST_PROJECTION_INVALIDATION: std::sync::Mutex<Option<std::time::Instant>> =
-        std::sync::Mutex::new(None);
-    let should_invalidate = {
-        let mut last = LAST_PROJECTION_INVALIDATION.lock().unwrap();
-        match *last {
-            Some(instant) if instant.elapsed() < Duration::from_secs(60) => false,
-            _ => {
-                *last = Some(std::time::Instant::now());
-                true
-            }
-        }
-    };
-    if should_invalidate {
-        let _ = invalidate_statistics_projections(&connection);
-    }
+    // Persist crawled match detail to disk cache so it is never re-fetched
+    let _ = cache_game_detail(game_id, detail);
+
     Ok(true)
 }
 
@@ -3929,10 +4068,27 @@ async fn run_global_aram_worker(
                         tokio::time::sleep(Duration::from_secs(remaining_secs)).await;
                     }
                     CooldownOutcome::NoCooldown => {
-                        let _ = tokio::task::spawn_blocking(move || {
-                            mark_global_account(&mark_path, &mark_puuid, "failed")
-                        })
-                        .await;
+                        let err_msg = error.message.to_lowercase();
+                        let is_lcu_offline =
+                            crate::services::lcu_client::LcuClient::find_credentials().is_none()
+                                || err_msg.contains("connection closed")
+                                || err_msg.contains("connection refused")
+                                || err_msg.contains("connection reset")
+                                || err_msg.contains("timed out")
+                                || err_msg.contains("error trying to connect");
+
+                        if is_lcu_offline {
+                            let _ = tokio::task::spawn_blocking(move || {
+                                mark_global_account(&mark_path, &mark_puuid, "queued")
+                            })
+                            .await;
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                        } else {
+                            let _ = tokio::task::spawn_blocking(move || {
+                                mark_global_account(&mark_path, &mark_puuid, "failed")
+                            })
+                            .await;
+                        }
                     }
                 }
                 continue;
@@ -4021,8 +4177,10 @@ async fn run_global_aram_worker(
             }
         }
 
+        let mut account_completed = true;
         for &game_id in &games_to_fetch {
             if CRAWLER_GENERATION.load(std::sync::atomic::Ordering::SeqCst) != generation {
+                account_completed = false;
                 break;
             }
             // Check if the circuit breaker cooldown is active before starting each game request
@@ -4031,6 +4189,7 @@ async fn run_global_aram_worker(
                 cb.is_in_cooldown()
             };
             if let Some(dur) = wait_dur {
+                account_completed = false;
                 tokio::time::sleep(dur).await;
                 break;
             }
@@ -4038,6 +4197,7 @@ async fn run_global_aram_worker(
             if let Ok(count) = global_game_count(&path) {
                 if let Ok(limit) = global_game_limit(&path) {
                     if count >= limit {
+                        account_completed = false;
                         break;
                     }
                 }
@@ -4047,6 +4207,7 @@ async fn run_global_aram_worker(
             let (_, game_req_started_at) = games_limiter.lock().await.pace_next_tagged().await;
 
             if let Some(dur) = circuit_breaker.lock().await.is_in_cooldown() {
+                account_completed = false;
                 tokio::time::sleep(dur).await;
                 break;
             }
@@ -4061,6 +4222,7 @@ async fn run_global_aram_worker(
                         && is_game_detail_on_patch(&detail, active_patch.as_deref()) =>
                 {
                     if CRAWLER_GENERATION.load(std::sync::atomic::Ordering::SeqCst) != generation {
+                        account_completed = false;
                         break;
                     }
                     circuit_breaker.lock().await.record_success();
@@ -4105,6 +4267,7 @@ async fn run_global_aram_worker(
                                 &format!("Worker #{worker_id} stored game {game_id}; dataset is {count}/{live_limit}"),
                             );
                             if count >= live_limit {
+                                account_completed = false;
                                 break;
                             }
                         }
@@ -4230,14 +4393,31 @@ async fn run_global_aram_worker(
                                 state.collector_state =
                                     format!("global-aram:paused (backoff {mins}m)");
                             }
+                            account_completed = false;
                             tokio::time::sleep(Duration::from_secs(cooldown_secs)).await;
                             break;
                         }
                         CooldownOutcome::JoinedExisting { remaining_secs } => {
+                            account_completed = false;
                             tokio::time::sleep(Duration::from_secs(remaining_secs)).await;
                             break;
                         }
-                        CooldownOutcome::NoCooldown => {}
+                        CooldownOutcome::NoCooldown => {
+                            let err_msg = error.message.to_lowercase();
+                            let is_lcu_offline =
+                                crate::services::lcu_client::LcuClient::find_credentials()
+                                    .is_none()
+                                    || err_msg.contains("connection closed")
+                                    || err_msg.contains("connection refused")
+                                    || err_msg.contains("connection reset")
+                                    || err_msg.contains("timed out")
+                                    || err_msg.contains("error trying to connect");
+                            if is_lcu_offline {
+                                account_completed = false;
+                                tokio::time::sleep(Duration::from_secs(5)).await;
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -4251,12 +4431,17 @@ async fn run_global_aram_worker(
         }
 
         if CRAWLER_GENERATION.load(std::sync::atomic::Ordering::SeqCst) != generation {
-            break;
+            account_completed = false;
         }
         let mark_path = path.clone();
         let mark_puuid = account_puuid.clone();
+        let final_status = if account_completed {
+            "complete"
+        } else {
+            "queued"
+        };
         let _ = tokio::task::spawn_blocking(move || {
-            mark_global_account(&mark_path, &mark_puuid, "complete")
+            mark_global_account(&mark_path, &mark_puuid, final_status)
         })
         .await;
     }
@@ -4416,7 +4601,7 @@ async fn refresh_statistics_projections(
                 id: "personal-statistics".to_string(),
                 message: "Updating personal statistics".to_string(),
                 current: Some(0),
-                total: Some(4),
+                total: Some(3),
             },
             ProgressOperation {
                 id: "global-statistics".to_string(),
@@ -4428,10 +4613,30 @@ async fn refresh_statistics_projections(
     }
 
     for (scope, source_path) in [("personal", database), ("global", global_database)] {
-        for (index, kind) in ["champion", "item", "augment", "combo"].iter().enumerate() {
-            if scope == "personal" && *kind == "combo" {
-                continue;
+        let kinds: &[&str] = if scope == "personal" {
+            &["champion", "item", "augment"]
+        } else {
+            &["champion", "item", "augment", "combo"]
+        };
+        let total = kinds.len();
+        for (index, kind) in kinds.iter().enumerate() {
+            let label = match *kind {
+                "combo" => format!("Mining {scope} synergy combos"),
+                _ => format!("Computing {scope} {kind} statistics"),
+            };
+            {
+                let mut state = runtime.write().await;
+                if let Some(operation) = state
+                    .operations
+                    .iter_mut()
+                    .find(|operation| operation.id == format!("{scope}-statistics"))
+                {
+                    operation.current = Some(index + 1);
+                    operation.total = Some(total);
+                    operation.message = format!("{label} ({}/{})", index + 1, total);
+                }
             }
+
             let args = json!({
                 "scope": scope,
                 "kind": kind,
@@ -4458,15 +4663,6 @@ async fn refresh_statistics_projections(
                     "agent.statistics",
                     &format!("Projection worker failed for {scope}/{kind}: {error}"),
                 ),
-            }
-            let mut state = runtime.write().await;
-            if let Some(operation) = state
-                .operations
-                .iter_mut()
-                .find(|operation| operation.id == format!("{scope}-statistics"))
-            {
-                operation.current = Some(index + 1);
-                operation.message = format!("Updating {scope} {} statistics", kind);
             }
         }
     }
@@ -4589,6 +4785,30 @@ async fn cache_page_details(
         if shared_detail_cache_path(game_id).exists() {
             skipped += 1;
             continue;
+        }
+        let global_path = global_aram_database_path();
+        if global_path.exists() {
+            let db_path = global_path.clone();
+            let cached_from_db = tokio::task::spawn_blocking(move || -> Option<Value> {
+                let conn = open_connection(&db_path).ok()?;
+                let detail_str: String = conn
+                    .query_row(
+                        "SELECT detail_json FROM aram_games WHERE game_id = ?1 LIMIT 1",
+                        rusqlite::params![game_id],
+                        |row| row.get(0),
+                    )
+                    .ok()?;
+                serde_json::from_str::<Value>(&detail_str).ok()
+            })
+            .await
+            .ok()
+            .flatten();
+
+            if let Some(detail) = cached_from_db {
+                let _ = cache_game_detail(game_id, &detail);
+                skipped += 1;
+                continue;
+            }
         }
         let route = format!("/lol-match-history/v1/games/{game_id}");
         {
@@ -4722,7 +4942,10 @@ async fn backfill_match_history(
 }
 
 pub async fn collector_loop(path: PathBuf, runtime: Arc<RwLock<RuntimeState>>) {
+    let mut was_connected = false;
     let mut last_reconciled_puuid: Option<String> = None;
+    let mut last_reconciliation_time = Instant::now() - Duration::from_secs(120);
+    let mut last_summoner_check = Instant::now() - Duration::from_secs(120);
     {
         let (initial_patch, patch_changed) =
             crate::services::patch_manager::ensure_patch_freshness(None).await;
@@ -4746,6 +4969,7 @@ pub async fn collector_loop(path: PathBuf, runtime: Arc<RwLock<RuntimeState>>) {
     loop {
         let credentials = crate::services::lcu_client::LcuClient::find_credentials();
         let Some(credentials) = credentials else {
+            was_connected = false;
             let mut state = runtime.write().await;
             state.collector_state = "sleeping".to_string();
             state.league_client_connected = false;
@@ -4754,9 +4978,20 @@ pub async fn collector_loop(path: PathBuf, runtime: Arc<RwLock<RuntimeState>>) {
             continue;
         };
 
+        if !was_connected {
+            was_connected = true;
+            let global_path = global_aram_database_path();
+            let _ = tokio::task::spawn_blocking(move || {
+                let _ = reset_fetching_global_accounts(&global_path);
+            })
+            .await;
+            last_reconciliation_time = Instant::now() - Duration::from_secs(120);
+        }
+
         let client = match crate::services::lcu_client::LcuClient::new(credentials) {
             Ok(client) => client,
             Err(error) => {
+                was_connected = false;
                 logger::error(
                     "agent.collector",
                     &format!("Failed creating LCU client: {error}"),
@@ -4797,16 +5032,23 @@ pub async fn collector_loop(path: PathBuf, runtime: Arc<RwLock<RuntimeState>>) {
             }
         }
 
-        let puuid = client
-            .get_json::<Value>("/lol-summoner/v1/current-summoner")
-            .await
-            .ok()
-            .and_then(|summoner| {
-                summoner
-                    .get("puuid")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            });
+        let puuid = if last_reconciled_puuid.is_some()
+            && last_summoner_check.elapsed() < Duration::from_secs(30)
+        {
+            last_reconciled_puuid.clone()
+        } else {
+            last_summoner_check = Instant::now();
+            client
+                .get_json::<Value>("/lol-summoner/v1/current-summoner")
+                .await
+                .ok()
+                .and_then(|summoner| {
+                    summoner
+                        .get("puuid")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+        };
         // Version this cursor so accounts scanned with the old current-summoner
         // route are re-scanned through the PUUID history endpoint.
         let backfill_key = "match_history_backfill_v2_puuid";
@@ -4818,9 +5060,10 @@ pub async fn collector_loop(path: PathBuf, runtime: Arc<RwLock<RuntimeState>>) {
 
         // Track whether summoner identity changed or event was queued
         let puuid_changed = puuid.is_some() && puuid != last_reconciled_puuid;
+        let cooldown_passed = last_reconciliation_time.elapsed() >= Duration::from_secs(45);
         let needs_reconciliation = {
             let mut state = runtime.write().await;
-            if state.collector_state == "event_pending" || puuid_changed {
+            if (state.collector_state == "event_pending" && cooldown_passed) || puuid_changed {
                 state.collector_state = "collecting".to_string();
                 true
             } else {
@@ -4830,6 +5073,7 @@ pub async fn collector_loop(path: PathBuf, runtime: Arc<RwLock<RuntimeState>>) {
 
         let mut new_personal_games_found = false;
         if !backfill_complete {
+            last_reconciliation_time = Instant::now();
             logger::info(
                 "agent.collector",
                 &format!(
@@ -4862,6 +5106,7 @@ pub async fn collector_loop(path: PathBuf, runtime: Arc<RwLock<RuntimeState>>) {
                 ),
             }
         } else if needs_reconciliation {
+            last_reconciliation_time = Instant::now();
             let route = if let Some(puuid) = puuid.as_deref() {
                 format!("/lol-match-history/v1/products/lol/{puuid}/matches?begIndex=0&endIndex=19")
             } else {
@@ -5055,7 +5300,7 @@ pub async fn websocket_loop(runtime: Arc<RwLock<RuntimeState>>) {
                         state.collector_state = "live".to_string();
                         COLLECTOR_WAKEUP.notify_one();
                     }
-                } else if uri.contains("match-history") || uri == "/lol-login/v1/session" {
+                } else if uri == "/lol-login/v1/session" {
                     let mut state = runtime.write().await;
                     state.collector_state = "event_pending".to_string();
                     COLLECTOR_WAKEUP.notify_one();

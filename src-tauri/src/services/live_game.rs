@@ -95,8 +95,14 @@ pub async fn fetch_live_game_state() -> Result<LiveGameState, String> {
     let stats_val = active_player.and_then(|p| p.get("championStats"));
     let stats = if let Some(s) = stats_val {
         LivePlayerStats {
-            ability_power: s.get("abilityPower").and_then(|v| v.as_f64()).unwrap_or(0.0),
-            attack_damage: s.get("attackDamage").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            ability_power: s
+                .get("abilityPower")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0),
+            attack_damage: s
+                .get("attackDamage")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0),
             attack_speed: s.get("attackSpeed").and_then(|v| v.as_f64()).unwrap_or(0.0),
             attack_range: s.get("attackRange").and_then(|v| v.as_f64()).unwrap_or(0.0),
             crit_chance: s.get("critChance").and_then(|v| v.as_f64()).unwrap_or(0.0),
@@ -119,7 +125,10 @@ pub async fn fetch_live_game_state() -> Result<LiveGameState, String> {
 
     if let Some(all_players) = data.get("allPlayers").and_then(|v| v.as_array()) {
         for player in all_players {
-            let p_sum = player.get("summonerName").and_then(|v| v.as_str()).unwrap_or("");
+            let p_sum = player
+                .get("summonerName")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let p_riot = player.get("riotId").and_then(|v| v.as_str()).unwrap_or("");
             let matched = (!summoner_name.is_empty() && p_sum == summoner_name)
                 || (!riot_id.is_empty() && p_riot == riot_id)
@@ -195,4 +204,3 @@ pub fn start_live_game_polling(app: AppHandle) {
         }
     });
 }
-

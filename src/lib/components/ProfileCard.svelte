@@ -2,17 +2,26 @@
   import { onDestroy, onMount } from "svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { getChallengeTierProfile, getSummonerProfile } from "../api/profile";
+  import { isLcuConnected } from "../api/champ_select";
   import type { ChallengeTierProfile, SummonerProfile } from "../types/profile";
   import { logger } from "../utils/logger";
 
   let profile = $state<SummonerProfile | null>(null);
   let challengeTier = $state<ChallengeTierProfile | null>(null);
+  let isOffline = $state(false);
 
   let unlistenSummoner: UnlistenFn | null = null;
   let unlistenConnected: UnlistenFn | null = null;
   let unlistenDisconnected: UnlistenFn | null = null;
 
   export async function refreshProfile() {
+    try {
+      const connected = await isLcuConnected();
+      isOffline = !connected;
+    } catch {
+      isOffline = true;
+    }
+
     try {
       const [p, c] = await Promise.allSettled([
         getSummonerProfile(),
@@ -21,18 +30,17 @@
 
       if (p.status === "fulfilled") {
         profile = p.value;
-      } else {
+      } else if (!profile) {
         profile = null;
       }
 
-      if (c.status === "fulfilled" && p.status === "fulfilled") {
+      if (c.status === "fulfilled") {
         challengeTier = c.value;
-      } else {
+      } else if (!challengeTier) {
         challengeTier = null;
       }
     } catch {
-      profile = null;
-      challengeTier = null;
+      // Keep existing profile / challengeTier if already set
     }
   }
 
@@ -44,11 +52,11 @@
         refreshProfile();
       });
       unlistenConnected = await listen("lcu:connected", () => {
+        isOffline = false;
         refreshProfile();
       });
       unlistenDisconnected = await listen("lcu:disconnected", () => {
-        profile = null;
-        challengeTier = null;
+        isOffline = true;
       });
     } catch (err) {
       logger.error("frontend.profile", "Failed to attach Tauri event listeners", err);
@@ -90,9 +98,18 @@
 
     {#if profile}
       <!-- Username -->
-      <p class="truncate text-xs font-bold text-white leading-tight">
-        {profile.riot_id || profile.display_name}
-      </p>
+      <div class="flex items-center gap-1.5 overflow-hidden">
+        <p class="truncate text-xs font-bold text-white leading-tight">
+          {profile.riot_id || profile.display_name}
+        </p>
+        {#if isOffline}
+          <span
+            class="shrink-0 rounded bg-amber-500/15 px-1 py-0.5 text-[9px] font-medium text-amber-400 border border-amber-500/30 leading-none"
+          >
+            Offline
+          </span>
+        {/if}
+      </div>
       <!-- Sub-info: Challenge Tier badge + Level -->
       <div class="mt-0.5 flex items-center gap-1.5 overflow-hidden whitespace-nowrap">
         {#if challengeTier?.challenge_tier_asset_url}

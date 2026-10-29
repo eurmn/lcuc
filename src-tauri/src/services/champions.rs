@@ -51,15 +51,43 @@ pub async fn ensure_champions_cache() -> Result<(), String> {
         }
     }
 
+    let cache_file = crate::services::asset_cache::get_cache_dir().join("champion-summary.json");
     let client = reqwest::Client::new();
-    let resp: Vec<CDragonChampionItem> = client
-        .get(CHAMPION_SUMMARY_URL)
-        .send()
-        .await
-        .map_err(|e| format!("Failed fetching champion-summary.json: {}", e))?
-        .json()
-        .await
-        .map_err(|e| format!("Failed parsing champion-summary.json: {}", e))?;
+    let fetch_res = client.get(CHAMPION_SUMMARY_URL).send().await;
+
+    let mut parsed_items: Option<Vec<CDragonChampionItem>> = None;
+    if let Ok(res) = fetch_res {
+        if res.status().is_success() {
+            if let Ok(body) = res.text().await {
+                if let Ok(items) = serde_json::from_str::<Vec<CDragonChampionItem>>(&body) {
+                    if let Some(parent) = cache_file.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    if let Err(e) = std::fs::write(&cache_file, &body) {
+                        eprintln!("Failed caching champion-summary.json: {e}");
+                    }
+                    parsed_items = Some(items);
+                }
+            }
+        }
+    }
+
+    let resp: Vec<CDragonChampionItem> = match parsed_items {
+        Some(items) => items,
+        None => {
+            if cache_file.exists() {
+                let body = std::fs::read_to_string(&cache_file)
+                    .map_err(|e| format!("Failed reading disk champion-summary.json: {e}"))?;
+                serde_json::from_str(&body)
+                    .map_err(|e| format!("Failed parsing disk champion-summary.json: {e}"))?
+            } else {
+                return Err(
+                    "Failed fetching valid champion-summary.json and no disk cache available"
+                        .to_string(),
+                );
+            }
+        }
+    };
 
     let mut cache = CHAMPIONS_CACHE.write().await;
     for item in resp {

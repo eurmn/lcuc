@@ -6,19 +6,58 @@
 //! All remote CommunityDragon assets are cached in-disk and served as client-ready local assets.
 
 use crate::models::{ChallengeTierProfile, SummonerProfile};
-use crate::services::asset_cache::get_cached_asset_data_uri;
+use crate::services::asset_cache::{get_cache_dir, get_cached_asset_data_uri};
 use crate::services::lcu_client::LcuClient;
 use serde_json::Value;
+use std::fs;
+use std::path::PathBuf;
 
 const CDRAGON_BASE: &str =
     "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default";
 const CHALLENGE_TOKEN_BASE: &str =
     "https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-static-assets/global/default/challenges-shared";
 
-/// Queries the local League client for the current summoner profile, icon, and regalia borders.
-///
-/// Assets are fetched server-side from CommunityDragon and cached in-disk.
-pub async fn get_current_summoner_profile() -> Result<SummonerProfile, String> {
+fn profile_cache_path() -> PathBuf {
+    get_cache_dir().join("last_profile.json")
+}
+
+fn read_cached_profile() -> Option<SummonerProfile> {
+    let path = profile_cache_path();
+    let bytes = fs::read(path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn write_cached_profile(profile: &SummonerProfile) {
+    let path = profile_cache_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(bytes) = serde_json::to_vec_pretty(profile) {
+        let _ = fs::write(path, bytes);
+    }
+}
+
+fn challenge_tier_cache_path() -> PathBuf {
+    get_cache_dir().join("last_challenge_tier.json")
+}
+
+fn read_cached_challenge_tier() -> Option<ChallengeTierProfile> {
+    let path = challenge_tier_cache_path();
+    let bytes = fs::read(path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn write_cached_challenge_tier(profile: &ChallengeTierProfile) {
+    let path = challenge_tier_cache_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(bytes) = serde_json::to_vec_pretty(profile) {
+        let _ = fs::write(path, bytes);
+    }
+}
+
+async fn fetch_live_summoner_profile() -> Result<SummonerProfile, String> {
     let client = LcuClient::connect()?;
 
     let summoner: Value = client.get_json("/lol-summoner/v1/current-summoner").await?;
@@ -109,37 +148,95 @@ pub async fn get_current_summoner_profile() -> Result<SummonerProfile, String> {
     })
 }
 
+/// Queries the local League client for the current summoner profile, icon, and regalia borders.
+///
+/// Falls back to offline disk cache (`last_profile.json`) when LCU is offline or unavailable.
+pub async fn get_current_summoner_profile() -> Result<SummonerProfile, String> {
+    if LcuClient::find_credentials().is_none() {
+        if let Some(cached) = read_cached_profile() {
+            return Ok(cached);
+        }
+        return Err("League Client is not running. Please launch League of Legends.".to_string());
+    }
+
+    match fetch_live_summoner_profile().await {
+        Ok(profile) => {
+            write_cached_profile(&profile);
+            Ok(profile)
+        }
+        Err(err) => {
+            if let Some(cached) = read_cached_profile() {
+                Ok(cached)
+            } else {
+                Err(err)
+            }
+        }
+    }
+}
+
+async fn fallback_challenge_tier() -> ChallengeTierProfile {
+    let remote_url = format!("{}/icon-token-unranked.png", CHALLENGE_TOKEN_BASE);
+    let challenge_tier_asset_url = get_cached_asset_data_uri(&remote_url).await;
+    ChallengeTierProfile {
+        challenge_tier: None,
+        challenge_tier_asset_url,
+    }
+}
+
 /// Queries the local League client for the player's overall challenge level and resolves the challenge token icon.
 ///
-/// Uses the requested CDragon path:
-/// `https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-static-assets/global/default/challenges-shared/icon-token-(rank).png`
+/// Falls back to offline disk cache (`last_challenge_tier.json`) when LCU is offline or request fails.
 pub async fn get_current_challenge_tier_profile() -> ChallengeTierProfile {
-    let challenge_tier = match LcuClient::connect() {
-        Ok(client) => match client
-            .get_json::<Value>("/lol-challenges/v1/summary-player-data/local-player")
-            .await
-        {
-            Ok(summary) => summary
-                .get("overallChallengeLevel")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-            Err(_) => None,
-        },
-        Err(_) => None,
+    if LcuClient::find_credentials().is_none() {
+        if let Some(cached) = read_cached_challenge_tier() {
+            return cached;
+        }
+        return fallback_challenge_tier().await;
+    }
+
+    let client = match LcuClient::connect() {
+        Ok(c) => c,
+        Err(_) => {
+            if let Some(cached) = read_cached_challenge_tier() {
+                return cached;
+            }
+            return fallback_challenge_tier().await;
+        }
     };
 
-    let rank_name = challenge_tier
-        .as_deref()
-        .map(|s| s.to_lowercase())
-        .filter(|s| !s.is_empty() && s != "none")
-        .unwrap_or_else(|| "unranked".to_string());
+    match client
+        .get_json::<Value>("/lol-challenges/v1/summary-player-data/local-player")
+        .await
+    {
+        Ok(summary) => {
+            let challenge_tier = summary
+                .get("overallChallengeLevel")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
 
-    let remote_url = format!("{}/icon-token-{}.png", CHALLENGE_TOKEN_BASE, rank_name);
-    let challenge_tier_asset_url = get_cached_asset_data_uri(&remote_url).await;
+            let rank_name = challenge_tier
+                .as_deref()
+                .map(|s| s.to_lowercase())
+                .filter(|s| !s.is_empty() && s != "none")
+                .unwrap_or_else(|| "unranked".to_string());
 
-    ChallengeTierProfile {
-        challenge_tier,
-        challenge_tier_asset_url,
+            let remote_url = format!("{}/icon-token-{}.png", CHALLENGE_TOKEN_BASE, rank_name);
+            let challenge_tier_asset_url = get_cached_asset_data_uri(&remote_url).await;
+
+            let challenge_profile = ChallengeTierProfile {
+                challenge_tier,
+                challenge_tier_asset_url,
+            };
+            write_cached_challenge_tier(&challenge_profile);
+            challenge_profile
+        }
+        Err(_) => {
+            if let Some(cached) = read_cached_challenge_tier() {
+                cached
+            } else {
+                fallback_challenge_tier().await
+            }
+        }
     }
 }
 

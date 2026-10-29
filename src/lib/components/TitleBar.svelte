@@ -157,37 +157,56 @@
 
   <!-- Right: Background Operations, Logs, Settings, Window Controls -->
   <div class="flex items-center h-full">
-    <!-- Active Operations Indicator (Transparent with Pulsing Dot) -->
+    <!-- Active Operations Indicator Pill -->
     {#if agentOperations.length > 0}
-      <div class="relative group h-full flex items-center">
+      {@const primaryOp = agentOperations[0]}
+      <div class="relative group h-full flex items-center mr-1">
         <button
           type="button"
-          class="h-full px-2.5 text-cyan-400 hover:text-cyan-200 hover:bg-gray-800/80 transition-colors flex items-center justify-center cursor-pointer"
+          class="h-7 px-2.5 rounded-full bg-cyan-950/70 border border-cyan-700/50 hover:border-cyan-500 text-cyan-200 hover:text-cyan-100 transition-all flex items-center gap-2 cursor-pointer shadow-sm"
           title={agentOperations.map((o) => `${o.message}${o.current !== null && o.total !== null ? ` (${o.current}/${o.total})` : ''}`).join('\n')}
           aria-label="Active background operations"
         >
-          <span class="relative flex h-2.5 w-2.5">
+          <span class="relative flex h-2 w-2 shrink-0">
             <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-cyan-400 opacity-75"></span>
-            <span class="relative inline-flex h-2.5 w-2.5 rounded-full bg-cyan-500"></span>
+            <span class="relative inline-flex h-2 w-2 rounded-full bg-cyan-400"></span>
           </span>
+          <span class="text-[11px] font-medium tracking-tight max-w-[180px] sm:max-w-[240px] truncate">
+            {primaryOp.message}
+          </span>
+          {#if primaryOp.current !== null && primaryOp.total !== null}
+            <span class="text-[10px] font-semibold text-cyan-400 tabular-nums shrink-0 bg-cyan-900/60 px-1.5 py-0.5 rounded">
+              {primaryOp.current}/{primaryOp.total}
+            </span>
+          {/if}
+          {#if agentOperations.length > 1}
+            <span class="text-[10px] font-bold text-cyan-300 shrink-0 bg-cyan-900/80 px-1 py-0.5 rounded">
+              +{agentOperations.length - 1}
+            </span>
+          {/if}
         </button>
 
         <!-- Dropdown on hover -->
-        <div class="pointer-events-none absolute right-0 top-10 z-50 hidden w-64 rounded-lg border border-cyan-800/80 bg-gray-950/95 p-2.5 text-[11px] text-cyan-100 shadow-2xl backdrop-blur group-hover:block">
-          <div class="font-semibold text-cyan-300 mb-1 flex items-center justify-between">
-            <span>Active Operations</span>
-            <span class="text-[10px] text-cyan-400">{agentOperations.length}</span>
+        <div class="pointer-events-none absolute right-0 top-9 z-50 hidden w-72 rounded-lg border border-cyan-800/80 bg-gray-950/95 p-2.5 text-[11px] text-cyan-100 shadow-2xl backdrop-blur group-hover:block">
+          <div class="font-semibold text-cyan-300 mb-1.5 flex items-center justify-between">
+            <span class="flex items-center gap-1.5">
+              <span class="icon-[heroicons--cpu-chip] h-3.5 w-3.5 text-cyan-400"></span>
+              <span>Active Background Operations</span>
+            </span>
+            <span class="text-[10px] px-1.5 py-0.5 rounded bg-cyan-950 border border-cyan-800 text-cyan-400 tabular-nums font-mono">
+              {agentOperations.length}
+            </span>
           </div>
           {#each agentOperations as operation (operation.id)}
-            <div class="py-1 border-t border-gray-800">
+            <div class="py-1.5 border-t border-gray-800">
               <div class="flex items-center justify-between gap-2">
-                <span class="truncate">{operation.message}</span>
+                <span class="truncate font-medium text-gray-200">{operation.message}</span>
                 {#if operation.current !== null && operation.total !== null}
-                  <span class="tabular-nums text-cyan-300 shrink-0">{operation.current}/{operation.total}</span>
+                  <span class="tabular-nums font-mono text-cyan-300 shrink-0">{operation.current}/{operation.total}</span>
                 {/if}
               </div>
               {#if operation.current !== null && operation.total !== null && operation.total > 0}
-                <div class="mt-1 h-1 overflow-hidden rounded-full bg-cyan-950">
+                <div class="mt-1.5 h-1 overflow-hidden rounded-full bg-cyan-950 border border-cyan-900/40">
                   <div
                     class="h-full rounded-full bg-cyan-400 transition-[width] duration-200"
                     style={`width: ${Math.min(100, Math.round((operation.current / operation.total) * 100))}%`}
