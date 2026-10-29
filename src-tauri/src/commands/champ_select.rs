@@ -400,6 +400,7 @@ pub async fn api_scan_live_augment_cards(
     )
     .await?;
 
+    crate::services::live_overlay::update_overlay_cards(&cards);
     let _ = app.emit("overlay:cards-updated", &cards);
     Ok(cards)
 }
@@ -407,10 +408,12 @@ pub async fn api_scan_live_augment_cards(
 #[tauri::command]
 pub fn api_emit_overlay_state(
     app: tauri::AppHandle,
-    payload: serde_json::Value,
+    payload: Option<serde_json::Value>,
+    state: Option<serde_json::Value>,
 ) -> Result<(), String> {
     use tauri::Emitter;
-    crate::services::live_overlay::update_overlay_ui_state(&payload);
-    app.emit("overlay:state-sync", &payload)
+    let val = payload.or(state).unwrap_or(serde_json::Value::Null);
+    crate::services::live_overlay::notify_overlay_state_from_frontend(&val);
+    app.emit("overlay:state-sync", &val)
         .map_err(|e| e.to_string())
 }

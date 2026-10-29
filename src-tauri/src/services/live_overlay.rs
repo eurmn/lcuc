@@ -1,11 +1,19 @@
 use crate::models::history::{MayhemAugmentItem, MayhemAugmentsQuery, OverlayAugmentCard};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 pub static OVERLAY_ENABLED: AtomicBool = AtomicBool::new(false);
 pub static OVERLAY_HAS_CARDS: AtomicBool = AtomicBool::new(false);
+pub static OVERLAY_SCANNING: AtomicBool = AtomicBool::new(false);
 static F8_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static F7_WAS_DOWN: AtomicBool = AtomicBool::new(false);
+
+lazy_static::lazy_static! {
+    static ref OVERLAY_CHAMPION_NAME: Mutex<String> = Mutex::new(String::new());
+    static ref OVERLAY_STRATEGY_LABEL: Mutex<String> = Mutex::new(String::new());
+    static ref OVERLAY_OFFERED_CARDS: Mutex<Vec<OverlayAugmentCard>> = Mutex::new(Vec::new());
+}
 
 pub fn poll_overlay_hotkeys() -> (bool, bool) {
     #[cfg(windows)]
@@ -27,6 +35,89 @@ pub fn poll_overlay_hotkeys() -> (bool, bool) {
 
 pub fn is_overlay_enabled() -> bool {
     OVERLAY_ENABLED.load(Ordering::Relaxed)
+}
+
+pub fn set_overlay_scanning(scanning: bool) {
+    OVERLAY_SCANNING.store(scanning, Ordering::Relaxed);
+    refresh_native_overlay();
+}
+
+pub fn update_overlay_cards(cards: &[OverlayAugmentCard]) {
+    if let Ok(mut lock) = OVERLAY_OFFERED_CARDS.lock() {
+        *lock = cards.to_vec();
+    }
+    OVERLAY_HAS_CARDS.store(!cards.is_empty(), Ordering::Relaxed);
+    refresh_native_overlay();
+}
+
+pub fn clear_overlay_cards() {
+    update_overlay_cards(&[]);
+}
+
+pub fn set_overlay_champion_and_strategy(champ: &str, strat: &str) {
+    let mut changed = false;
+    if let Ok(mut c) = OVERLAY_CHAMPION_NAME.lock() {
+        if *c != champ {
+            *c = champ.to_string();
+            changed = true;
+        }
+    }
+    if let Ok(mut s) = OVERLAY_STRATEGY_LABEL.lock() {
+        if *s != strat {
+            *s = strat.to_string();
+            changed = true;
+        }
+    }
+    if changed {
+        refresh_native_overlay();
+    }
+}
+
+pub fn refresh_native_overlay() {
+    if !is_overlay_enabled() {
+        return;
+    }
+    let champ = OVERLAY_CHAMPION_NAME.lock().map(|g| g.clone()).unwrap_or_default();
+    let strat = OVERLAY_STRATEGY_LABEL.lock().map(|g| g.clone()).unwrap_or_default();
+    let cards = OVERLAY_OFFERED_CARDS.lock().map(|g| g.clone()).unwrap_or_default();
+    let scanning = OVERLAY_SCANNING.load(Ordering::Relaxed);
+
+    let payload = crate::services::native_overlay::OverlayRenderPayload {
+        visible: true,
+        scanning,
+        champion_name: champ,
+        strategy_label: strat,
+        cards,
+        sprites: Vec::new(),
+    };
+    let _ = crate::services::native_overlay::update_native_overlay_state(payload);
+}
+
+pub fn notify_overlay_state_from_frontend(payload: &serde_json::Value) {
+    if let Some(champ) = payload.get("championName").and_then(|v| v.as_str()) {
+        if let Ok(mut c) = OVERLAY_CHAMPION_NAME.lock() {
+            *c = champ.to_string();
+        }
+    }
+    if let Some(strat) = payload
+        .get("strategyName")
+        .or_else(|| payload.get("strategyId"))
+        .and_then(|v| v.as_str())
+    {
+        if let Ok(mut s) = OVERLAY_STRATEGY_LABEL.lock() {
+            *s = strat.to_string();
+        }
+    }
+    if let Some(cards_val) = payload.get("offeredAugments") {
+        if let Ok(cards) = serde_json::from_value::<Vec<OverlayAugmentCard>>(cards_val.clone()) {
+            update_overlay_cards(&cards);
+            return;
+        }
+    }
+    if let Some(b) = payload.get("hasCards").and_then(|v| v.as_bool()) {
+        OVERLAY_HAS_CARDS.store(b, Ordering::Relaxed);
+    }
+    refresh_native_overlay();
 }
 
 pub fn get_league_window_rect() -> Option<GameWindowRect> {
@@ -146,187 +237,60 @@ pub fn get_league_game_window_rect() -> GameWindowRect {
     }
 }
 
-#[inline]
-fn overlay_safe_height(h: i32) -> i32 {
-    (h - 1).max(1)
-}
+pub fn apply_overlay_win32_styles(_window: &tauri::WebviewWindow, _interactive: bool) {}
 
-#[cfg(windows)]
-pub fn apply_overlay_win32_styles(window: &tauri::WebviewWindow, _interactive: bool) {
-    let _ = window.set_ignore_cursor_events(true);
-
-    if let Ok(hwnd_val) = window.hwnd() {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_APPWINDOW, WS_EX_LAYERED,
-            WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
-        };
-
-        let hwnd = hwnd_val.0 as windows_sys::Win32::Foundation::HWND;
-        unsafe {
-            let cur = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
-            let target = (cur
-                | WS_EX_LAYERED
-                | WS_EX_TRANSPARENT
-                | WS_EX_TOPMOST
-                | WS_EX_TOOLWINDOW
-                | WS_EX_NOACTIVATE)
-                & !WS_EX_APPWINDOW;
-
-            if cur != target {
-                SetWindowLongPtrW(hwnd, GWL_EXSTYLE, target as isize);
-            }
-        }
-    }
-}
-
-#[cfg(not(windows))]
-pub fn apply_overlay_win32_styles(window: &tauri::WebviewWindow, _interactive: bool) {
-    let _ = window.set_ignore_cursor_events(true);
-}
-
-pub fn show_overlay_banner_rect(app: &tauri::AppHandle, game_rect: &GameWindowRect) {
-    use tauri::Manager;
-    let Some(window) = app.get_webview_window("overlay") else {
+pub fn show_overlay_banner_rect(_app: &tauri::AppHandle, game_rect: &GameWindowRect) {
+    if !game_rect.found || !game_rect.is_foreground {
+        crate::services::native_overlay::hide_native_overlay();
         return;
-    };
-
-    let x = game_rect.x;
-    let y = game_rect.y;
-    let w = game_rect.width.saturating_sub(1).max(1);
-    let h = game_rect.height.saturating_sub(1).max(1);
-
-    apply_overlay_win32_styles(&window, false);
-
-    #[cfg(windows)]
-    {
-        if let Ok(hwnd_val) = window.hwnd() {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{
-                SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_SHOWWINDOW,
-                SW_SHOWNOACTIVATE,
-            };
-            let hwnd = hwnd_val.0 as windows_sys::Win32::Foundation::HWND;
-            unsafe {
-                SetWindowPos(
-                    hwnd,
-                    HWND_TOPMOST,
-                    x,
-                    y,
-                    w,
-                    h,
-                    SWP_NOACTIVATE | SWP_SHOWWINDOW,
-                );
-                ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-            }
-            return;
-        }
     }
-
-    let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
-    let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize {
-        width: w.max(1) as u32,
-        height: h.max(1) as u32,
-    }));
-    let _ = window.show();
+    let _ = crate::services::native_overlay::ensure_overlay_process_started();
+    crate::services::native_overlay::calibrate_if_changed(
+        game_rect.x,
+        game_rect.y,
+        game_rect.width,
+        game_rect.height,
+    );
+    refresh_native_overlay();
 }
 
-pub fn hide_overlay_window(app: &tauri::AppHandle) {
-    use tauri::Manager;
-    let Some(window) = app.get_webview_window("overlay") else {
-        return;
-    };
-
-    #[cfg(windows)]
-    {
-        if let Ok(hwnd_val) = window.hwnd() {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
-            let hwnd = hwnd_val.0 as windows_sys::Win32::Foundation::HWND;
-            unsafe {
-                ShowWindow(hwnd, SW_HIDE);
-            }
-            return;
-        }
-    }
-
-    let _ = window.hide();
+pub fn hide_overlay_window(_app: &tauri::AppHandle) {
+    crate::services::native_overlay::hide_native_overlay();
 }
 
 pub fn sync_overlay_window(
     app: &tauri::AppHandle,
     enabled: bool,
-    interactive: bool,
+    _interactive: bool,
 ) -> Result<GameWindowRect, String> {
-    use tauri::Manager;
-
     OVERLAY_ENABLED.store(enabled, Ordering::Relaxed);
-
     let rect = get_league_game_window_rect();
-    let window = match app.get_webview_window("overlay") {
-        Some(w) => w,
-        None => return Ok(rect),
-    };
-
     if !enabled || !rect.found {
         hide_overlay_window(app);
         return Ok(rect);
     }
 
-    let safe_h = overlay_safe_height(rect.height);
-
-    #[cfg(windows)]
-    {
-        if let Ok(hwnd_val) = window.hwnd() {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{
-                SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_SHOWWINDOW,
-                SW_HIDE, SW_SHOWNOACTIVATE,
-            };
-
-            let hwnd = hwnd_val.0 as windows_sys::Win32::Foundation::HWND;
-            unsafe {
-                SetWindowPos(
-                    hwnd,
-                    HWND_TOPMOST,
-                    rect.x,
-                    rect.y,
-                    rect.width,
-                    safe_h,
-                    SWP_NOACTIVATE | SWP_SHOWWINDOW,
-                );
-            }
-            apply_overlay_win32_styles(&window, !interactive);
-            if rect.is_foreground {
-                unsafe {
-                    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-                }
-            } else {
-                unsafe {
-                    ShowWindow(hwnd, SW_HIDE);
-                }
-            }
-            return Ok(rect);
-        }
-    }
-
-    let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
-        x: rect.x,
-        y: rect.y,
-    }));
-    let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize {
-        width: rect.width as u32,
-        height: safe_h as u32,
-    }));
-    let _ = window.set_always_on_top(true);
-    apply_overlay_win32_styles(&window, !interactive);
     if rect.is_foreground {
-        let _ = window.show();
+        show_overlay_banner_rect(app, &rect);
     } else {
-        let _ = window.hide();
+        hide_overlay_window(app);
     }
 
     Ok(rect)
 }
 
+#[cfg(not(windows))]
+pub fn capture_bgra_rect(
+    _sx: i32,
+    _sy: i32,
+    _sw: i32,
+    _sh: i32,
+) -> Result<(Vec<u8>, u32, u32), String> {
+    Err("Not supported on non-windows".to_string())
+}
+
 #[cfg(windows)]
-fn capture_bgra_rect(
+pub fn capture_bgra_rect(
     sx: i32,
     sy: i32,
     sw: i32,
@@ -769,11 +733,11 @@ mod tests {
                 wins: 5,
                 win_rate: 0.5,
                 wpa: 0.02,
-                pick_rate: None,
+                pick_rate: 0.1,
                 global_games: 100,
                 global_win_rate: 0.5,
                 global_wpa: 0.02,
-                global_pick_rate: None,
+                global_pick_rate: 0.1,
             },
             MayhemAugmentItem {
                 id: "2".into(),
@@ -786,11 +750,11 @@ mod tests {
                 wins: 5,
                 win_rate: 0.5,
                 wpa: 0.05,
-                pick_rate: None,
+                pick_rate: 0.1,
                 global_games: 100,
                 global_win_rate: 0.5,
                 global_wpa: 0.05,
-                global_pick_rate: None,
+                global_pick_rate: 0.1,
             },
         ];
 

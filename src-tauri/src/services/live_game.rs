@@ -217,12 +217,14 @@ pub fn start_live_game_polling(app: AppHandle) {
                         if state.is_in_game {
                             was_in_game = true;
                             last_champ_name = state.champion_name.clone();
+                            crate::services::live_overlay::set_overlay_champion_and_strategy(&state.champion_name, "");
                             let _ = app.emit("live:game-state", &state);
                             let _ = app.emit("live:state-updated", &state);
                         } else if was_in_game {
                             was_in_game = false;
                             cards_visible = false;
                             last_champ_name.clear();
+                            crate::services::live_overlay::clear_overlay_cards();
                             crate::services::live_overlay::hide_overlay_window(&app);
                             let not_in_game = LiveGameState::not_in_game();
                             let _ = app.emit("live:game-state", &not_in_game);
@@ -234,6 +236,7 @@ pub fn start_live_game_polling(app: AppHandle) {
                             was_in_game = false;
                             cards_visible = false;
                             last_champ_name.clear();
+                            crate::services::live_overlay::clear_overlay_cards();
                             crate::services::live_overlay::hide_overlay_window(&app);
                             let not_in_game = LiveGameState::not_in_game();
                             let _ = app.emit("live:game-state", &not_in_game);
@@ -256,6 +259,7 @@ pub fn start_live_game_polling(app: AppHandle) {
 
             let (f8_pressed, f7_pressed) = crate::services::live_overlay::poll_overlay_hotkeys();
             if f8_pressed {
+                crate::services::live_overlay::set_overlay_scanning(true);
                 let _ = app.emit("overlay:scan-status", &true);
                 let champion_id = if !last_champ_name.is_empty() {
                     crate::services::champions::get_all_champions()
@@ -280,13 +284,16 @@ pub fn start_live_game_polling(app: AppHandle) {
                 )
                 .await
                 .unwrap_or_default();
+                crate::services::live_overlay::set_overlay_scanning(false);
                 let _ = app.emit("overlay:scan-status", &false);
 
                 if !cards.is_empty() {
+                    crate::services::live_overlay::update_overlay_cards(&cards);
                     crate::services::live_overlay::show_overlay_banner_rect(&app, &window_rect);
                     let _ = app.emit("overlay:cards-updated", &cards);
                     cards_visible = true;
                 } else {
+                    crate::services::live_overlay::clear_overlay_cards();
                     let _ = app.emit(
                         "overlay:cards-updated",
                         &Vec::<crate::models::history::OverlayAugmentCard>::new(),
@@ -294,6 +301,7 @@ pub fn start_live_game_polling(app: AppHandle) {
                     cards_visible = false;
                 }
             } else if f7_pressed && cards_visible {
+                crate::services::live_overlay::clear_overlay_cards();
                 let _ = app.emit(
                     "overlay:cards-updated",
                     &Vec::<crate::models::history::OverlayAugmentCard>::new(),

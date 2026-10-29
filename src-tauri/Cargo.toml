@@ -1,6 +1,6 @@
 [package]
 name = "lcu-companion"
-version = "0.1.1"
+version = "0.1.2"
 description = "LCU Companion Desktop App"
 authors = ["you"]
 edition = "2021"
@@ -9,6 +9,14 @@ default-run = "lcu-companion"
 [lib]
 name = "lcu_companion_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "lcu-companion"
+path = "src/main.rs"
+
+[[bin]]
+name = "lcu-overlay"
+path = "src/bin/lcu_overlay.rs"
 
 [[bin]]
 name = "lcu-companion-agent"
@@ -58,6 +66,7 @@ windows-sys = { version = "0.59", features = [
   "Win32_UI_WindowsAndMessaging",
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_Graphics_Gdi",
+  "Win32_System_LibraryLoader",
 ] }
 windows = { version = "0.58", features = [
   "Foundation",
