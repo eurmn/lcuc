@@ -787,7 +787,7 @@
             title="Test overlay and trigger augment card scan"
           >
             <span class="icon-[heroicons--camera] text-purple-400 text-xs"></span>
-            Test / Scan
+            Scan Cards (F8)
           </button>
         {/if}
 

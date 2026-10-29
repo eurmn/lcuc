@@ -203,6 +203,15 @@ pub struct OverlaySynergyItem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OverlayComboEntry {
+    pub label: String,
+    pub win_rate: f64,
+    pub wpa: f64,
+    pub games: usize,
+    pub items: Vec<OverlaySynergyItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OverlayAugmentCard {
     pub slot: usize,
     pub id: String,
@@ -212,6 +221,7 @@ pub struct OverlayAugmentCard {
     pub win_rate: f64,
     pub games: usize,
     pub synergy_items: Vec<OverlaySynergyItem>,
+    pub combos: Vec<OverlayComboEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

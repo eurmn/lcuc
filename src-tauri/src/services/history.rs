@@ -3,7 +3,7 @@ use crate::models::{
     ChampionSummary, MatchHistoryAugmentInfo, MatchHistoryItem, MatchHistoryItemInfo,
     MayhemAugmentItem, MayhemAugmentsQuery, MayhemAugmentsResponse, MayhemBuildAugment,
     MayhemBuildItem, MayhemBuildSpell, MayhemBuildStrategy, MayhemChampionBuildSummary,
-    MayhemLiveAdvice, MayhemStageItem, OverlayAugmentCard, OverlaySynergyItem,
+    MayhemLiveAdvice, MayhemStageItem, OverlayAugmentCard, OverlayComboEntry, OverlaySynergyItem,
     SaveMayhemBuildPayload, SavedMayhemBuild,
 };
 use crate::services::asset_cache::{get_cache_dir, get_cached_asset_data_uri};
@@ -6435,6 +6435,7 @@ pub async fn enrich_overlay_augment_cards(
 
     for (slot, aug) in cards {
         let mut synergy_items: Vec<OverlaySynergyItem> = Vec::new();
+        let mut combos: Vec<OverlayComboEntry> = Vec::new();
 
         let wpa = if aug.games >= 5 {
             aug.wpa
@@ -6457,6 +6458,25 @@ pub async fn enrich_overlay_augment_cards(
                     .or_else(|| summary.strategies.first());
 
                 if let Some(strat) = chosen_strat {
+                    for a in strat
+                        .augments
+                        .iter()
+                        .filter(|a| !a.name.eq_ignore_ascii_case(&aug.name) && a.games > 0)
+                        .take(2)
+                    {
+                        combos.push(OverlayComboEntry {
+                            label: format!("+ {}", a.name),
+                            win_rate: a.win_rate,
+                            wpa: a.wpa,
+                            games: a.games,
+                            items: vec![OverlaySynergyItem {
+                                id: 0,
+                                name: a.name.clone(),
+                                icon_url: a.icon_url.clone(),
+                            }],
+                        });
+                    }
+
                     let candidates: Vec<&MayhemBuildItem> = strat
                         .items
                         .iter()
@@ -6489,8 +6509,32 @@ pub async fn enrich_overlay_augment_cards(
                             icon_url: final_icon,
                         });
                     }
+
+                    if synergy_items.len() >= 2 {
+                        combos.push(OverlayComboEntry {
+                            label: format!("{} + {}", synergy_items[0].name, synergy_items[1].name),
+                            win_rate: strat.build_win_rate,
+                            wpa: strat.build_wpa,
+                            games: strat.sample_games,
+                            items: synergy_items.iter().take(2).cloned().collect(),
+                        });
+                    }
                 }
             }
+        }
+
+        if combos.is_empty() && !synergy_items.is_empty() {
+            combos.push(OverlayComboEntry {
+                label: synergy_items
+                    .iter()
+                    .map(|i| i.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" + "),
+                win_rate: aug.win_rate,
+                wpa,
+                games: aug.games,
+                items: synergy_items.clone(),
+            });
         }
 
         enriched_cards.push(OverlayAugmentCard {
@@ -6502,6 +6546,7 @@ pub async fn enrich_overlay_augment_cards(
             win_rate: aug.win_rate,
             games: aug.games,
             synergy_items,
+            combos,
         });
     }
 

@@ -147,15 +147,26 @@ export interface OverlaySynergyItem {
   wpa: number;
 }
 
+export interface OverlayComboEntry {
+  label: string;
+  win_rate: number;
+  wpa: number;
+  games: number;
+  items: OverlaySynergyItem[];
+}
+
 export interface OverlayAugmentCard {
   slot: number;
   id: string;
   name: string;
-  rarity?: string;
-  wpa: number;
+  rarity?: string | null;
+  icon_url: string;
   win_rate: number;
   games: number;
+  wpa: number;
+  tooltip?: string | null;
   synergy_items: OverlaySynergyItem[];
+  combos: OverlayComboEntry[];
 }
 
 export interface MayhemAugmentItem {

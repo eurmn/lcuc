@@ -4,6 +4,26 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub static OVERLAY_ENABLED: AtomicBool = AtomicBool::new(false);
 pub static OVERLAY_HAS_CARDS: AtomicBool = AtomicBool::new(false);
+static F8_WAS_DOWN: AtomicBool = AtomicBool::new(false);
+static F7_WAS_DOWN: AtomicBool = AtomicBool::new(false);
+
+pub fn poll_overlay_hotkeys() -> (bool, bool) {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+        let f8_down = (unsafe { GetAsyncKeyState(0x77) } as u16 & 0x8000) != 0;
+        let f7_down = (unsafe { GetAsyncKeyState(0x76) } as u16 & 0x8000) != 0;
+
+        let prev_f8 = F8_WAS_DOWN.swap(f8_down, Ordering::Relaxed);
+        let prev_f7 = F7_WAS_DOWN.swap(f7_down, Ordering::Relaxed);
+
+        (f8_down && !prev_f8, f7_down && !prev_f7)
+    }
+    #[cfg(not(windows))]
+    {
+        (false, false)
+    }
+}
 
 pub fn is_overlay_enabled() -> bool {
     OVERLAY_ENABLED.load(Ordering::Relaxed)
@@ -170,10 +190,10 @@ pub fn show_overlay_banner_rect(app: &tauri::AppHandle, game_rect: &GameWindowRe
         return;
     };
 
-    let x = game_rect.x + (game_rect.width as f64 * 0.20) as i32;
-    let y = game_rect.y + (game_rect.height as f64 * 0.11) as i32;
-    let w = (game_rect.width as f64 * 0.60) as i32;
-    let h = (game_rect.height as f64 * 0.075) as i32;
+    let x = game_rect.x;
+    let y = game_rect.y;
+    let w = game_rect.width.saturating_sub(1).max(1);
+    let h = game_rect.height.saturating_sub(1).max(1);
 
     apply_overlay_win32_styles(&window, false);
 
