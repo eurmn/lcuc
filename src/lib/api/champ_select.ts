@@ -3,7 +3,9 @@ import type {
   ChampSelectSession,
   ExportBuildPayload,
   ExportBuildResult,
+  GameWindowRect,
   LiveGameState,
+  MayhemAugmentItem,
   MayhemAugmentsQuery,
   MayhemAugmentsResponse,
   MayhemChampionBuildSummary,
@@ -102,4 +104,19 @@ export async function getLiveBuildAdvice(params: {
     gameTime: params.gameTime ?? null,
     augmentIds: params.augmentIds ?? [],
   });
+}
+
+export async function syncOverlayWindow(enabled: boolean, interactive: boolean): Promise<GameWindowRect> {
+  return invoke<GameWindowRect>("api_sync_overlay_window", { enabled, interactive });
+}
+
+export async function scanLiveAugmentCards(championId?: number, withAugmentIds?: string[]): Promise<MayhemAugmentItem[]> {
+  return invoke<MayhemAugmentItem[]>("api_scan_live_augment_cards", {
+    championId: championId ?? null,
+    withAugmentIds: withAugmentIds ?? [],
+  });
+}
+
+export async function emitOverlayState(payload: Record<string, unknown>): Promise<void> {
+  return invoke<void>("api_emit_overlay_state", { payload });
 }

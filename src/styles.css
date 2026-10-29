@@ -22,6 +22,13 @@
 }
 
 @layer base {
+  html.overlay-window,
+  body.overlay-window,
+  #app.overlay-window {
+    background: transparent !important;
+    background-color: rgba(0, 0, 0, 0) !important;
+  }
+
   :root {
     font-family: "Nunito Sans Variable", ui-sans-serif, system-ui, sans-serif;
   }

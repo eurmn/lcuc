@@ -151,6 +151,7 @@
       const res = await requestStatistics({
         scope: "global",
         kind: "combo",
+        champion_id: championId > 0 ? championId : undefined,
         hide_low_pickrate: hideLowPickrate,
         sort_key: sortKey === "winRate" ? "winRate" : sortKey === "games" ? "games" : "wpa",
         descending: sortDescending,
@@ -168,6 +169,7 @@
 
   $effect(() => {
     hideLowPickrate;
+    championId;
     void loadCombos();
   });
 
@@ -200,6 +202,7 @@
 
     for (const row of allRows) {
       if (!row.components || row.components.length === 0) continue;
+      if ((row.games ?? 0) < 3) continue;
 
       // Filter out combos with other champions
       const champComps = row.components.filter((c) => c.kind === "champion");
@@ -250,9 +253,28 @@
         return sortDescending ? -diff : diff;
       }
       // default: wpa
-      const diff = (a.row.wpa ?? 0) - (b.row.wpa ?? 0);
+      const diff = (a.row.synergy_score ?? a.row.wpa ?? 0) - (b.row.synergy_score ?? b.row.wpa ?? 0);
       return sortDescending ? -diff : diff;
     });
+
+    if (!debouncedSearch) {
+      const MAX_PER_COMPONENT = 2;
+      const counts = new Map<string, number>();
+      const diversified: typeof result = [];
+      for (const item of result) {
+        const comps = (item.row.components ?? []).filter(
+          (c) => c.kind === "item" || c.kind === "augment"
+        );
+        if (comps.every((c) => (counts.get(`${c.kind}:${c.id}`) ?? 0) < MAX_PER_COMPONENT)) {
+          diversified.push(item);
+          for (const c of comps) {
+            const k = `${c.kind}:${c.id}`;
+            counts.set(k, (counts.get(k) ?? 0) + 1);
+          }
+        }
+      }
+      return diversified;
+    }
 
     return result;
   });

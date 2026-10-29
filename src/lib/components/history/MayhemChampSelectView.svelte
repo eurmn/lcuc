@@ -10,6 +10,9 @@
     swapChampSelectChampion,
     getLiveGameState,
     getLiveBuildAdvice,
+    syncOverlayWindow,
+    scanLiveAugmentCards,
+    emitOverlayState,
   } from "../../api/champ_select";
   import { getChampions } from "../../api/champions";
   import type { ChampionSummary } from "../../types/champions";
@@ -81,6 +84,8 @@
   let unlistenSession: UnlistenFn | null = null;
   let unlistenPhase: UnlistenFn | null = null;
   let unlistenLiveState: UnlistenFn | null = null;
+  let unlistenOverlaySync: UnlistenFn | null = null;
+  let overlayEnabled = $state<boolean>(true);
   let liveGameState = $state<LiveGameState | null>(null);
   let liveAdvice = $state<MayhemLiveAdvice | null>(null);
   let isEncyclopediaOpen = $state(false);
@@ -236,8 +241,42 @@
         liveGameState = state;
         if (state && state.is_in_game) {
           void refreshLiveGameState();
+          void syncOverlayWindow(overlayEnabled && Boolean(state.is_in_game), false);
         } else {
           liveAdvice = null;
+          void syncOverlayWindow(false, false);
+        }
+      });
+
+      unlistenOverlaySync = await listen("overlay:state-sync", (event) => {
+        const data = event.payload as {
+          championId?: number;
+          strategyId?: string;
+          augmentIds?: string[];
+        };
+        if (Array.isArray(data.augmentIds)) {
+          augmentIds = data.augmentIds;
+          pickerSlots = Array(4).fill(null);
+          augmentIds.forEach((id, idx) => {
+            if (idx < 4) {
+              pickerSlots[idx] = {
+                id,
+                name: id,
+                icon_url: "",
+                categories: [],
+                games: 100,
+                wins: 50,
+                win_rate: 0.5,
+                wpa: 0.05,
+                global_games: 0,
+                global_win_rate: 0,
+                global_wpa: 0,
+              };
+            }
+          });
+          if (selectedChampionId > 0) {
+            void loadSingleChampionBuild(selectedChampionId);
+          }
         }
       });
     } catch (err) {
@@ -254,6 +293,7 @@
     if (unlistenSession) unlistenSession();
     if (unlistenPhase) unlistenPhase();
     if (unlistenLiveState) unlistenLiveState();
+    if (unlistenOverlaySync) unlistenOverlaySync();
     if (livePollTimer) clearInterval(livePollTimer);
   });
 
@@ -302,6 +342,14 @@
             logger.warn("frontend.live_advice", "Failed computing live advice", err);
           }
         }
+
+        void syncOverlayWindow(overlayEnabled && Boolean(state.is_in_game), false);
+        void emitOverlayState({
+          championId: selectedChampionId,
+          championName: selectedChampion?.name ?? "",
+          strategyId: selectedStrategyId,
+          augmentIds,
+        });
       } else {
         liveAdvice = null;
       }
@@ -697,6 +745,51 @@
             V2
           </button>
         </div>
+
+        <!-- Overlay Toggle Button -->
+        <button
+          type="button"
+          onclick={() => {
+            overlayEnabled = !overlayEnabled;
+            void syncOverlayWindow(overlayEnabled && Boolean(liveGameState?.is_in_game), false);
+            if (overlayEnabled) {
+              void emitOverlayState({
+                championId: selectedChampionId,
+                championName: selectedChampion?.name ?? "",
+                strategyId: selectedStrategyId,
+                augmentIds,
+              });
+            }
+          }}
+          class="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold border transition shadow-sm cursor-pointer {overlayEnabled
+            ? 'bg-purple-950/80 border-purple-500/50 text-purple-200 hover:bg-purple-900/80'
+            : 'bg-gray-800/80 border-gray-700/60 text-gray-400 hover:bg-gray-700'}"
+          title="Toggle In-Game Mayhem Overlay Window"
+        >
+          <span class="icon-[heroicons--computer-desktop] text-sm {overlayEnabled ? 'text-purple-400' : 'text-gray-500'}"></span>
+          Overlay: {overlayEnabled ? "ON" : "OFF"}
+        </button>
+
+        {#if overlayEnabled}
+          <button
+            type="button"
+            onclick={() => {
+              void syncOverlayWindow(true, false);
+              void emitOverlayState({
+                championId: selectedChampionId,
+                championName: selectedChampion?.name ?? "",
+                strategyId: selectedStrategyId,
+                augmentIds,
+              });
+              void scanLiveAugmentCards(selectedChampionId > 0 ? selectedChampionId : undefined, augmentIds);
+            }}
+            class="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-gray-800/80 hover:bg-gray-700 text-gray-300 border border-gray-700/60 transition shadow-sm cursor-pointer"
+            title="Test overlay and trigger augment card scan"
+          >
+            <span class="icon-[heroicons--camera] text-purple-400 text-xs"></span>
+            Test / Scan
+          </button>
+        {/if}
 
         <!-- Encyclopedia Button -->
         <button

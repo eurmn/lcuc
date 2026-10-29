@@ -54,6 +54,16 @@ export interface LiveGameState {
   current_gold: number;
   items: LivePlayerItem[];
   stats: LivePlayerStats;
+  game_mode?: string;
+}
+
+export interface GameWindowRect {
+  found: boolean;
+  is_foreground: boolean;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 export interface MayhemBuildSpell {

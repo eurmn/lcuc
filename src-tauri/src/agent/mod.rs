@@ -447,6 +447,7 @@ fn read_statistics_facts(
     connection: &Connection,
     global: bool,
     limit: Option<usize>,
+    champion_id: Option<i64>,
 ) -> Result<Vec<StatisticFact>, String> {
     let table = if global {
         "aram_participants"
@@ -454,12 +455,16 @@ fn read_statistics_facts(
         "game_build_facts"
     };
     let games_table = if global { "aram_games" } else { "games" };
+    let where_clause = match champion_id {
+        Some(cid) => format!(" WHERE p.champion_id = {cid}"),
+        None => String::new(),
+    };
     let order_and_limit = match limit {
         Some(max_rows) => format!(" ORDER BY p.rowid DESC LIMIT {max_rows}"),
         None => String::new(),
     };
     let sql = format!(
-        "SELECT p.game_id, p.champion_id, p.win, p.item_ids_json, p.augment_ids_json, p.kills, p.deaths, p.assists, COALESCE(p.damage, 0), p.gold, COALESCE(g.game_duration, 0) FROM {table} p LEFT JOIN {games_table} g ON g.game_id = p.game_id{order_and_limit}"
+        "SELECT p.game_id, p.champion_id, p.win, p.item_ids_json, p.augment_ids_json, p.kills, p.deaths, p.assists, COALESCE(p.damage, 0), p.gold, COALESCE(g.game_duration, 0) FROM {table} p LEFT JOIN {games_table} g ON g.game_id = p.game_id{where_clause}{order_and_limit}"
     );
     let mut statement = connection
         .prepare(&sql)
@@ -585,7 +590,7 @@ fn statistic_row(
     // to large samples (e.g. 140 games +6% WPA or 64 games +11% WPA).
     // We shrink estimates toward baseline based on sample size:
     let m_wr = match kind {
-        "combo" => 10.0,
+        "combo" => 6.0,
         _ => 25.0,
     };
     let adj_win_rate = (aggregate.wins as f64 + m_wr * effective_baseline) / (games + m_wr);
@@ -745,6 +750,7 @@ fn load_statistics_projection(
         if kind == "combo"
             && rows.iter().any(|r| {
                 r.get("components").is_none()
+                    || r.get("synergy_score").is_none()
                     || r.get("id")
                         .and_then(Value::as_str)
                         .map_or(false, is_boot_combo_id)
@@ -933,7 +939,16 @@ fn render_statistics_response(
                         })
                 })
                 .unwrap_or(-999.0),
-            _ => row.get("wpa").and_then(Value::as_f64).unwrap_or(0.0),
+            _ => {
+                if kind == "combo" {
+                    row.get("synergy_score")
+                        .or_else(|| row.get("wpa"))
+                        .and_then(Value::as_f64)
+                        .unwrap_or(0.0)
+                } else {
+                    row.get("wpa").and_then(Value::as_f64).unwrap_or(0.0)
+                }
+            }
         };
         let ordering = if sort_key == "name" {
             left.get("name")
@@ -1003,6 +1018,10 @@ fn build_statistics_response(
         .unwrap_or(true);
     let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(100) as usize;
     let offset = args.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let filter_champion_id = args
+        .get("champion_id")
+        .and_then(Value::as_i64)
+        .filter(|&id| id > 0);
 
     let mut cache_args = args.clone();
     if let Some(object) = cache_args.as_object_mut() {
@@ -1198,11 +1217,20 @@ fn build_statistics_response(
                             })
                     })
                     .unwrap_or(-999.0),
-                _ => row
-                    .get("global_wpa")
-                    .or_else(|| row.get("wpa"))
-                    .and_then(Value::as_f64)
-                    .unwrap_or(0.0),
+                _ => {
+                    if kind == "combo" {
+                        row.get("synergy_score")
+                            .or_else(|| row.get("global_wpa"))
+                            .or_else(|| row.get("wpa"))
+                            .and_then(Value::as_f64)
+                            .unwrap_or(0.0)
+                    } else {
+                        row.get("global_wpa")
+                            .or_else(|| row.get("wpa"))
+                            .and_then(Value::as_f64)
+                            .unwrap_or(0.0)
+                    }
+                }
             };
             let ordering = if sort_key == "name" {
                 left.get("name")
@@ -1262,16 +1290,19 @@ fn build_statistics_response(
     } else {
         database
     };
-    if let Some((sample_count, baseline, rows)) = load_statistics_projection(projection_path, kind)?
-    {
-        return Ok(render_statistics_response(
-            args,
-            scope,
-            kind,
-            sample_count,
-            baseline,
-            rows,
-        ));
+    if filter_champion_id.is_none() {
+        if let Some((sample_count, baseline, rows)) =
+            load_statistics_projection(projection_path, kind)?
+        {
+            return Ok(render_statistics_response(
+                args,
+                scope,
+                kind,
+                sample_count,
+                baseline,
+                rows,
+            ));
+        }
     }
     let _active_op_guard = if kind == "combo" {
         set_active_stats_operation(
@@ -1284,17 +1315,46 @@ fn build_statistics_response(
     } else {
         None
     };
-    let fact_limit = if kind == "combo" { Some(25_000) } else { None };
+    let fact_limit = if kind == "combo" {
+        if filter_champion_id.is_some() {
+            Some(10_000)
+        } else {
+            Some(25_000)
+        }
+    } else {
+        None
+    };
     let mut facts = Vec::new();
     if scope == "personal" || scope == "both" {
         let connection = open_connection(database)
             .map_err(|error| format!("failed opening statistics database: {error}"))?;
-        facts.extend(read_statistics_facts(&connection, false, fact_limit)?);
+        facts.extend(read_statistics_facts(
+            &connection,
+            false,
+            fact_limit,
+            filter_champion_id,
+        )?);
     }
     if scope == "global" || scope == "both" {
         let connection = open_connection(global_database)
             .map_err(|error| format!("failed opening global statistics database: {error}"))?;
-        facts.extend(read_statistics_facts(&connection, true, fact_limit)?);
+        facts.extend(read_statistics_facts(
+            &connection,
+            true,
+            fact_limit,
+            filter_champion_id,
+        )?);
+    }
+    if kind == "combo" && filter_champion_id.is_some() && facts.len() < 15 {
+        facts.clear();
+        let connection = open_connection(global_database)
+            .map_err(|error| format!("failed opening global statistics database: {error}"))?;
+        facts.extend(read_statistics_facts(
+            &connection,
+            true,
+            Some(25_000),
+            None,
+        )?);
     }
 
     let sample_count = facts
@@ -1348,134 +1408,145 @@ fn build_statistics_response(
     } else {
         0.0
     };
-    let min_combo_games = if population_count > 500 {
-        ((population_count as f64 * 0.0015).ceil() as i64).clamp(5, 60)
-    } else if population_count > 50 {
-        2
-    } else {
-        1
-    };
+    let min_combo_games = if population_count >= 20 { 3 } else { 1 };
 
     // Apriori optimization: pre-calculate candidate frequent components and pairs
-    let (combo_frequent_pairs, frequent_core_pairs, combo_fact_components) = if kind == "combo" {
-        set_active_stats_operation(
-            "combo-mining",
-            "Mining combos: counting item & augment frequency",
-            2,
-            4,
-        );
-        // Step 1: count individual components (champion, item, augment) across facts
-        let mut comp_counts: HashMap<String, i64> = HashMap::new();
-        for fact in &facts {
-            if let Some(champ_id) = fact.champion_id {
-                *comp_counts
-                    .entry(format!("champion:{champ_id}"))
-                    .or_default() += 1;
-            }
-            for &id in &fact.item_ids {
-                if !PORO_SNAX_IDS.contains(&id)
-                    && id > 0
-                    && !is_boot_item_id(id)
-                    && !is_starter_item_id(id)
-                {
-                    *comp_counts.entry(format!("item:{id}")).or_default() += 1;
+    let (comp_stats, combo_frequent_pairs, frequent_core_pairs, combo_fact_components) =
+        if kind == "combo" {
+            set_active_stats_operation(
+                "combo-mining",
+                "Mining combos: counting item & augment frequency",
+                2,
+                4,
+            );
+            let mut comp_stats: HashMap<String, (i64, i64)> = HashMap::new();
+            for fact in &facts {
+                let win_inc = i64::from(fact.win);
+                let mut seen_items = fact
+                    .item_ids
+                    .iter()
+                    .filter(|id| {
+                        !PORO_SNAX_IDS.contains(id)
+                            && **id > 0
+                            && !is_boot_item_id(**id)
+                            && !is_starter_item_id(**id)
+                    })
+                    .copied()
+                    .collect::<Vec<_>>();
+                seen_items.sort_unstable();
+                seen_items.dedup();
+                for id in seen_items {
+                    let entry = comp_stats.entry(format!("item:{id}")).or_default();
+                    entry.0 += 1;
+                    entry.1 += win_inc;
+                }
+                let mut seen_augs = fact
+                    .augment_ids
+                    .iter()
+                    .filter(|id| !id.is_empty() && *id != "0")
+                    .cloned()
+                    .collect::<Vec<_>>();
+                seen_augs.sort();
+                seen_augs.dedup();
+                for id in seen_augs {
+                    let entry = comp_stats.entry(format!("augment:{id}")).or_default();
+                    entry.0 += 1;
+                    entry.1 += win_inc;
                 }
             }
-            for id in &fact.augment_ids {
-                if !id.is_empty() && *id != "0" {
-                    *comp_counts.entry(format!("augment:{id}")).or_default() += 1;
-                }
-            }
-        }
-        // Min support for single component: 2% pick rate floor, clamped by min_combo_games
-        let min_component_support =
-            ((population_count as f64 * 0.02).ceil() as i64).max(min_combo_games);
-        let frequent_components: HashSet<String> = comp_counts
-            .into_iter()
-            .filter(|(_, count)| *count >= min_component_support)
-            .map(|(id, _)| id)
-            .collect();
-
-        set_active_stats_operation(
-            "combo-mining",
-            "Mining combos: extracting frequent synergy pairs",
-            3,
-            4,
-        );
-        // Step 2: filter fact components down to frequent items/augments
-        let mut filtered_fact_comps = Vec::with_capacity(facts.len());
-        let mut pair_counts: HashMap<(String, String), i64> = HashMap::new();
-        for fact in &facts {
-            let mut components = Vec::new();
-            if let Some(champ_id) = fact.champion_id {
-                let key = format!("champion:{champ_id}");
-                if frequent_components.contains(&key) {
-                    components.push(key);
-                }
-            }
-            let mut items = fact
-                .item_ids
+            let min_component_support = if filter_champion_id.is_some() {
+                min_combo_games
+            } else {
+                ((population_count as f64 * 0.002).ceil() as i64).max(min_combo_games)
+            };
+            let frequent_components: HashSet<String> = comp_stats
                 .iter()
-                .filter(|id| {
-                    !PORO_SNAX_IDS.contains(id)
-                        && **id > 0
-                        && !is_boot_item_id(**id)
-                        && !is_starter_item_id(**id)
-                })
-                .copied()
-                .collect::<Vec<_>>();
-            items.sort_unstable();
-            items.dedup();
-            for id in items {
-                let key = format!("item:{id}");
-                if frequent_components.contains(&key) {
-                    components.push(key);
+                .filter(|(_, (count, _))| *count >= min_component_support)
+                .map(|(id, _)| id.clone())
+                .collect();
+
+            set_active_stats_operation(
+                "combo-mining",
+                "Mining combos: extracting frequent synergy pairs",
+                3,
+                4,
+            );
+            let mut filtered_fact_comps = Vec::with_capacity(facts.len());
+            let mut pair_counts: HashMap<(String, String), i64> = HashMap::new();
+            for fact in &facts {
+                let mut components = Vec::new();
+                let mut items = fact
+                    .item_ids
+                    .iter()
+                    .filter(|id| {
+                        !PORO_SNAX_IDS.contains(id)
+                            && **id > 0
+                            && !is_boot_item_id(**id)
+                            && !is_starter_item_id(**id)
+                    })
+                    .copied()
+                    .collect::<Vec<_>>();
+                items.sort_unstable();
+                items.dedup();
+                for id in items {
+                    let key = format!("item:{id}");
+                    if frequent_components.contains(&key) {
+                        components.push(key);
+                    }
                 }
+                let mut augs = fact
+                    .augment_ids
+                    .iter()
+                    .filter(|id| !id.is_empty() && *id != "0")
+                    .cloned()
+                    .collect::<Vec<_>>();
+                augs.sort();
+                augs.dedup();
+                for id in augs {
+                    let key = format!("augment:{id}");
+                    if frequent_components.contains(&key) {
+                        components.push(key);
+                    }
+                }
+                components.sort();
+
+                let len = components.len();
+                for i in 0..len {
+                    for j in (i + 1)..len {
+                        *pair_counts
+                            .entry((components[i].clone(), components[j].clone()))
+                            .or_default() += 1;
+                    }
+                }
+                filtered_fact_comps.push(components);
             }
-            let mut augs = fact
-                .augment_ids
+
+            let frequent_pairs: HashSet<(String, String)> = pair_counts
                 .iter()
-                .filter(|id| !id.is_empty() && *id != "0")
-                .cloned()
-                .collect::<Vec<_>>();
-            augs.sort();
-            augs.dedup();
-            for id in augs {
-                let key = format!("augment:{id}");
-                if frequent_components.contains(&key) {
-                    components.push(key);
-                }
-            }
-            components.sort();
+                .filter(|(_, count)| **count >= min_combo_games)
+                .map(|(pair, _)| pair.clone())
+                .collect();
 
-            // Count 2-tuples for frequent pair detection
-            let len = components.len();
-            for i in 0..len {
-                for j in (i + 1)..len {
-                    *pair_counts
-                        .entry((components[i].clone(), components[j].clone()))
-                        .or_default() += 1;
-                }
-            }
-            filtered_fact_comps.push(components);
-        }
+            let core_pair_min = if filter_champion_id.is_some() {
+                min_combo_games
+            } else {
+                (min_combo_games * 2).max(6)
+            };
+            let frequent_core_pairs: HashSet<(String, String)> = pair_counts
+                .into_iter()
+                .filter(|(_, count)| *count >= core_pair_min)
+                .map(|(pair, _)| pair)
+                .collect();
 
-        let frequent_pairs: HashSet<(String, String)> = pair_counts
-            .iter()
-            .filter(|(_, count)| **count >= min_combo_games)
-            .map(|(pair, _)| pair.clone())
-            .collect();
-
-        let frequent_core_pairs: HashSet<(String, String)> = pair_counts
-            .into_iter()
-            .filter(|(_, count)| *count >= (min_combo_games * 2).max(10))
-            .map(|(pair, _)| pair)
-            .collect();
-
-        (frequent_pairs, frequent_core_pairs, filtered_fact_comps)
-    } else {
-        (HashSet::new(), HashSet::new(), Vec::new())
-    };
+            (
+                comp_stats,
+                frequent_pairs,
+                frequent_core_pairs,
+                filtered_fact_comps,
+            )
+        } else {
+            (HashMap::new(), HashSet::new(), HashSet::new(), Vec::new())
+        };
 
     if kind == "combo" {
         set_active_stats_operation(
@@ -1502,46 +1573,6 @@ fn build_statistics_response(
             "combo" => {
                 let components = &combo_fact_components[fact_idx];
                 let mut tuples = Vec::new();
-                let len = components.len();
-                // k = 2 combinations: only frequent pairs
-                for i in 0..len {
-                    for j in (i + 1)..len {
-                        let pair = (&components[i], &components[j]);
-                        if combo_frequent_pairs.contains(&(pair.0.clone(), pair.1.clone())) {
-                            let id = format!("combo:{}+{}", pair.0, pair.1);
-                            let name = format!("{} + {}", pair.0, pair.1);
-                            tuples.push((id, name));
-                        }
-                    }
-                }
-                // k = 3 combinations: Apriori principle (all 3 constituent pairs must be frequent)
-                for i in 0..len {
-                    for j in (i + 1)..len {
-                        if !combo_frequent_pairs
-                            .contains(&(components[i].clone(), components[j].clone()))
-                        {
-                            continue;
-                        }
-                        for l in (j + 1)..len {
-                            if combo_frequent_pairs
-                                .contains(&(components[i].clone(), components[l].clone()))
-                                && combo_frequent_pairs
-                                    .contains(&(components[j].clone(), components[l].clone()))
-                            {
-                                let id = format!(
-                                    "combo:{}+{}+{}",
-                                    components[i], components[j], components[l]
-                                );
-                                let name = format!(
-                                    "{} + {} + {}",
-                                    components[i], components[j], components[l]
-                                );
-                                tuples.push((id, name));
-                            }
-                        }
-                    }
-                }
-                // Targeted k = 4 (2 augments + 2 items) & k = 5 (2 augments + 3 items) combinations
                 let aug_comps: Vec<&String> = components
                     .iter()
                     .filter(|c| c.starts_with("augment:"))
@@ -1551,17 +1582,52 @@ fn build_statistics_response(
                     .filter(|c| c.starts_with("item:"))
                     .collect();
 
-                if aug_comps.len() >= 2 && item_comps.len() >= 2 {
+                // 1A+1I and 1A+2I using combo_frequent_pairs
+                for &a1 in &aug_comps {
+                    for i1_idx in 0..item_comps.len() {
+                        let i1 = item_comps[i1_idx];
+                        if !combo_frequent_pairs.contains(&(a1.clone(), i1.clone())) {
+                            continue;
+                        }
+                        tuples.push((format!("combo:{a1}+{i1}"), format!("{a1} + {i1}")));
+
+                        for i2_idx in (i1_idx + 1)..item_comps.len() {
+                            let i2 = item_comps[i2_idx];
+                            if combo_frequent_pairs.contains(&(a1.clone(), i2.clone()))
+                                && combo_frequent_pairs.contains(&(i1.clone(), i2.clone()))
+                            {
+                                tuples.push((
+                                    format!("combo:{a1}+{i1}+{i2}"),
+                                    format!("{a1} + {i1} + {i2}"),
+                                ));
+                            }
+                        }
+                    }
+                }
+
+                // 2A+1I using combo_frequent_pairs, plus 2A+2I & 2A+3I using frequent_core_pairs
+                if aug_comps.len() >= 2 && !item_comps.is_empty() {
                     for a1_idx in 0..aug_comps.len() {
                         for a2_idx in (a1_idx + 1)..aug_comps.len() {
                             let a1 = aug_comps[a1_idx];
                             let a2 = aug_comps[a2_idx];
-                            if !frequent_core_pairs.contains(&(a1.clone(), a2.clone())) {
+                            if !combo_frequent_pairs.contains(&(a1.clone(), a2.clone())) {
                                 continue;
                             }
                             for i1_idx in 0..item_comps.len() {
                                 let i1 = item_comps[i1_idx];
-                                if !frequent_core_pairs.contains(&(a1.clone(), i1.clone()))
+                                if !combo_frequent_pairs.contains(&(a1.clone(), i1.clone()))
+                                    || !combo_frequent_pairs.contains(&(a2.clone(), i1.clone()))
+                                {
+                                    continue;
+                                }
+                                tuples.push((
+                                    format!("combo:{a1}+{a2}+{i1}"),
+                                    format!("{a1} + {a2} + {i1}"),
+                                ));
+
+                                if !frequent_core_pairs.contains(&(a1.clone(), a2.clone()))
+                                    || !frequent_core_pairs.contains(&(a1.clone(), i1.clone()))
                                     || !frequent_core_pairs.contains(&(a2.clone(), i1.clone()))
                                 {
                                     continue;
@@ -1574,9 +1640,10 @@ fn build_statistics_response(
                                     {
                                         continue;
                                     }
-                                    let id4 = format!("combo:{}+{}+{}+{}", a1, a2, i1, i2);
-                                    let name4 = format!("{} + {} + {} + {}", a1, a2, i1, i2);
-                                    tuples.push((id4, name4));
+                                    tuples.push((
+                                        format!("combo:{a1}+{a2}+{i1}+{i2}"),
+                                        format!("{a1} + {a2} + {i1} + {i2}"),
+                                    ));
 
                                     for i3_idx in (i2_idx + 1)..item_comps.len() {
                                         let i3 = item_comps[i3_idx];
@@ -1590,11 +1657,10 @@ fn build_statistics_response(
                                         {
                                             continue;
                                         }
-                                        let id5 =
-                                            format!("combo:{}+{}+{}+{}+{}", a1, a2, i1, i2, i3);
-                                        let name5 =
-                                            format!("{} + {} + {} + {} + {}", a1, a2, i1, i2, i3);
-                                        tuples.push((id5, name5));
+                                        tuples.push((
+                                            format!("combo:{a1}+{a2}+{i1}+{i2}+{i3}"),
+                                            format!("{a1} + {a2} + {i1} + {i2} + {i3}"),
+                                        ));
                                     }
                                 }
                             }
@@ -1653,54 +1719,131 @@ fn build_statistics_response(
             }
         }
     }
-    let unfiltered_rows = aggregates
+    let mut unfiltered_rows = aggregates
         .into_iter()
         .filter_map(|(id, (name, aggregate))| {
             if kind == "combo" && aggregate.games < min_combo_games {
                 return None;
             }
-            Some(statistic_row(
-                id,
+            let mut row = statistic_row(
+                id.clone(),
                 name,
                 kind,
                 &aggregate,
                 baseline,
                 population_count,
-            ))
+            );
+            if kind == "combo" {
+                let adj_win_rate = row
+                    .get("win_rate")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(baseline);
+                let adj_wpa = row.get("wpa").and_then(Value::as_f64).unwrap_or(0.0);
+                let parts: Vec<&str> = id.strip_prefix("combo:").unwrap_or(&id).split('+').collect();
+                let mut sum_wr = 0.0;
+                let mut sum_spec = 0.0;
+                let mut count_c = 0.0;
+                for part in parts {
+                    let (games_c, wins_c) = comp_stats
+                        .get(part)
+                        .map(|&(g, w)| (g as f64, w as f64))
+                        .unwrap_or((1.0, baseline));
+                    let wr_c = (wins_c + 15.0 * baseline) / (games_c + 15.0);
+                    let idf =
+                        (1.0 + (population_count.max(1) as f64) / games_c.max(1.0)).ln();
+                    let spec = (idf / 21.0_f64.ln()).powf(0.65).clamp(0.35, 1.60);
+                    sum_wr += wr_c;
+                    sum_spec += spec;
+                    count_c += 1.0;
+                }
+                let mean_comp_wr = if count_c > 0.0 {
+                    sum_wr / count_c
+                } else {
+                    baseline
+                };
+                let mean_spec = if count_c > 0.0 {
+                    sum_spec / count_c
+                } else {
+                    1.0
+                };
+                let lift = adj_win_rate - mean_comp_wr;
+                let synergy_score = (0.55 * adj_wpa + 0.45 * lift) * mean_spec;
+                row["lift"] = Value::from(lift);
+                row["synergy_score"] = Value::from(synergy_score);
+            }
+            Some(row)
         })
         .collect::<Vec<_>>();
 
-    let projection_rows = if kind == "combo" && unfiltered_rows.len() > 1000 {
-        // ponytail: cap projection to top 1000 combos; increase limit if memory allows
-        let mut top_rows = unfiltered_rows.clone();
-        top_rows.sort_by(|a, b| {
-            let wpa_b = b.get("wpa").and_then(Value::as_f64).unwrap_or(0.0);
-            let wpa_a = a.get("wpa").and_then(Value::as_f64).unwrap_or(0.0);
-            wpa_b
-                .partial_cmp(&wpa_a)
-                .unwrap_or(std::cmp::Ordering::Equal)
+    if kind == "combo" {
+        unfiltered_rows.sort_by(|a, b| {
+            let s_b = b
+                .get("synergy_score")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            let s_a = a
+                .get("synergy_score")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            s_b.partial_cmp(&s_a).unwrap_or(std::cmp::Ordering::Equal)
         });
-        top_rows.truncate(1000);
-        top_rows.sort_by(|a, b| {
-            let name_a = a.get("name").and_then(Value::as_str).unwrap_or("");
-            let name_b = b.get("name").and_then(Value::as_str).unwrap_or("");
-            name_a.cmp(name_b)
-        });
-        top_rows
-    } else {
-        unfiltered_rows.clone()
-    };
-    store_statistics_projection(
-        if scope == "global" {
-            global_database
-        } else {
-            database
-        },
-        kind,
-        sample_count,
-        baseline,
-        &projection_rows,
-    )?;
+        let mut comp_appearances: HashMap<String, usize> = HashMap::new();
+        let mut diverse_rows = Vec::with_capacity(unfiltered_rows.len().min(1000));
+        let mut deferred_rows = Vec::new();
+        for row in unfiltered_rows {
+            if diverse_rows.len() >= 1000 {
+                break;
+            }
+            let id_str = row.get("id").and_then(Value::as_str).unwrap_or("");
+            let parts: Vec<&str> = id_str
+                .strip_prefix("combo:")
+                .unwrap_or(id_str)
+                .split('+')
+                .collect();
+            let capped = parts
+                .iter()
+                .any(|p| comp_appearances.get(*p).copied().unwrap_or(0) >= 3);
+            if !capped {
+                for p in parts {
+                    *comp_appearances.entry(p.to_string()).or_default() += 1;
+                }
+                diverse_rows.push(row);
+            } else {
+                deferred_rows.push(row);
+            }
+        }
+        if diverse_rows.len() < 1000 {
+            for row in deferred_rows {
+                if diverse_rows.len() >= 1000 {
+                    break;
+                }
+                diverse_rows.push(row);
+            }
+        }
+        unfiltered_rows = diverse_rows;
+    }
+
+    if filter_champion_id.is_none() {
+        let mut projection_rows = unfiltered_rows.clone();
+        if kind == "combo" {
+            projection_rows.sort_by(|a, b| {
+                let name_a = a.get("name").and_then(Value::as_str).unwrap_or("");
+                let name_b = b.get("name").and_then(Value::as_str).unwrap_or("");
+                name_a.cmp(name_b)
+            });
+        }
+        store_statistics_projection(
+            if scope == "global" {
+                global_database
+            } else {
+                database
+            },
+            kind,
+            sample_count,
+            baseline,
+            &projection_rows,
+        )?;
+    }
 
     let mut response =
         render_statistics_response(args, scope, kind, sample_count, baseline, unfiltered_rows);

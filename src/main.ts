@@ -1,5 +1,6 @@
 import { mount } from "svelte";
 import App from "./App.svelte";
+import LiveMayhemOverlay from "./lib/components/overlay/LiveMayhemOverlay.svelte";
 import "./styles.css";
 
 const target = document.getElementById("app");
@@ -7,7 +8,24 @@ if (!target) {
   throw new Error("Root #app element not found in DOM");
 }
 
-const app = mount(App, {
+const isOverlay = new URLSearchParams(window.location.search).get("window") === "overlay";
+
+if (isOverlay) {
+  document.documentElement.classList.add("overlay-window");
+  document.body.classList.remove("bg-gray-900");
+  document.body.classList.add("overlay-window");
+  target.classList.remove("bg-gray-900");
+  target.classList.add("overlay-window");
+
+  document.documentElement.style.background = "transparent";
+  document.documentElement.style.backgroundColor = "rgba(0, 0, 0, 0)";
+  document.body.style.background = "transparent";
+  document.body.style.backgroundColor = "rgba(0, 0, 0, 0)";
+  target.style.background = "transparent";
+  target.style.backgroundColor = "rgba(0, 0, 0, 0)";
+}
+
+const app = mount(isOverlay ? LiveMayhemOverlay : App, {
   target,
 });
 

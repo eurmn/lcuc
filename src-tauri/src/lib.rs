@@ -14,19 +14,19 @@ use commands::{
         api_stop_global_aram_crawler,
     },
     api_champ_select_session, api_champ_select_swap, api_delete_runeset,
-    api_delete_saved_mayhem_build, api_detect_champion_from_name, api_export_mayhem_build,
-    api_export_saved_rune_page, api_get_champion_roster, api_get_champions,
-    api_get_live_build_advice, api_get_live_game_state, api_get_selected_champion_id,
-    api_get_selected_rune_key, api_import_client_page, api_is_lcu_connected,
-    api_list_saved_mayhem_builds, api_match_history, api_mayhem_augments,
+    api_delete_saved_mayhem_build, api_detect_champion_from_name, api_emit_overlay_state,
+    api_export_mayhem_build, api_export_saved_rune_page, api_get_champion_roster,
+    api_get_champions, api_get_live_build_advice, api_get_live_game_state,
+    api_get_selected_champion_id, api_get_selected_rune_key, api_import_client_page,
+    api_is_lcu_connected, api_list_saved_mayhem_builds, api_match_history, api_mayhem_augments,
     api_mayhem_champion_build, api_mayhem_team_builds, api_profile_challenge_tier,
     api_remove_friends, api_rune_builder_get_keystones, api_rune_builder_get_overview,
     api_rune_builder_get_secondary_playcounts, api_rune_builder_get_shards,
     api_rune_builder_get_tree_runes, api_rune_tree_client, api_rune_tree_current,
     api_rune_tree_saved, api_rune_tree_select_perk, api_runes_overview, api_runesets,
-    api_save_mayhem_build, api_save_rune_tree, api_set_selected_champion_id,
-    api_set_selected_rune_key, api_summoner_profile, api_toggle_favorite_champion,
-    api_update_runeset_champion,
+    api_save_mayhem_build, api_save_rune_tree, api_scan_live_augment_cards,
+    api_set_selected_champion_id, api_set_selected_rune_key, api_summoner_profile,
+    api_sync_overlay_window, api_toggle_favorite_champion, api_update_runeset_champion,
 };
 use services::lcu_websocket::LcuWsWatcher;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -35,6 +35,11 @@ use tauri::{Manager, WindowEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(windows)]
+    unsafe {
+        std::env::set_var("WEBVIEW2_DEFAULT_BACKGROUND_COLOR", "0");
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
@@ -220,6 +225,9 @@ pub fn run() {
             api_export_mayhem_build,
             api_get_live_game_state,
             api_get_live_build_advice,
+            api_sync_overlay_window,
+            api_scan_live_augment_cards,
+            api_emit_overlay_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

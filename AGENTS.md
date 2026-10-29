@@ -1,5 +1,15 @@
 # LCU Companion Agent Guide
 
+### Multi-Agent Swarm & Delegation Rules
+- **Main Chat (`orchestrator` -> `9router/ag/gemini-3.8-flash-medium`)**: Coordinates tasks, keeps main chat context small, and dispatches parallel subagents. Never edits code directly.
+- **Stateless Brain (`architect` -> `9router/ag/gemini-4-argon-medium` / `low`)**: Never use Argon-4 as the main chat. Invoke `architect` as a subagent with compact `file:line` and symbol signatures from `scout` to design complex Rust/Tokio/SQLite/Svelte 5 solutions and return a YAML execution plan.
+- **Claude Quota Protection (`9router/ag/claude-*`)**: Reserve Claude strictly as a last-resort fallback if `worker` + `architect` fail twice; fall back immediately to `gemini-4-argon-medium` or `gemini-3.8-flash-high` on quota exhaustion.
+- **Fast Codebase Discovery (`scout` -> `9router/ag/gemini-3.8-flash-low`)**: Never read full large files to explore. Use `jcodemunch` (`search_symbols`, `get_file_outline`, `get_symbol_source`), `ast-grep` (`find_code`, `find_code_by_rule`), and `lsp` (`workspaceSymbol`, `goToDefinition`, `findReferences`) first, plus `exa` for ARAM Mayhem mechanics, `rust-docs` for crates, and `svelte` MCP (`svelte-autofixer` / `get-documentation`) for Svelte 5.
+- **Minimal Subagent Prompts**: Never dump full source files into subagent prompts. Provide only:
+  1. Target file paths and line ranges (e.g. `src-tauri/src/agent/mod.rs:45-80`).
+  2. The specific function/struct/component identifier to modify.
+  3. Desired behavior or signature diff.
+
 ## Mission and architecture
 
 LCU Companion is a Tauri 2 desktop application for League of Legends. Svelte 5
@@ -118,51 +128,6 @@ cargo build --manifest-path src-tauri\Cargo.toml --bin lcu-companion-agent
 bun run check
 git diff --check
 ```
-
----
-
-## Complete Project Structure
-
-```text
-lcu-companion/
-├── @llm/                               # Complete project documentation and context
-│   └── docs/
-│       ├── context/                    # Architecture, live state, and migration notes
-│       ├── db/                         # SQLite schema, queries, and rune domain models
-│       ├── historical/                 # Shelved features & logs
-│       ├── lcu/                        # LCU REST/WebSocket specs & OpenAPI swagger.json
-│       └── ui/                         # Design system, thematic colors, and cheat sheets
-├── src/                                # Svelte 5 + TypeScript Frontend Application
-│   ├── lib/
-│   │   ├── api/                        # Typed Tauri IPC client wrappers (agent.ts, profile.ts, runes.ts)
-│   │   ├── components/                 # Reactive UI Components
-│   │   │   ├── history/                # Match history & statistics components (BuildStatisticsView, ProfileStatisticsView)
-│   │   │   ├── runes/                  # Center canvas rune tree components
-│   │   │   ├── sidebar/                # Dual list sidebar components
-│   │   │   ├── ProfileCard.svelte      # Summoner profile card & challenge badge
-│   │   │   └── TitleBar.svelte         # Window title bar with drag region & controls
-│   │   ├── types/                      # Frontend TypeScript interface definitions
-│   │   └── utils/                      # Utilities & Theme definitions
-│   ├── App.svelte                      # Root application component & progress banner
-│   ├── main.ts                         # Application entrypoint mounting Svelte App
-│   ├── styles.css                      # Tailwind CSS root imports and custom scrollbar
-│   └── vite-env.d.ts                   # Vite environment typings
-├── src-tauri/                          # Rust Backend Core
-│   ├── src/
-│   │   ├── agent/                      # Standalone agent process, crawler, projections, stats
-│   │   ├── commands/                   # Typed Tauri IPC command endpoints
-│   │   ├── models/                     # Strongly typed Rust domain models
-│   │   ├── services/                   # Background services & business logic
-│   │   ├── agent_supervisor.rs         # Agent process lifecycle and IPC auth
-│   │   ├── lib.rs                      # Tauri setup, command registration, and entrypoint
-│   │   └── main.rs                     # Windows native entry point
-│   ├── build.rs                        # Tauri build script
-│   ├── Cargo.toml                      # Rust dependencies & optimization profiles
-│   └── tauri.conf.json                 # Tauri configuration, window dimensions, and permissions
-├── package.json                        # Node dependencies (Svelte 5, Vite, Tailwind CSS, TypeScript)
-└── svelte.config.js                    # Svelte compiler configuration
-```
-
 ---
 
 ## 4. Subsystem Deep-Dives
@@ -181,20 +146,6 @@ To ensure instant loading and offline capability:
   - Ranked Borders (`/plugins/rcp-fe-lol-static-assets/global/default/images/ranked-emblems/...`)
   - Challenge Rank Tokens (`/latest/plugins/rcp-fe-lol-static-assets/global/default/challenges-shared/icon-token-(rank).png`)
 - The backend serves local cached assets directly as local file URIs or base64 streams to the Svelte components.
-
-### C. Thematic Rune UI System
-The visual styling conforms to official League of Legends style paths via [`src/lib/utils/theme.ts`](/src/lib/utils/theme.ts):
-- **Precision (ID: 8000)**: Amber / Gold (`border-yellow-500`, `text-yellow-400`, amber glow)
-- **Domination (ID: 8100)**: Crimson / Red (`border-red-500`, `text-red-400`, crimson glow)
-- **Sorcery (ID: 8200)**: Brand Purple (`border-purple-500`, `text-purple-400`, purple glow)
-- **Inspiration (ID: 8300)**: Turquoise / Cyan (`border-cyan-400`, `text-cyan-400`, cyan glow)
-- **Resolve (ID: 8400)**: Emerald / Green (`border-emerald-500`, `text-emerald-400`, emerald glow)
-
-### D. SQLite Rune Library
-Custom runesets are persisted in local SQLite via [`services/rune_store.rs`](/src-tauri/src/services/rune_store.rs):
-- Table `runesets`: `id`, `name`, `primary_style_id`, `sub_style_id`, `selected_perk_ids` (JSON), `created_at`, `updated_at`.
-- Table `favorite_champions`: `champion_id`, `created_at`.
-- Provides instant importing from the live League client into the saved database and exporting back to the client.
 
 ### E. Flowbite Component System
 The application's design language and UI primitives (buttons, modals, input groups, badges, tabs, alerts) are based on the **Flowbite** component system. Full component reference documentation is available under [`@llm/docs/ui/flowbite/`](/@llm/docs/ui/flowbite/):
@@ -232,37 +183,9 @@ All icons across frontend Svelte components must use `@iconify-json/heroicons` (
 ## 5. Comprehensive Documentation Index (`@llm/docs/`)
 
 For detailed specifications and domain knowledge, consult the specialized documents in [`@llm/docs/`](/@llm/docs/):
-
-* **Context & Live State**:
-  * [`20261012_BUILD_STATISTICS_TOOLTIPS_AND_BEST_MATCHES.md`](/@llm/docs/context/conversation/20261012_BUILD_STATISTICS_TOOLTIPS_AND_BEST_MATCHES.md) — Augment tooltips, build statistics inspector, Best Matches, math parser, and tier palette handoff.
-  * [`CONTEXT.md`](/@llm/docs/context/CONTEXT.md) — System overview, data flows, and module responsibilities.
-  * [`CURRENT_STATE.md`](/@llm/docs/context/CURRENT_STATE.md) — Live snapshot of registered commands, services, and test status.
-  * [`HTMX_TO_SVELTE.md`](/@llm/docs/context/HTMX_TO_SVELTE.md) — Svelte 5 + TypeScript migration plan and architecture reference.
-  * [`MIGRATION.md`](/@llm/docs/context/MIGRATION.md) — Architecture migration history.
-  * [`DOCS_LINKS.md`](/@llm/docs/context/DOCS_LINKS.md) — Manifest of all documentation files.
-
-* **League Client Integration**:
-  * [`LCU.md`](/@llm/docs/lcu/LCU.md) — LCU protocol, auth headers, and WebSocket event handling.
-  * [`swagger.json`](/@llm/docs/lcu/swagger.json) — Full OpenAPI specification for LCU endpoints.
-  * [`getting-started-with-the-lcu-api`](/@llm/docs/lcu/getting-started-with-the-lcu-api) — LCU REST integration fundamentals.
-  * [`getting-started-with-the-lcu-websocket`](/@llm/docs/lcu/getting-started-with-the-lcu-websocket) — LCU WebSocket event subscription guide.
-
-* **Database & Domain Models**:
-  * [`DATABASE.md`](/@llm/docs/db/DATABASE.md) — SQLite schema, indexes, and queries.
-  * [`RUNES.md`](/@llm/docs/db/RUNES.md) — Rune perk IDs, style trees, and serialization formats.
-
-* **UI, Animation & Theming**:
-  * [`UI.md`](/@llm/docs/ui/UI.md) — UI architecture, Svelte 5 component hierarchy, Flowbite patterns, and Svelte Motion design.
-  * [`flowbite/`](/@llm/docs/ui/flowbite/) — Flowbite component guides (buttons, forms, modals, alerts, badges, tables, etc.).
-  * [`motion_svelte.llm.txt`](/@llm/docs/ui/motion_svelte.llm.txt) — Svelte Motion (`@humanspeak/svelte-motion`) declarative animation guide and cheat sheet.
-  * [`THEME.md`](/@llm/docs/ui/THEME.md) — Thematic color palette rules for rune paths and Flowbite button styling tokens.
-  * [`RUNE_TREE_PLAN.md`](/@llm/docs/ui/RUNE_TREE_PLAN.md) — Center canvas layout plan and sizing.
-  * [`tauri.llms.txt`](/@llm/docs/ui/tauri.llms.txt) — Tauri 2.0 API reference cheat sheet.
-
-* **Historical Archive**:
+**Historical Archive**:
   * [`walkthrough/`](/@llm/docs/historical/walkthrough/) — Permanent archival walkthroughs for completed features and plans.
   * [`TOOLS_FEATURE_ARCHIVE.md`](/@llm/docs/historical/TOOLS_FEATURE_ARCHIVE.md) — Archival notes on the mass friend removal tool and top navigation header.
-
 ---
 
 ## 6. Development & Validation Workflow
@@ -280,7 +203,7 @@ bun run tauri dev
 - Verify the last 2 walkthroughs to have been created when you are in a new conversation. This will give you context over the current development environment the application is currently at.
 
 ### Command Execution Guidelines
-- **No Unsolicited Checks or Tests**: **DO NOT** run check, build, or test commands (such as `cargo check`, `cargo test`, `svelte-check`, `vite build`, etc.) without the user's direct and explicit request.
+- **No Unsolicited Checks or Tests**: **DO NOT** run check, build, or test commands (such as `cargo check`, `cargo test`, `svelte-check`, `vite build`, etc.) without the user's direct and explicit request. Ask the user if they want instead.
 
 ## Package Manager & Tooling
 - Always use `bun` instead of `npm` or `pnpm` for installing dependencies, running scripts, and managing packages in this repository.

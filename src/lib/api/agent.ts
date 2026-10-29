@@ -73,6 +73,8 @@ export interface ServerStatisticRow {
   duration: number;
   win_rate: number;
   wpa: number;
+  synergy_score?: number;
+  lift?: number;
   pick_rate: number;
   damage_per_minute: number;
   champions: ServerStatisticContext[];
@@ -105,6 +107,7 @@ export interface ServerStatisticsResponse {
 export interface ServerStatisticsQuery {
   scope: StatisticsScope;
   kind: StatisticsKind;
+  champion_id?: number;
   search?: string;
   hide_low_pickrate?: boolean;
   sort_key?: string;

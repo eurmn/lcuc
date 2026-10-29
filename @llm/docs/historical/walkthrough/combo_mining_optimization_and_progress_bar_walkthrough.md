@@ -15,3 +15,9 @@
 ## 3. Frontend Fixes (`src/lib/components/history/MayhemCombosCard.svelte`, `MayhemChampSelectView.svelte`, `App.svelte`)
 - Live operation polling (350ms) and prop propagation.
 - Dynamic header badge and 4-step progress bar panel (`1. Load Facts`, `2. Frequency`, `3. Synergy Pairs`, `4. Win Rate & WPA`).
+
+## 4. Statistical Combo Diversity & Champion-Scoped Mining
+- **Champion-Scoped Combo Mining**: Added `champion_id` filter to `read_statistics_facts` and `api_statistics`. If fact count `< 15`, falls back to global dataset to avoid empty sets on unplayed champions.
+- **Support Floor & Mayhem Shapes**: Set `min_combo_games = 3` and Bayesian shrinkage `m_wr = 6.0`. Generates exactly 5 Mayhem item/augment shapes: `1A+1I`, `1A+2I`, `2A+1I`, `2A+2I`, `2A+3I`.
+- **Log-IDF Ubiquity Penalty & Interaction Synergy Lift**: Replaced raw WPA sort with `synergy_score = (0.55 * adj_wpa + 0.45 * lift) * mean_spec`, suppressing ubiquitous item bloat and lifting true synergy pairs.
+- **Component Diversity Cap**: Top-1000 backend projection pool enforces max 3 occurrences per item/augment component; `MayhemCombosCard.svelte` enforces presentation cap `MAX_PER_COMPONENT = 2` for diverse UI cards.

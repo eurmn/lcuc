@@ -377,3 +377,35 @@ pub async fn api_get_live_build_advice(
         game_time.unwrap_or(0.0),
     ))
 }
+
+#[tauri::command]
+pub fn api_sync_overlay_window(
+    app: tauri::AppHandle,
+    enabled: bool,
+    interactive: bool,
+) -> Result<crate::services::live_overlay::GameWindowRect, String> {
+    crate::services::live_overlay::sync_overlay_window(&app, enabled, interactive)
+}
+
+#[tauri::command]
+pub async fn api_scan_live_augment_cards(
+    champion_id: Option<i64>,
+    with_augment_ids: Option<Vec<String>>,
+) -> Result<Vec<crate::models::history::MayhemAugmentItem>, String> {
+    crate::services::live_overlay::scan_in_game_augment_cards(
+        champion_id,
+        with_augment_ids.unwrap_or_default(),
+    )
+    .await
+}
+
+#[tauri::command]
+pub fn api_emit_overlay_state(
+    app: tauri::AppHandle,
+    payload: serde_json::Value,
+) -> Result<(), String> {
+    use tauri::Emitter;
+    crate::services::live_overlay::update_overlay_ui_state(&payload);
+    app.emit("overlay:state-sync", &payload)
+        .map_err(|e| e.to_string())
+}

@@ -26,6 +26,7 @@ pub struct LivePlayerStats {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LiveGameState {
     pub is_in_game: bool,
+    pub game_mode: String,
     pub game_time: f64,
     pub champion_name: String,
     pub level: u32,
@@ -38,6 +39,7 @@ impl LiveGameState {
     pub fn not_in_game() -> Self {
         Self {
             is_in_game: false,
+            game_mode: String::new(),
             game_time: 0.0,
             champion_name: String::new(),
             level: 0,
@@ -119,6 +121,12 @@ pub async fn fetch_live_game_state() -> Result<LiveGameState, String> {
         .and_then(|g| g.get("gameTime"))
         .and_then(|v| v.as_f64())
         .unwrap_or(0.0);
+    let game_mode = data
+        .get("gameData")
+        .and_then(|g| g.get("gameMode"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
 
     let mut items = Vec::new();
     let mut champ_name = String::new();
@@ -165,6 +173,7 @@ pub async fn fetch_live_game_state() -> Result<LiveGameState, String> {
 
     Ok(LiveGameState {
         is_in_game: true,
+        game_mode,
         game_time,
         champion_name: champ_name,
         level,
@@ -179,6 +188,9 @@ pub fn start_live_game_polling(app: AppHandle) {
         let mut was_in_game = false;
         loop {
             tokio::time::sleep(Duration::from_millis(1500)).await;
+            let window_rect = crate::services::live_overlay::get_league_game_window_rect();
+            let _ = app.emit("live:window-rect", &window_rect);
+
             match fetch_live_game_state().await {
                 Ok(state) => {
                     if state.is_in_game {

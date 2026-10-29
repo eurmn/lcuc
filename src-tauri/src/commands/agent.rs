@@ -70,8 +70,15 @@ pub async fn api_statistics(
         .get("offset")
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(0) as usize;
+    let champion_id = query
+        .get("champion_id")
+        .and_then(serde_json::Value::as_i64)
+        .filter(|&id| id > 0);
 
-    let cache_key = format!("{scope}:{kind}:{hide_low_pickrate}");
+    let cache_key = format!(
+        "{scope}:{kind}:{hide_low_pickrate}:{}",
+        champion_id.unwrap_or(0)
+    );
     let current_gen = ENRICHED_CACHE_GENERATION.load(Ordering::SeqCst);
 
     let cached_dataset = {
@@ -101,6 +108,9 @@ pub async fn api_statistics(
                     serde_json::Value::String("name".to_string()),
                 );
                 obj.insert("descending".to_string(), serde_json::Value::Bool(false));
+                if let Some(cid) = champion_id {
+                    obj.insert("champion_id".to_string(), serde_json::Value::from(cid));
+                }
             }
 
             let response = supervisor
@@ -204,11 +214,20 @@ pub async fn api_statistics(
                         })
                 })
                 .unwrap_or(-999.0),
-            _ => row
-                .get("global_wpa")
-                .or_else(|| row.get("wpa"))
-                .and_then(serde_json::Value::as_f64)
-                .unwrap_or(0.0),
+            _ => {
+                if kind == "combo" {
+                    row.get("synergy_score")
+                        .or_else(|| row.get("global_wpa"))
+                        .or_else(|| row.get("wpa"))
+                        .and_then(serde_json::Value::as_f64)
+                        .unwrap_or(0.0)
+                } else {
+                    row.get("global_wpa")
+                        .or_else(|| row.get("wpa"))
+                        .and_then(serde_json::Value::as_f64)
+                        .unwrap_or(0.0)
+                }
+            }
         };
 
         if sort_key == "name" {

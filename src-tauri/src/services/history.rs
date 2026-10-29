@@ -3662,6 +3662,7 @@ fn parse_facts_for_v2(
 }
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 struct RushItemCandidate {
     item_id: i64,
     rush_score: f64,

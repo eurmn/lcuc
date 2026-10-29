@@ -55,9 +55,10 @@ function isPoroSnax(row: ServerStatisticsResponse["rows"][number]) {
 
 function key(query: ServerStatisticsQuery) {
   return JSON.stringify({
-    version: 6,
+    version: 7,
     scope: query.scope,
     kind: query.kind,
+    champion_id: query.champion_id ?? 0,
     search: query.search ?? "",
     hide_low_pickrate: query.hide_low_pickrate ?? false,
     sort_key: query.sort_key ?? "wpa",
