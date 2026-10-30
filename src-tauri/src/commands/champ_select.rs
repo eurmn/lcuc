@@ -394,15 +394,33 @@ pub async fn api_scan_live_augment_cards(
     with_augment_ids: Option<Vec<String>>,
 ) -> Result<Vec<crate::models::history::OverlayAugmentCard>, String> {
     use tauri::Emitter;
-    let cards = crate::services::live_overlay::scan_in_game_augment_cards(
+    crate::services::live_overlay::set_overlay_scanning(true);
+    let scan_res = crate::services::live_overlay::scan_in_game_augment_cards(
         champion_id,
         with_augment_ids.unwrap_or_default(),
     )
-    .await?;
+    .await;
+    crate::services::live_overlay::set_overlay_scanning(false);
 
-    crate::services::live_overlay::update_overlay_cards(&cards);
-    let _ = app.emit("overlay:cards-updated", &cards);
-    Ok(cards)
+    match scan_res {
+        Ok(cards) => {
+            let msg = format!("Found {} augment cards", cards.len());
+            crate::services::live_overlay::show_overlay_status_toast(&msg, false);
+            crate::services::live_overlay::update_overlay_cards(&cards);
+            let _ = app.emit("overlay:cards-updated", &cards);
+            Ok(cards)
+        }
+        Err(err) => {
+            crate::services::live_overlay::show_overlay_status_toast(&err, true);
+            let _ = app.emit("overlay:scan-error", &err);
+            Err(err)
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn api_get_items_catalog() -> Result<HashMap<i32, crate::services::history::CachedItemInfo>, String> {
+    crate::services::history::get_items_by_id().await
 }
 
 #[tauri::command]

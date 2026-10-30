@@ -15,6 +15,7 @@
     currentBuildItemIds = [],
     hideLowPickrate = false,
     agentOperations = [],
+    itemsCatalog = {},
     onSelectAugment,
     onSelectItem,
   }: {
@@ -24,6 +25,14 @@
     currentBuildItemIds?: number[];
     hideLowPickrate?: boolean;
     agentOperations?: AgentOperationDto[];
+    itemsCatalog?: Record<number, {
+      name: string;
+      icon_url: string;
+      item_class?: string;
+      description?: string;
+      price_total: number;
+      categories: string[];
+    }>;
     onSelectAugment?: (aug: { id: string; name: string; icon_url: string; rarity?: string; description?: string }) => void;
     onSelectItem?: (item: { id: number; name: string; icon_url: string; price_total?: number; item_class?: string; description?: string }) => void;
   } = $props();
@@ -106,6 +115,50 @@
     if (!n) return "0";
     if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
     return n.toString();
+  }
+
+  function isAugmentQuestItem(id: number): boolean {
+    return [228002, 994403, 4403, 224403, 664403, 226668, 223069, 1111].includes(id);
+  }
+
+  function playerHasAugmentForItem(itemId: number, augIds: string[]): boolean {
+    const lower = augIds.map((a) => a.toLowerCase());
+    const hasAny = (keys: string[]) => lower.some((a) => keys.some((k) => a === k || a.includes(k)));
+    if (itemId === 228002) return hasAny(["1156", "156", "wooglet"]);
+    if ([994403, 4403, 224403, 664403].includes(itemId)) return hasAny(["1154", "154", "urf"]);
+    if (itemId === 226668) return hasAny(["2141", "ultrahydra", "ultra hydra"]);
+    if (itemId === 223069) return hasAny(["393", "1361", "icathia", "voidimmolation", "void immolation"]);
+    if (itemId === 1111) return hasAny(["jarvan"]);
+    return true;
+  }
+
+  function isLegendaryItem(comp: ComboComponentDto): boolean {
+    if (comp.kind !== "item") return true;
+    const id = Number(comp.id);
+    if (!id || id <= 0) return false;
+
+    // Filter out augment-exclusive reward items unless player has the augment
+    if (isAugmentQuestItem(id) && !playerHasAugmentForItem(id, currentAugmentIds)) {
+      return false;
+    }
+
+    const itemInfo = itemsCatalog[id];
+    if (itemInfo) {
+      const cls = (itemInfo.item_class || "").toLowerCase();
+      if (cls === "component" || cls === "starter" || cls === "boot" || cls === "consumable") {
+        return false;
+      }
+      if (itemInfo.price_total < 2000 && !cls.includes("legendary") && !cls.includes("mythic")) {
+        return false;
+      }
+      return true;
+    }
+    // Fallback: exclude known components/starters/boots
+    if ([1001, 3006, 3009, 3020, 3047, 3111, 3117, 3158, 2422].includes(id)) return false;
+    if ([1054, 1055, 1056, 1082, 1083, 2055, 3184, 3850, 3851, 3853, 3854, 3855, 3857, 3858, 3859, 3860, 3862, 3863, 3864].includes(id)) return false;
+    // Known basic/epic components:
+    if ([1036, 1052, 1058, 1037, 1038, 1053, 3044, 3067, 1018, 3076, 3145, 1011, 1028, 4630, 3070, 2031, 2003, 220013].includes(id)) return false;
+    return true;
   }
 
   function isBootOrStarter(comp: ComboComponentDto): boolean {
@@ -212,8 +265,8 @@
         }
       }
 
-      // Filter out combos containing boots or starters
-      if (row.components.some(isBootOrStarter)) {
+      // Filter out combos containing boots, starters, or non-legendary item components
+      if (row.components.some(isBootOrStarter) || !row.components.every(isLegendaryItem)) {
         continue;
       }
 

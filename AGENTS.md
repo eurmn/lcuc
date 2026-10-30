@@ -18,6 +18,27 @@
   - **ARAM Mayhem Patch / Augment Data** -> instruct `scout` to use `exa` / `websearch`.
   - **JSON, CSS, Env Vars, or String Literals** -> instruct `scout` to use `grep` followed by scoped `read` (`offset` + `limit` <= 60 lines).
 
+### Task Initialization & Board Protocol
+- **Task Identification**: When starting any task, ALWAYS define a unique Task ID and Task Name (e.g. `task-mayhem-build-engine`).
+- **Internal Task Sub-Board**: ALWAYS create an internal sub-board file at `@llm/board/<task_name>/board.md` with problem context, initial message, architecture notes, and references to related walkthroughs BEFORE spawning any agents.
+- **Common Board Logging**: The shared board at `@llm/BOARD.md` MUST be logged with the Task ID, a link to the internal task sub-board (`@llm/board/<task_name>/board.md`), and links to any related walkthrough files (`@llm/docs/historical/walkthrough/<feature>_walkthrough.md`).
+- **Progress Tracking**: All participating agents append log entries directly to `@llm/board/<task_name>/board.md` using `### [@<agent>-<specialty>] YYYY-MM-DD HH:MM`.
+
+### Agent Spawning Protocol (Mandatory for Orchestrator & Worker)
+All agents capable of spawning subagents (`orchestrator`, `worker`):
+- **Explicit Descriptive Name & Goals**: MUST ALWAYS spawn subagents with an explicit descriptive name (`description`) and concrete goals.
+- **Context-Based Specialization**: MUST specialize the agent based on the target context (e.g. Rust backend specialist, Svelte 5 UI specialist, Win32 native overlay specialist, SQLite/algorithm mining specialist, LCU/Live Client API recon specialist).
+- **Mandatory Prompt Context**: MUST ALWAYS pass:
+  1. Task ID and Task Name.
+  2. Sub-board file path (`@llm/board/<task_name>/board.md`).
+  3. Exact concrete goal and acceptance criteria.
+  4. Strict file ownership (strictly disjoint one-file-one-agent ownership).
+  5. Expected output and verification requirements.
+- **Worker Helper Subagent Spawning**:
+  - `worker` may spawn specialized helper subagents (e.g. focused AST search, specialized crate research, or auxiliary builder task) with explicit names, goals, and disjoint file scopes.
+  - Worker logs spawning intent, progress, and results into the task sub-board (`@llm/board/<task_name>/board.md`).
+  - Sub-agents spawned by another worker MUST NOT spawn further workers (prevents recursive explosion).
+
 ## Mission and architecture
 
 LCU Companion is a Tauri 2 desktop application for League of Legends. Svelte 5
@@ -63,11 +84,6 @@ dual-binary compilation race conditions, TCP socket overhead, and port reservati
 Windows.
 
 A standalone binary target remains available at `src-tauri/src/bin/lcu-companion-agent.rs`
-if external standalone execution is ever needed:
-
-```bash
-cargo build --manifest-path src-tauri\Cargo.toml --bin lcu-companion-agent
-```
 
 ## Database ownership & storage
 
@@ -130,12 +146,7 @@ from `agent_operations` and `global_aram_config`.
 
 ## Validation
 
-```bash
-cargo fmt --manifest-path src-tauri\Cargo.toml -- --check
-cargo build --manifest-path src-tauri\Cargo.toml --bin lcu-companion-agent
-bun run check
-git diff --check
-```
+Use LSP commands for rust (rust-analyzer) and svelte.
 ---
 
 ## 4. Subsystem Deep-Dives
@@ -212,13 +223,9 @@ bun run tauri dev
 
 ### Command Execution Guidelines
 - **No Unsolicited Checks or Tests**: **DO NOT** run check, build, or test commands (such as `cargo check`, `cargo test`, `svelte-check`, `vite build`, etc.) without the user's direct and explicit request. Ask the user if they want instead.
+- You CAN use LSP commands to check for errors in your files. You have svelte, typescript and rust-analyzer LSP tools.
 
 ## Package Manager & Tooling
 - Always use `bun` instead of `npm` or `pnpm` for installing dependencies, running scripts, and managing packages in this repository.
 - Do not run `bun run check` automatically or proactively without the user explicitly asking for it.
-- When the user explicitly requests type-checking Svelte components and TypeScript in this project, use:
-  ```bash
-  bun run check
-  ```
-- Do not run `cargo check` or `cargo build` proactively before finishing code changes. Only run check/test commands after all code modifications are complete.
 

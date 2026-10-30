@@ -22,38 +22,22 @@ use tokio_tungstenite::Connector;
 const PORO_SNAX_IDS: [i64; 2] = [2050, 2052];
 
 pub fn is_boot_item_id(id: i64) -> bool {
-    matches!(
-        id,
-        1001 | 2422
-            | 3005
-            | 3006
-            | 3009
-            | 3020
-            | 3047
-            | 3111
-            | 3117
-            | 3158
-            | 223006
-            | 223009
-            | 223020
-            | 223047
-            | 223111
-            | 223158
-    )
+    crate::build_engine::item_catalog::is_completed_boot(id as u32)
 }
 
 pub fn is_starter_item_id(id: i64) -> bool {
-    matches!(
-        id,
-        1054 | 1055 | 1056 | 1082 | 2051 | 3177 | 3184 | 3112 | 3070
-    )
+    !crate::build_engine::item_catalog::is_legendary_item(id as u32)
+        && !crate::build_engine::item_catalog::is_completed_boot(id as u32)
+        || crate::build_engine::item_catalog::is_augment_reward_item(id as u32)
 }
 
 fn is_boot_combo_id(combo_id: &str) -> bool {
     for part in combo_id.trim_start_matches("combo:").split('+') {
         if let Some(item_id_str) = part.strip_prefix("item:") {
             if let Ok(id) = item_id_str.parse::<i64>() {
-                if is_boot_item_id(id) || is_starter_item_id(id) {
+                if !crate::build_engine::item_catalog::is_legendary_item(id as u32)
+                    || crate::build_engine::item_catalog::is_augment_reward_item(id as u32)
+                {
                     return true;
                 }
             }
@@ -5088,7 +5072,6 @@ pub async fn collector_loop(path: PathBuf, runtime: Arc<RwLock<RuntimeState>>) {
     let mut was_connected = false;
     let mut last_reconciled_puuid: Option<String> = None;
     let mut last_reconciliation_time = Instant::now() - Duration::from_secs(120);
-    let mut last_summoner_check = Instant::now() - Duration::from_secs(120);
     {
         let (initial_patch, patch_changed) =
             crate::services::patch_manager::ensure_patch_freshness(None).await;
@@ -5175,12 +5158,9 @@ pub async fn collector_loop(path: PathBuf, runtime: Arc<RwLock<RuntimeState>>) {
             }
         }
 
-        let puuid = if last_reconciled_puuid.is_some()
-            && last_summoner_check.elapsed() < Duration::from_secs(30)
-        {
-            last_reconciled_puuid.clone()
+        let puuid = if let Some(ref cached_puuid) = last_reconciled_puuid {
+            Some(cached_puuid.clone())
         } else {
-            last_summoner_check = Instant::now();
             client
                 .get_json::<Value>("/lol-summoner/v1/current-summoner")
                 .await
@@ -5286,7 +5266,21 @@ pub async fn collector_loop(path: PathBuf, runtime: Arc<RwLock<RuntimeState>>) {
         }
 
         if let Some(puuid) = puuid.as_deref() {
-            let should_start = {
+            let global_path = global_aram_database_path();
+            let limit_reached = tokio::task::spawn_blocking({
+                let p = global_path.clone();
+                move || {
+                    let current = global_game_count(&p).unwrap_or(0);
+                    let limit = global_game_limit(&p).unwrap_or(0);
+                    limit > 0 && current >= limit
+                }
+            })
+            .await
+            .unwrap_or(false);
+
+            let should_start = if limit_reached {
+                false
+            } else {
                 let mut state = runtime.write().await;
                 if state.global_collection_running {
                     false
@@ -5443,7 +5437,9 @@ pub async fn websocket_loop(runtime: Arc<RwLock<RuntimeState>>) {
                         state.collector_state = "live".to_string();
                         COLLECTOR_WAKEUP.notify_one();
                     }
-                } else if uri == "/lol-login/v1/session" {
+                } else if uri == "/lol-login/v1/session"
+                    || uri == "/lol-summoner/v1/current-summoner"
+                {
                     let mut state = runtime.write().await;
                     state.collector_state = "event_pending".to_string();
                     COLLECTOR_WAKEUP.notify_one();

@@ -80,15 +80,33 @@
     }
   }
 
+  let scanToast = $state<{ message: string; isError: boolean } | null>(null);
+  let scanToastTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  function showToast(message: string, isError = false) {
+    if (scanToastTimeout) clearTimeout(scanToastTimeout);
+    scanToast = { message, isError };
+    scanToastTimeout = setTimeout(() => {
+      scanToast = null;
+      scanToastTimeout = null;
+    }, 3500);
+  }
+
   async function handleScanCards() {
     if (scanning) return;
     scanning = true;
+    showToast("Scanning screen for augment cards...", false);
     try {
       const cards = await scanLiveAugmentCards(championId > 0 ? championId : undefined, augmentIds);
       if (cards && cards.length > 0) {
         offeredAugments = cards;
+        showToast(`Found ${cards.length} augment cards`, false);
+      } else {
+        showToast("No augment cards recognized", true);
       }
     } catch (err) {
+      const errStr = typeof err === "string" ? err : (err as Error)?.message || "Scan failed";
+      showToast(errStr, true);
       logger.warn("overlay", "Scan cards failed", err);
     } finally {
       scanning = false;
@@ -327,6 +345,18 @@
 <div class="relative w-screen h-screen overflow-hidden select-none bg-transparent">
   <canvas bind:this={cardCanvas} class="absolute inset-0 w-full h-full pointer-events-none" style="z-index: 40;"></canvas>
 
+  <!-- Scan Status Toast Banner -->
+  {#if scanToast}
+    <div
+      class="absolute top-4 left-1/2 -translate-x-1/2 z-50 pointer-events-none flex items-center gap-2 px-4 py-2 rounded-xl border shadow-2xl backdrop-blur-md transition-all animate-bounce {scanToast.isError
+        ? 'border-red-500/80 bg-red-950/90 text-red-200'
+        : 'border-amber-500/80 bg-gray-950/90 text-amber-200'}"
+    >
+      <span class={scanToast.isError ? "icon-[heroicons--exclamation-triangle] text-red-400 text-base" : "icon-[heroicons--information-circle] text-amber-400 text-base"}></span>
+      <span class="text-xs font-bold tracking-wide">{scanToast.message}</span>
+    </div>
+  {/if}
+
   <!-- Top-Right Compact Mayhem HUD Pill & Drawer -->
   <div
     class="absolute top-3 right-3 pointer-events-auto flex flex-col items-end transition"
@@ -350,14 +380,18 @@
         </span>
       {/if}
 
-      <div class="flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-purple-950/90 border border-purple-500/40 text-[10px] font-bold text-purple-200">
+      <button
+        type="button"
+        onclick={handleScanCards}
+        class="flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-purple-950/90 hover:bg-purple-900/90 border border-purple-500/40 text-[10px] font-bold text-purple-200 cursor-pointer transition"
+      >
         <kbd class="px-1 py-0.5 rounded bg-purple-800 text-white font-mono text-[9px]">F8</kbd>
         <span>{scanning ? "Scanning..." : offeredAugments.length > 0 ? "Rescan Cards" : "Scan Cards"}</span>
         {#if offeredAugments.length > 0}
           <kbd class="ml-1 px-1 py-0.5 rounded bg-gray-800 text-gray-300 font-mono text-[9px]">F7</kbd>
           <span class="text-gray-400">Hide</span>
         {/if}
-      </div>
+      </button>
 
       <button
         type="button"

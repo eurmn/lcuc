@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod agent_supervisor;
+pub mod build_engine;
 pub mod commands;
 pub mod logger;
 pub mod models;
@@ -13,7 +14,9 @@ use commands::{
         api_set_global_aram_limit, api_set_global_aram_workers, api_statistics,
         api_stop_global_aram_crawler,
     },
-    api_champ_select_session, api_champ_select_swap, api_delete_runeset,
+    api_champ_select_session, api_champ_select_swap, api_compute_mayhem_build_recommendation,
+    api_get_items_catalog,
+    api_delete_runeset,
     api_delete_saved_mayhem_build, api_detect_champion_from_name, api_emit_overlay_state,
     api_export_mayhem_build, api_export_saved_rune_page, api_get_champion_roster,
     api_get_champions, api_get_live_build_advice, api_get_live_game_state,
@@ -50,6 +53,7 @@ pub fn run() {
             app.manage(supervisor);
 
         let _ = crate::services::native_overlay::ensure_overlay_process_started();
+        let _ = crate::build_engine::host::ensure_build_engine_process_started();
 
             let status_item =
                 MenuItem::with_id(app, "status", "Crawler: Idle", false, None::<&str>)?;
@@ -91,7 +95,10 @@ pub fn run() {
                             }
                         }
                     }
-                    "quit" => app.exit(0),
+                    "quit" => {
+                        crate::services::native_overlay::shutdown_native_overlay();
+                        app.exit(0);
+                    }
                     _ => {}
                 })
                 .on_tray_icon_event(move |tray, event| {
@@ -130,8 +137,9 @@ pub fn run() {
             let app_handle_for_status = app.handle().clone();
             let status_item_clone = status_item.clone();
             tauri::async_runtime::spawn(async move {
+                let mut sleep_duration = tokio::time::Duration::from_secs(3);
                 loop {
-                    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                    tokio::time::sleep(sleep_duration).await;
                     if let Some(supervisor) = app_handle_for_status.try_state::<AgentSupervisor>() {
                         if let Ok(config) = supervisor.request("global_aram_config").await {
                             let paused = config
@@ -151,16 +159,22 @@ pub fn run() {
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("");
 
-                            let status_text = if paused {
-                                "Crawler: Paused".to_string()
+                            let (status_text, is_active) = if paused {
+                                ("Crawler: Paused".to_string(), false)
                             } else if rate > 0.05 || progress > 0.0 {
                                 if !eta.is_empty() {
-                                    format!("Crawler: {:.1}% ({})", progress, eta)
+                                    (format!("Crawler: {:.1}% ({})", progress, eta), true)
                                 } else {
-                                    format!("Crawler: {:.1}% ({:.1}/s)", progress, rate)
+                                    (format!("Crawler: {:.1}% ({:.1}/s)", progress, rate), true)
                                 }
                             } else {
-                                "Crawler: Idle".to_string()
+                                ("Crawler: Idle".to_string(), false)
+                            };
+
+                            sleep_duration = if is_active {
+                                tokio::time::Duration::from_secs(3)
+                            } else {
+                                tokio::time::Duration::from_secs(10)
                             };
 
                             let _ = status_item_clone.set_text(status_text);
@@ -230,7 +244,14 @@ pub fn run() {
             api_sync_overlay_window,
             api_scan_live_augment_cards,
             api_emit_overlay_state,
+            api_compute_mayhem_build_recommendation,
+            api_get_items_catalog,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|_app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                crate::services::native_overlay::shutdown_native_overlay();
+            }
+        });
 }

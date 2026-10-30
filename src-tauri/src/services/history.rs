@@ -472,7 +472,7 @@ fn classify_item(
     None
 }
 
-async fn get_items_by_id() -> Result<HashMap<i32, CachedItemInfo>, String> {
+pub async fn get_items_by_id() -> Result<HashMap<i32, CachedItemInfo>, String> {
     let _ = crate::services::patch_manager::ensure_patch_freshness(None).await;
     {
         let cache = ITEMS_CACHE.read().await;
@@ -6433,6 +6433,14 @@ pub async fn enrich_overlay_augment_cards(
     let items_catalog = get_items_by_id().await.ok();
     let mut enriched_cards = Vec::with_capacity(cards.len());
 
+    let champ_index = if let Some(cid) = champion_id.filter(|&id| id > 0) {
+        crate::build_engine::cache::get_or_build_champion_index(cid as u32)
+            .ok()
+            .map(|(idx, _)| idx)
+    } else {
+        None
+    };
+
     for (slot, aug) in cards {
         let mut synergy_items: Vec<OverlaySynergyItem> = Vec::new();
         let mut combos: Vec<OverlayComboEntry> = Vec::new();
@@ -6445,81 +6453,46 @@ pub async fn enrich_overlay_augment_cards(
             0.0
         };
 
-        if let Some(cid) = champion_id.filter(|&id| id > 0) {
-            if let Ok(summary) =
-                compute_mayhem_champion_build(cid, vec![aug.name.clone()], Some("v2".to_string()))
-                    .await
-            {
-                let chosen_strat = summary
-                    .strategies
-                    .iter()
-                    .find(|s| s.id.starts_with("aug_"))
-                    .or_else(|| summary.strategies.iter().find(|s| s.id == "highest_wr"))
-                    .or_else(|| summary.strategies.first());
+        if let Some(ref index) = champ_index {
+            let mut top_synergies = crate::build_engine::bitset_miner::find_top_legendary_items_for_augment(
+                index,
+                &aug.id,
+                2,
+            );
+            if top_synergies.is_empty() {
+                top_synergies = crate::build_engine::bitset_miner::find_top_legendary_items_for_augment(
+                    index,
+                    &aug.name,
+                    2,
+                );
+            }
 
-                if let Some(strat) = chosen_strat {
-                    for a in strat
-                        .augments
-                        .iter()
-                        .filter(|a| !a.name.eq_ignore_ascii_case(&aug.name) && a.games > 0)
-                        .take(2)
-                    {
-                        combos.push(OverlayComboEntry {
-                            label: format!("+ {}", a.name),
-                            win_rate: a.win_rate,
-                            wpa: a.wpa,
-                            games: a.games,
-                            items: vec![OverlaySynergyItem {
-                                id: 0,
-                                name: a.name.clone(),
-                                icon_url: a.icon_url.clone(),
-                            }],
-                        });
+            for item_res in top_synergies {
+                let (name, icon_url) = if let Some(cat) = &items_catalog {
+                    if let Some(cached) = cat.get(&(item_res.item_id as i32)) {
+                        (cached.name.clone(), cached.icon_url.clone())
+                    } else {
+                        (format!("Item {}", item_res.item_id), String::new())
                     }
+                } else {
+                    (format!("Item {}", item_res.item_id), String::new())
+                };
 
-                    let candidates: Vec<&MayhemBuildItem> = strat
-                        .items
-                        .iter()
-                        .filter(|it| {
-                            it.id > 0
-                                && it.item_class.as_deref() != Some("boot")
-                                && !it.name.to_lowercase().contains("boots")
-                                && !it.name.to_lowercase().contains("greaves")
-                                && !it.name.to_lowercase().contains("shoes")
-                                && !it.name.to_lowercase().contains("treads")
-                        })
-                        .take(2)
-                        .collect();
+                let final_icon = get_cached_asset_data_uri(&icon_url).await;
+                let synergy_item = OverlaySynergyItem {
+                    id: item_res.item_id as i64,
+                    name: name.clone(),
+                    icon_url: final_icon,
+                };
+                synergy_items.push(synergy_item.clone());
 
-                    for item in candidates {
-                        let (name, icon_url) = if let Some(cat) = &items_catalog {
-                            if let Some(cached) = cat.get(&(item.id as i32)) {
-                                (cached.name.clone(), cached.icon_url.clone())
-                            } else {
-                                (item.name.clone(), item.icon_url.clone())
-                            }
-                        } else {
-                            (item.name.clone(), item.icon_url.clone())
-                        };
-
-                        let final_icon = get_cached_asset_data_uri(&icon_url).await;
-                        synergy_items.push(OverlaySynergyItem {
-                            id: item.id,
-                            name,
-                            icon_url: final_icon,
-                        });
-                    }
-
-                    if synergy_items.len() >= 2 {
-                        combos.push(OverlayComboEntry {
-                            label: format!("{} + {}", synergy_items[0].name, synergy_items[1].name),
-                            win_rate: strat.build_win_rate,
-                            wpa: strat.build_wpa,
-                            games: strat.sample_games,
-                            items: synergy_items.iter().take(2).cloned().collect(),
-                        });
-                    }
-                }
+                combos.push(OverlayComboEntry {
+                    label: name,
+                    win_rate: item_res.win_rate,
+                    wpa: item_res.lift,
+                    games: item_res.sample_size,
+                    items: vec![synergy_item],
+                });
             }
         }
 

@@ -20,6 +20,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::Connector;
 
 pub static LCU_CONNECTED: AtomicBool = AtomicBool::new(false);
+pub static COMPANION_SLOT_READY: AtomicBool = AtomicBool::new(false);
 
 pub struct LcuWsWatcher;
 
@@ -49,14 +50,16 @@ impl LcuWsWatcher {
                 if was_connected {
                     was_connected = false;
                     LCU_CONNECTED.store(false, Ordering::Relaxed);
+                    COMPANION_SLOT_READY.store(false, Ordering::Relaxed);
                     let _ = app.emit("lcu:disconnected", ());
                 }
             } else if was_connected {
                 was_connected = false;
                 LCU_CONNECTED.store(false, Ordering::Relaxed);
+                COMPANION_SLOT_READY.store(false, Ordering::Relaxed);
                 let _ = app.emit("lcu:disconnected", ());
             }
-            sleep(Duration::from_secs(1)).await;
+            sleep(Duration::from_secs(5)).await;
         }
     }
 
@@ -111,8 +114,12 @@ impl LcuWsWatcher {
         let _ = app.emit("lcu:summoner-changed", ());
         let _ = app.emit("lcu:runes-changed", ());
 
-        if let Ok(client) = LcuClient::new(creds.clone()) {
-            let _ = ensure_companion_slot(&client).await;
+        if !COMPANION_SLOT_READY.load(Ordering::Relaxed) {
+            if let Ok(client) = LcuClient::new(creds.clone()) {
+                if let Ok(Some(_)) = ensure_companion_slot(&client).await {
+                    COMPANION_SLOT_READY.store(true, Ordering::Relaxed);
+                }
+            }
         }
 
         while let Some(msg_result) = read.next().await {
@@ -130,6 +137,7 @@ impl LcuWsWatcher {
         }
 
         LCU_CONNECTED.store(false, Ordering::Relaxed);
+        COMPANION_SLOT_READY.store(false, Ordering::Relaxed);
         Ok(())
     }
 
@@ -145,12 +153,15 @@ impl LcuWsWatcher {
                 let uri = payload.get("uri").and_then(|v| v.as_str()).unwrap_or("");
 
                 // When user logs in or profile changes, ensure companion slot is ready
-                if uri == "/lol-login/v1/session"
+                if (uri == "/lol-login/v1/session"
                     || uri == "/lol-summoner/v1/current-summoner"
-                    || uri == "/lol-gameflow/v1/gameflow-phase"
+                    || uri == "/lol-gameflow/v1/gameflow-phase")
+                    && !COMPANION_SLOT_READY.load(Ordering::Relaxed)
                 {
                     if let Ok(client) = LcuClient::new(creds.clone()) {
-                        let _ = ensure_companion_slot(&client).await;
+                        if let Ok(Some(_)) = ensure_companion_slot(&client).await {
+                            COMPANION_SLOT_READY.store(true, Ordering::Relaxed);
+                        }
                     }
                 }
 

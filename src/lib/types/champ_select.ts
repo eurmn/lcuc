@@ -258,3 +258,41 @@ export interface ExportBuildResult {
   spells_applied: boolean;
   message: string;
 }
+
+export interface ActiveComboSynergy {
+  combo_type: string;
+  item_ids: number[];
+  augment_ids: string[];
+  label: string;
+  win_rate: number;
+  wpa: number;
+  sample_size: number;
+}
+
+export interface ItemRecommendation {
+  item_id: number;
+  win_rate: number;
+  lift: number;
+  sample_size: number;
+  is_boot: boolean;
+  reason: string;
+}
+
+export interface EnginePerformanceStats {
+  load_time_ms: number;
+  compute_time_ms: number;
+  total_time_ms: number;
+  match_count: number;
+  cache_hit: boolean;
+}
+
+export interface BuildRecommendationResult {
+  champion_id: number;
+  active_combos: ActiveComboSynergy[];
+  next_items: ItemRecommendation[];
+  recommended_boots: ItemRecommendation | null;
+  completed_build: ItemRecommendation[];
+  alternative_items: ItemRecommendation[];
+  stats: EnginePerformanceStats;
+}
+

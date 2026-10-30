@@ -1,15 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  BuildRecommendationResult,
   ChampSelectSession,
   ExportBuildPayload,
   ExportBuildResult,
   GameWindowRect,
   LiveGameState,
-  MayhemAugmentItem,
   MayhemAugmentsQuery,
   MayhemAugmentsResponse,
   MayhemChampionBuildSummary,
   MayhemLiveAdvice,
+  OverlayAugmentCard,
   SaveMayhemBuildPayload,
   SavedMayhemBuild,
 } from "../types/champ_select";
@@ -106,17 +107,35 @@ export async function getLiveBuildAdvice(params: {
   });
 }
 
-import type {
-  ChampSelectSession,
-  ChampionBuildResponse,
-  ExportBuildPayload,
-  GameWindowRect,
-  MayhemAugmentItem,
-  MayhemAugmentsQuery,
-  MayhemAugmentsResponse,
-  OverlayAugmentCard,
-  SavedMayhemBuild,
-} from "$lib/types/champ_select";
+export async function getItemsCatalog(): Promise<Record<number, {
+  name: string;
+  icon_url: string;
+  item_class?: string;
+  description?: string;
+  price_total: number;
+  categories: string[];
+}>> {
+  return invoke<Record<number, {
+    name: string;
+    icon_url: string;
+    item_class?: string;
+    description?: string;
+    price_total: number;
+    categories: string[];
+  }>>("api_get_items_catalog");
+}
+
+export async function computeMayhemBuildRecommendation(
+  championId: number,
+  ownedItems: number[],
+  ownedAugments: string[],
+): Promise<BuildRecommendationResult> {
+  return invoke<BuildRecommendationResult>("api_compute_mayhem_build_recommendation", {
+    championId,
+    ownedItems,
+    ownedAugments,
+  });
+}
 
 export async function syncOverlayWindow(enabled: boolean, interactive: boolean): Promise<GameWindowRect> {
   return invoke<GameWindowRect>("api_sync_overlay_window", { enabled, interactive });

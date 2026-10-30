@@ -165,7 +165,8 @@ pub async fn fetch_live_game_state() -> Result<LiveGameState, String> {
                 if let Some(raw_items) = player.get("items").and_then(|v| v.as_array()) {
                     for it in raw_items {
                         let item_id = it.get("itemID").and_then(|v| v.as_i64()).unwrap_or(0);
-                        if item_id > 0 {
+                        // Filter out empty slots, Poro-Snax (2050, 2052, 220013)
+                        if item_id > 0 && item_id != 2050 && item_id != 2052 && item_id != 220013 {
                             items.push(LivePlayerItem {
                                 slot: it.get("slot").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
                                 item_id,
@@ -207,20 +208,50 @@ pub fn start_live_game_polling(app: AppHandle) {
         let mut last_champ_name = String::new();
 
         loop {
-            tokio::time::sleep(Duration::from_millis(75)).await;
             let window_rect = crate::services::live_overlay::get_league_game_window_rect();
+
+            if !window_rect.found {
+                if was_in_game {
+                    was_in_game = false;
+                    cards_visible = false;
+                    last_champ_name.clear();
+                    crate::services::live_overlay::clear_overlay_cards();
+                    crate::services::live_overlay::hide_overlay_window(&app);
+                    let not_in_game = LiveGameState::not_in_game();
+                    let _ = app.emit("live:game-state", &not_in_game);
+                    let _ = app.emit("live:state-updated", &not_in_game);
+                }
+                tokio::time::sleep(Duration::from_millis(1500)).await;
+                continue;
+            }
+
+            tokio::time::sleep(Duration::from_millis(75)).await;
 
             if tick % 20 == 0 {
                 let _ = app.emit("live:window-rect", &window_rect);
                 match fetch_live_game_state().await {
                     Ok(state) => {
                         if state.is_in_game {
+                            if !was_in_game {
+                                crate::logger::write(
+                                    crate::logger::Level::Info,
+                                    "live_game",
+                                    &format!("Detected active match with champion '{}', window at ({},{}) {}x{}, foreground={}", state.champion_name, window_rect.x, window_rect.y, window_rect.width, window_rect.height, window_rect.is_foreground),
+                                    None,
+                                );
+                            }
                             was_in_game = true;
                             last_champ_name = state.champion_name.clone();
                             crate::services::live_overlay::set_overlay_champion_and_strategy(&state.champion_name, "");
                             let _ = app.emit("live:game-state", &state);
                             let _ = app.emit("live:state-updated", &state);
                         } else if was_in_game {
+                            crate::logger::write(
+                                crate::logger::Level::Info,
+                                "live_game",
+                                "Match ended or player exited game",
+                                None,
+                            );
                             was_in_game = false;
                             cards_visible = false;
                             last_champ_name.clear();
@@ -231,8 +262,14 @@ pub fn start_live_game_polling(app: AppHandle) {
                             let _ = app.emit("live:state-updated", &not_in_game);
                         }
                     }
-                    Err(_) => {
+                    Err(err) => {
                         if was_in_game {
+                            crate::logger::write(
+                                crate::logger::Level::Warn,
+                                "live_game",
+                                &format!("Failed to poll Live Client API while in game: {err}"),
+                                None,
+                            );
                             was_in_game = false;
                             cards_visible = false;
                             last_champ_name.clear();
@@ -248,6 +285,14 @@ pub fn start_live_game_polling(app: AppHandle) {
 
             let overlay_enabled = crate::services::live_overlay::is_overlay_enabled();
             if !overlay_enabled || !window_rect.found || !window_rect.is_foreground {
+                if tick % 40 == 0 && was_in_game {
+                    crate::logger::write(
+                        crate::logger::Level::Debug,
+                        "live_game",
+                        &format!("Overlay suppressed: enabled={overlay_enabled}, window_found={}, is_foreground={}", window_rect.found, window_rect.is_foreground),
+                        None,
+                    );
+                }
                 crate::services::live_overlay::hide_overlay_window(&app);
                 tick = tick.wrapping_add(1);
                 continue;
@@ -278,27 +323,39 @@ pub fn start_live_game_polling(app: AppHandle) {
                     None
                 };
 
-                let cards = crate::services::live_overlay::scan_in_game_augment_cards(
+                let scan_res = crate::services::live_overlay::scan_in_game_augment_cards(
                     champion_id,
                     Vec::new(),
                 )
-                .await
-                .unwrap_or_default();
+                .await;
                 crate::services::live_overlay::set_overlay_scanning(false);
                 let _ = app.emit("overlay:scan-status", &false);
 
-                if !cards.is_empty() {
-                    crate::services::live_overlay::update_overlay_cards(&cards);
-                    crate::services::live_overlay::show_overlay_banner_rect(&app, &window_rect);
-                    let _ = app.emit("overlay:cards-updated", &cards);
-                    cards_visible = true;
-                } else {
-                    crate::services::live_overlay::clear_overlay_cards();
-                    let _ = app.emit(
-                        "overlay:cards-updated",
-                        &Vec::<crate::models::history::OverlayAugmentCard>::new(),
-                    );
-                    cards_visible = false;
+                match scan_res {
+                    Ok(cards) if !cards.is_empty() => {
+                        crate::services::live_overlay::update_overlay_cards(&cards);
+                        crate::services::live_overlay::show_overlay_banner_rect(&app, &window_rect);
+                        let _ = app.emit("overlay:cards-updated", &cards);
+                        cards_visible = true;
+                    }
+                    Ok(_) => {
+                        crate::services::live_overlay::clear_overlay_cards();
+                        crate::services::live_overlay::show_overlay_status_toast("No cards detected", true);
+                        let _ = app.emit(
+                            "overlay:cards-updated",
+                            &Vec::<crate::models::history::OverlayAugmentCard>::new(),
+                        );
+                        cards_visible = false;
+                    }
+                    Err(err_msg) => {
+                        crate::services::live_overlay::clear_overlay_cards();
+                        crate::services::live_overlay::show_overlay_status_toast(&err_msg, true);
+                        let _ = app.emit(
+                            "overlay:cards-updated",
+                            &Vec::<crate::models::history::OverlayAugmentCard>::new(),
+                        );
+                        cards_visible = false;
+                    }
                 }
             } else if f7_pressed && cards_visible {
                 crate::services::live_overlay::clear_overlay_cards();

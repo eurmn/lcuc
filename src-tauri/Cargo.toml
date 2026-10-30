@@ -1,6 +1,6 @@
 [package]
 name = "lcu-companion"
-version = "0.1.2"
+version = "0.1.3"
 description = "LCU Companion Desktop App"
 authors = ["you"]
 edition = "2021"
@@ -21,6 +21,10 @@ path = "src/bin/lcu_overlay.rs"
 [[bin]]
 name = "lcu-companion-agent"
 path = "src/bin/lcu-companion-agent.rs"
+
+[[bin]]
+name = "lcu-build-engine"
+path = "src/bin/lcu_build_engine.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

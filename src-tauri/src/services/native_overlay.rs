@@ -35,6 +35,10 @@ pub struct OverlayRenderPayload {
     pub strategy_label: String,
     pub cards: Vec<OverlayAugmentCard>,
     pub sprites: Vec<OverlayPngSprite>,
+    #[serde(default)]
+    pub status_message: Option<String>,
+    #[serde(default)]
+    pub is_error: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,6 +62,7 @@ pub enum OverlayIpcCommand {
 pub enum OverlayIpcEvent {
     Ready { pid: u32 },
     Calibrated { layout: OverlayAnchorLayout },
+    Log { level: String, message: String },
     Error { message: String },
 }
 
@@ -76,9 +81,9 @@ pub fn compute_default_anchor_layout(
     let banner_y = 18;
 
     let strip_x = (gw * 0.21) as i32;
-    let strip_y = (gh * 0.385) as i32;
+    let strip_y = (gh * 0.36) as i32;
     let strip_w = (gw * 0.58) as i32;
-    let strip_h = (gh * 0.065) as i32;
+    let strip_h = (gh * 0.12) as i32;
 
     let card_w = (gw * 0.17) as i32;
     let card_h = (gh * 0.24) as i32;
@@ -415,6 +420,17 @@ fn resolve_overlay_binary_path() -> std::path::PathBuf {
         if sibling.exists() {
             return sibling;
         }
+        // Check sibling target directories (e.g. debug vs release during dev)
+        if let Some(target_dir) = exe.parent().and_then(|p| p.parent()) {
+            let release_candidate = target_dir.join("release").join(binary_name);
+            if release_candidate.exists() {
+                return release_candidate;
+            }
+            let debug_candidate = target_dir.join("debug").join(binary_name);
+            if debug_candidate.exists() {
+                return debug_candidate;
+            }
+        }
         if let Some(parent) = exe.parent().and_then(|p| p.parent()) {
             let candidate = parent.join(binary_name);
             if candidate.exists() {
@@ -439,7 +455,7 @@ pub fn ensure_overlay_process_started() -> Result<(), String> {
     let mut cmd = std::process::Command::new(&exe_path);
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::inherit());
+        .stderr(std::process::Stdio::piped());
 
     #[cfg(windows)]
     {
@@ -447,9 +463,17 @@ pub fn ensure_overlay_process_started() -> Result<(), String> {
         cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     }
 
+    crate::logger::write(
+        crate::logger::Level::Info,
+        "native_overlay",
+        &format!("Spawning overlay process at {:?}", exe_path),
+        None,
+    );
+
     let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn {:?}: {e}", exe_path))?;
     let stdin = child.stdin.take().ok_or_else(|| "Failed to capture child stdin".to_string())?;
     let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
 
     if let Some(stdout) = stdout {
         std::thread::spawn(move || {
@@ -458,10 +482,71 @@ pub fn ensure_overlay_process_started() -> Result<(), String> {
             for line in reader.lines() {
                 if let Ok(l) = line {
                     if let Ok(evt) = serde_json::from_str::<OverlayIpcEvent>(&l) {
+                        match evt {
+                            OverlayIpcEvent::Log { level, message } => {
+                                let lvl = match level.to_lowercase().as_str() {
+                                    "error" => crate::logger::Level::Error,
+                                    "warn" => crate::logger::Level::Warn,
+                                    "debug" => crate::logger::Level::Debug,
+                                    _ => crate::logger::Level::Info,
+                                };
+                                crate::logger::write(lvl, "overlay", &message, None);
+                            }
+                            OverlayIpcEvent::Ready { pid } => {
+                                crate::logger::write(
+                                    crate::logger::Level::Info,
+                                    "native_overlay",
+                                    &format!("Overlay process ready (PID {})", pid),
+                                    None,
+                                );
+                            }
+                            OverlayIpcEvent::Calibrated { ref layout } => {
+                                crate::logger::write(
+                                    crate::logger::Level::Info,
+                                    "native_overlay",
+                                    &format!(
+                                        "Overlay calibrated: game={}x{} at ({},{})",
+                                        layout.game_width,
+                                        layout.game_height,
+                                        layout.game_x,
+                                        layout.game_y
+                                    ),
+                                    None,
+                                );
+                            }
+                            OverlayIpcEvent::Error { message } => {
+                                crate::logger::write(
+                                    crate::logger::Level::Error,
+                                    "native_overlay",
+                                    &format!("Overlay reported error: {message}"),
+                                    None,
+                                );
+                            }
+                        }
+                    } else if !l.trim().is_empty() {
                         crate::logger::write(
-                            crate::logger::Level::Info,
-                            "native_overlay",
-                            &format!("Overlay child event: {:?}", evt),
+                            crate::logger::Level::Debug,
+                            "overlay",
+                            &format!("[stdout] {}", l.trim()),
+                            None,
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    if let Some(stderr) = stderr {
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            let reader = std::io::BufReader::new(stderr);
+            for line in reader.lines() {
+                if let Ok(l) = line {
+                    if !l.trim().is_empty() {
+                        crate::logger::write(
+                            crate::logger::Level::Error,
+                            "overlay",
+                            &format!("[stderr] {}", l.trim()),
                             None,
                         );
                     }
@@ -549,6 +634,17 @@ static OVERLAY_HWND: AtomicIsize = AtomicIsize::new(0);
 
 lazy_static::lazy_static! {
     static ref PENDING_COMMANDS: Mutex<Vec<OverlayIpcCommand>> = Mutex::new(Vec::new());
+}
+
+fn emit_child_log(level: &str, msg: &str) {
+    let evt = OverlayIpcEvent::Log {
+        level: level.to_string(),
+        message: msg.to_string(),
+    };
+    if let Ok(json) = serde_json::to_string(&evt) {
+        println!("{json}");
+        let _ = std::io::stdout().flush();
+    }
 }
 
 #[cfg(windows)]
@@ -833,46 +929,24 @@ impl OverlayWinContext {
         }
     }
 
-    fn render(&mut self) {
-        let payload = match self.current_payload.clone() {
-            Some(p) if p.visible => p,
-            _ => {
-                unsafe {
-                    windows_sys::Win32::UI::WindowsAndMessaging::ShowWindow(
-                        self.hwnd,
-                        windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE,
-                    );
-                }
-                return;
-            }
-        };
-
-        let layout = match self.layout.as_ref() {
-            Some(l) => l.clone(),
-            None => return,
-        };
-
+    pub fn render_to_buffer(
+        &mut self,
+        buf: &mut [u8],
+        layout: &OverlayAnchorLayout,
+        payload: &OverlayRenderPayload,
+    ) {
         let w = layout.game_width;
         let h = layout.game_height;
         if w <= 0 || h <= 0 {
             return;
         }
 
-        self.ensure_dib_size(w, h);
-        if self.dib_pixels.is_null() {
-            return;
-        }
-
-        let total_bytes = (w * h * 4) as usize;
-        unsafe {
-            std::ptr::write_bytes(self.dib_pixels, 0, total_bytes);
-        }
-        let buf = unsafe { std::slice::from_raw_parts_mut(self.dib_pixels, total_bytes) };
-
         // 1. Top-Right HUD Pill
         let [bx, by, bw, bh] = layout.hud_banner_rect;
         fill_premultiplied_rect(buf, w as u32, h as u32, [bx, by, bw, bh], 9, 13, 22, 230, 10);
-        let (border_r, border_g, border_b) = if payload.scanning {
+        let (border_r, border_g, border_b) = if payload.is_error {
+            (239, 68, 68) // Red
+        } else if payload.scanning {
             (245, 158, 11) // Amber
         } else {
             (6, 182, 212) // Cyan
@@ -891,7 +965,26 @@ impl OverlayWinContext {
         );
 
         if let Some(ref mut tr) = self.text_renderer {
-            if payload.scanning {
+            if let Some(ref msg) = payload.status_message {
+                let (r, g, b) = if payload.is_error {
+                    (239, 68, 68)
+                } else {
+                    (245, 158, 11)
+                };
+                tr.draw_text_line(
+                    buf,
+                    w as u32,
+                    h as u32,
+                    msg,
+                    bx + 14,
+                    by + 12,
+                    FontKind::Bold,
+                    r,
+                    g,
+                    b,
+                    Some(bw - 28),
+                );
+            } else if payload.scanning {
                 tr.draw_text_line(
                     buf,
                     w as u32,
@@ -929,30 +1022,137 @@ impl OverlayWinContext {
         }
 
         // 2. Blit PNG Sprites
-        for sprite in &payload.sprites {
-            if !self.sprite_cache.contains_key(&sprite.id) {
-                if let Some(ref bytes) = sprite.png_base64_or_bytes {
-                    if let Ok(img) = image::load_from_memory(bytes) {
-                        self.sprite_cache.insert(sprite.id.clone(), img.to_rgba8());
-                    }
-                } else if let Some(ref path) = sprite.png_path {
-                    if let Ok(img) = image::open(path) {
-                        self.sprite_cache.insert(sprite.id.clone(), img.to_rgba8());
+        if !payload.sprites.is_empty() {
+            let is_recommended_items = payload
+                .sprites
+                .iter()
+                .any(|s| s.id.starts_with("item_") || s.id.starts_with("boot_"));
+
+            if is_recommended_items {
+                let min_sprite_y = payload.sprites.iter().map(|s| s.y).min().unwrap_or(by + bh + 28);
+                let max_sprite_bottom = payload
+                    .sprites
+                    .iter()
+                    .map(|s| s.y + s.height as i32)
+                    .max()
+                    .unwrap_or(min_sprite_y + 36);
+
+                let box_x = bx.clamp(0, (w - 10).max(0));
+                let box_w = bw.min(w - box_x);
+                let box_y = (by + bh + 6).clamp(0, (h - 10).max(0));
+                let box_h = (max_sprite_bottom - box_y + 6).max(48).min(h - box_y);
+                let box_rect = [box_x, box_y, box_w, box_h];
+
+                fill_premultiplied_rect(buf, w as u32, h as u32, box_rect, 9, 13, 22, 230, 8);
+                draw_premultiplied_border(
+                    buf,
+                    w as u32,
+                    h as u32,
+                    box_rect,
+                    1,
+                    6,
+                    182,
+                    212,
+                    180,
+                    8,
+                );
+
+                if let Some(ref mut tr) = self.text_renderer {
+                    if min_sprite_y >= box_y + 18 {
+                        tr.draw_text_line(
+                            buf,
+                            w as u32,
+                            h as u32,
+                            "RECOMMENDED ITEMS",
+                            box_x + 14,
+                            box_y + 6,
+                            FontKind::Small,
+                            148,
+                            163,
+                            184,
+                            Some(box_w - 28),
+                        );
                     }
                 }
             }
 
-            if let Some(img) = self.sprite_cache.get(&sprite.id) {
-                blit_rgba_sprite(
-                    buf,
-                    w as u32,
-                    h as u32,
-                    img,
-                    sprite.x,
-                    sprite.y,
-                    sprite.width,
-                    sprite.height,
-                );
+            for sprite in &payload.sprites {
+                // Ensure sprite coordinates clip gracefully within window bounds w and h
+                let sx = sprite.x.clamp(0, (w - sprite.width as i32).max(0));
+                let sy = sprite.y.clamp(0, (h - sprite.height as i32).max(0));
+
+                if is_recommended_items {
+                    let (border_r, border_g, border_b) = if sprite.id.contains("boot") {
+                        (245, 158, 11)
+                    } else if sprite.id.contains("next") {
+                        (16, 185, 129)
+                    } else {
+                        (71, 85, 105)
+                    };
+
+                    fill_premultiplied_rect(
+                        buf,
+                        w as u32,
+                        h as u32,
+                        [sx, sy, sprite.width as i32, sprite.height as i32],
+                        15,
+                        23,
+                        42,
+                        255,
+                        4,
+                    );
+                    draw_premultiplied_border(
+                        buf,
+                        w as u32,
+                        h as u32,
+                        [sx, sy, sprite.width as i32, sprite.height as i32],
+                        1,
+                        border_r,
+                        border_g,
+                        border_b,
+                        220,
+                        4,
+                    );
+                }
+
+                if !self.sprite_cache.contains_key(&sprite.id) {
+                    if let Some(ref bytes) = sprite.png_base64_or_bytes {
+                        match image::load_from_memory(bytes) {
+                            Ok(img) => {
+                                emit_child_log("info", &format!("Successfully loaded sprite '{}' from raw IPC bytes ({} bytes)", sprite.id, bytes.len()));
+                                self.sprite_cache.insert(sprite.id.clone(), img.to_rgba8());
+                            }
+                            Err(e) => {
+                                emit_child_log("error", &format!("Failed to load sprite '{}' from IPC memory: {e}", sprite.id));
+                            }
+                        }
+                    } else if let Some(ref path) = sprite.png_path {
+                        match image::open(path) {
+                            Ok(img) => {
+                                emit_child_log("info", &format!("Successfully loaded sprite '{}' from disk path '{path}'", sprite.id));
+                                self.sprite_cache.insert(sprite.id.clone(), img.to_rgba8());
+                            }
+                            Err(e) => {
+                                emit_child_log("error", &format!("Failed to open sprite '{}' at path '{path}': {e}", sprite.id));
+                            }
+                        }
+                    } else {
+                        emit_child_log("warn", &format!("Sprite '{}' has neither bytes nor file path", sprite.id));
+                    }
+                }
+
+                if let Some(img) = self.sprite_cache.get(&sprite.id) {
+                    blit_rgba_sprite(
+                        buf,
+                        w as u32,
+                        h as u32,
+                        img,
+                        sx,
+                        sy,
+                        sprite.width,
+                        sprite.height,
+                    );
+                }
             }
         }
 
@@ -1171,6 +1371,51 @@ impl OverlayWinContext {
                 }
             }
         }
+    }
+
+    fn render(&mut self) {
+        let payload = match self.current_payload.clone() {
+            Some(p) if p.visible => p,
+            _ => {
+                emit_child_log("debug", "render: payload hidden or missing, hiding window");
+                unsafe {
+                    windows_sys::Win32::UI::WindowsAndMessaging::ShowWindow(
+                        self.hwnd,
+                        windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE,
+                    );
+                }
+                return;
+            }
+        };
+
+        let layout = match self.layout.as_ref() {
+            Some(l) => l.clone(),
+            None => {
+                emit_child_log("warn", "render: layout not calibrated yet, cannot render");
+                return;
+            }
+        };
+
+        let w = layout.game_width;
+        let h = layout.game_height;
+        if w <= 0 || h <= 0 {
+            emit_child_log("warn", &format!("render: invalid dimensions {w}x{h}"));
+            return;
+        }
+
+        self.ensure_dib_size(w, h);
+        if self.dib_pixels.is_null() {
+            emit_child_log("error", "render: DIB pixels allocation failed");
+            return;
+        }
+
+        let total_bytes = (w * h * 4) as usize;
+        unsafe {
+            std::ptr::write_bytes(self.dib_pixels, 0, total_bytes);
+        }
+        let buf = unsafe { std::slice::from_raw_parts_mut(self.dib_pixels, total_bytes) };
+
+        self.render_to_buffer(buf, &layout, &payload);
 
         // 4. UpdateLayeredWindow
         unsafe {
@@ -1178,6 +1423,11 @@ impl OverlayWinContext {
             use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
             let screen_dc = GetDC(std::ptr::null_mut());
+            if screen_dc.is_null() {
+                emit_child_log("error", "render: GetDC failed");
+                return;
+            }
+
             let mut pt_dst = windows_sys::Win32::Foundation::POINT {
                 x: layout.game_x,
                 y: layout.game_y,
@@ -1194,7 +1444,7 @@ impl OverlayWinContext {
                 AlphaFormat: AC_SRC_ALPHA as u8,
             };
 
-            UpdateLayeredWindow(
+            let res = UpdateLayeredWindow(
                 self.hwnd,
                 screen_dc,
                 &mut pt_dst,
@@ -1206,6 +1456,13 @@ impl OverlayWinContext {
                 ULW_ALPHA,
             );
             ReleaseDC(std::ptr::null_mut(), screen_dc);
+
+            if res == 0 {
+                let err = windows_sys::Win32::Foundation::GetLastError();
+                emit_child_log("error", &format!("UpdateLayeredWindow failed (err={err}) for rect ({},{}) {}x{}", layout.game_x, layout.game_y, w, h));
+            } else {
+                emit_child_log("debug", &format!("UpdateLayeredWindow rendered successfully at ({},{}) {}x{}, cards={}, sprites={}", layout.game_x, layout.game_y, w, h, payload.cards.len(), payload.sprites.len()));
+            }
 
             ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
             SetWindowPos(
@@ -1271,6 +1528,7 @@ unsafe extern "system" fn overlay_wnd_proc(
                             game_width,
                             game_height,
                         } => {
+                            emit_child_log("info", &format!("Calibrating overlay for game window: ({game_x},{game_y}) {game_width}x{game_height}"));
                             let layout = calibrate_layout_from_single_screenshot(
                                 game_x,
                                 game_y,
@@ -1300,6 +1558,7 @@ unsafe extern "system" fn overlay_wnd_proc(
                         }
                         OverlayIpcCommand::Render { payload } => {
                             let visible = payload.visible;
+                            emit_child_log("debug", &format!("Received Render command: visible={}, champ={}, cards={}, sprites={}", visible, payload.champion_name, payload.cards.len(), payload.sprites.len()));
                             ctx.current_payload = Some(payload);
                             if visible {
                                 ctx.render();
@@ -1308,12 +1567,14 @@ unsafe extern "system" fn overlay_wnd_proc(
                             }
                         }
                         OverlayIpcCommand::Hide => {
+                            emit_child_log("debug", "Received Hide command");
                             if let Some(ref mut p) = ctx.current_payload {
                                 p.visible = false;
                             }
                             ShowWindow(hwnd, SW_HIDE);
                         }
                         OverlayIpcCommand::Shutdown => {
+                            emit_child_log("info", "Received Shutdown command, closing overlay window");
                             DestroyWindow(hwnd);
                             PostQuitMessage(0);
                         }
@@ -1387,9 +1648,12 @@ pub fn run_detached_overlay_process() {
             );
 
             if hwnd.is_null() {
-                eprintln!("Failed to create overlay HWND");
+                let err = windows_sys::Win32::Foundation::GetLastError();
+                emit_child_log("error", &format!("Failed to create overlay HWND (err={err})"));
                 return;
             }
+
+            emit_child_log("info", &format!("Overlay HWND created: {:?}", hwnd));
 
             context.hwnd = hwnd;
             OVERLAY_HWND.store(hwnd as isize, Ordering::Relaxed);
@@ -1421,6 +1685,14 @@ pub fn run_detached_overlay_process() {
                         }
                     }
                 }
+                // When stdin closes (parent process exited or died), quit the message loop
+                let h = OVERLAY_HWND.load(Ordering::Relaxed) as windows_sys::Win32::Foundation::HWND;
+                if !h.is_null() {
+                    let mut q = PENDING_COMMANDS.lock().unwrap();
+                    q.push(OverlayIpcCommand::Shutdown);
+                    PostMessageW(h, WM_APP + 1, 0, 0);
+                }
+                PostQuitMessage(0);
             });
 
             // Windows message loop
@@ -1498,6 +1770,8 @@ mod tests {
                     width: 32,
                     height: 32,
                 }],
+                status_message: None,
+                is_error: false,
             },
         };
         let render_json = serde_json::to_string(&render_cmd).expect("serialize Render");
@@ -1542,7 +1816,7 @@ mod tests {
         assert_eq!(l1080.game_width, 1920);
         assert_eq!(l1080.game_height, 1080);
         assert_eq!(l1080.hud_banner_rect, [1920 - 340 - 24, 18, 340, 42]);
-        assert_eq!(l1080.title_strip_rect, [(1920.0 * 0.21) as i32, (1080.0 * 0.385) as i32, (1920.0 * 0.58) as i32, (1080.0 * 0.065) as i32]);
+        assert_eq!(l1080.title_strip_rect, [(1920.0 * 0.21) as i32, (1080.0 * 0.36) as i32, (1920.0 * 0.58) as i32, (1080.0 * 0.12) as i32]);
         assert_eq!(l1080.card_rects[0], [(1920.0 * 0.21) as i32, (1080.0 * 0.08) as i32, (1920.0 * 0.17) as i32, (1080.0 * 0.24) as i32]);
         assert_eq!(l1080.card_rects[1], [(1920.0 * 0.415) as i32, (1080.0 * 0.08) as i32, (1920.0 * 0.17) as i32, (1080.0 * 0.24) as i32]);
         assert_eq!(l1080.card_rects[2], [(1920.0 * 0.62) as i32, (1080.0 * 0.08) as i32, (1920.0 * 0.17) as i32, (1080.0 * 0.24) as i32]);
@@ -1597,5 +1871,34 @@ mod tests {
         assert_eq!(bg, 0);
         assert_eq!(br, 0);
         assert_eq!(ba, 255);
+    }
+
+    #[test]
+    fn test_recommended_items_sprites_blitting() {
+        let width = 200u32;
+        let height = 150u32;
+        let mut buf = vec![0u8; (width * height * 4) as usize];
+
+        // Draw recommended items background box
+        let box_rect = [10, 10, 180, 50];
+        fill_premultiplied_rect(&mut buf, width, height, box_rect, 9, 13, 22, 230, 8);
+        draw_premultiplied_border(&mut buf, width, height, box_rect, 1, 6, 182, 212, 180, 8);
+
+        // Verify inside box has expected alpha
+        let mid_idx = ((25 * width + 25) * 4) as usize;
+        assert_eq!(buf[mid_idx + 3], 230);
+
+        // Create a 16x16 sprite and blit it
+        let mut sprite = image::RgbaImage::new(16, 16);
+        for p in sprite.pixels_mut() {
+            *p = image::Rgba([245, 158, 11, 255]); // Amber
+        }
+        blit_rgba_sprite(&mut buf, width, height, &sprite, 20, 20, 16, 16);
+
+        let sprite_pixel = ((25 * width + 25) * 4) as usize;
+        assert_eq!(buf[sprite_pixel], 11); // b
+        assert_eq!(buf[sprite_pixel + 1], 158); // g
+        assert_eq!(buf[sprite_pixel + 2], 245); // r
+        assert_eq!(buf[sprite_pixel + 3], 255); // a
     }
 }

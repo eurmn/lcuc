@@ -29,3 +29,6 @@ src-tauri/gen/schemas
 *.sw?
 .playwright-cli/
 .opencode/
+.deagle/
+@llm/.dontread-dontwrite.bkp/
+*.bkp

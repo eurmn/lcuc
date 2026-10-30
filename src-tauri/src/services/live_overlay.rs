@@ -1,9 +1,10 @@
 use crate::models::history::{MayhemAugmentItem, MayhemAugmentsQuery, OverlayAugmentCard};
+use crate::services::native_overlay::OverlayPngSprite;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
-pub static OVERLAY_ENABLED: AtomicBool = AtomicBool::new(false);
+pub static OVERLAY_ENABLED: AtomicBool = AtomicBool::new(true);
 pub static OVERLAY_HAS_CARDS: AtomicBool = AtomicBool::new(false);
 pub static OVERLAY_SCANNING: AtomicBool = AtomicBool::new(false);
 static F8_WAS_DOWN: AtomicBool = AtomicBool::new(false);
@@ -13,6 +14,8 @@ lazy_static::lazy_static! {
     static ref OVERLAY_CHAMPION_NAME: Mutex<String> = Mutex::new(String::new());
     static ref OVERLAY_STRATEGY_LABEL: Mutex<String> = Mutex::new(String::new());
     static ref OVERLAY_OFFERED_CARDS: Mutex<Vec<OverlayAugmentCard>> = Mutex::new(Vec::new());
+    pub static ref OVERLAY_RECOMMENDED_SPRITES: Mutex<Vec<OverlayPngSprite>> = Mutex::new(Vec::new());
+    static ref OVERLAY_STATUS_TOAST: Mutex<Option<(String, bool, std::time::Instant)>> = Mutex::new(None);
 }
 
 pub fn poll_overlay_hotkeys() -> (bool, bool) {
@@ -54,6 +57,13 @@ pub fn clear_overlay_cards() {
     update_overlay_cards(&[]);
 }
 
+pub fn clear_overlay_recommended_sprites() {
+    if let Ok(mut lock) = OVERLAY_RECOMMENDED_SPRITES.lock() {
+        lock.clear();
+    }
+    refresh_native_overlay();
+}
+
 pub fn set_overlay_champion_and_strategy(champ: &str, strat: &str) {
     let mut changed = false;
     if let Ok(mut c) = OVERLAY_CHAMPION_NAME.lock() {
@@ -73,6 +83,13 @@ pub fn set_overlay_champion_and_strategy(champ: &str, strat: &str) {
     }
 }
 
+pub fn show_overlay_status_toast(message: &str, is_error: bool) {
+    if let Ok(mut lock) = OVERLAY_STATUS_TOAST.lock() {
+        *lock = Some((message.to_string(), is_error, std::time::Instant::now()));
+    }
+    refresh_native_overlay();
+}
+
 pub fn refresh_native_overlay() {
     if !is_overlay_enabled() {
         return;
@@ -80,7 +97,23 @@ pub fn refresh_native_overlay() {
     let champ = OVERLAY_CHAMPION_NAME.lock().map(|g| g.clone()).unwrap_or_default();
     let strat = OVERLAY_STRATEGY_LABEL.lock().map(|g| g.clone()).unwrap_or_default();
     let cards = OVERLAY_OFFERED_CARDS.lock().map(|g| g.clone()).unwrap_or_default();
+    let sprites = OVERLAY_RECOMMENDED_SPRITES.lock().map(|g| g.clone()).unwrap_or_default();
     let scanning = OVERLAY_SCANNING.load(Ordering::Relaxed);
+
+    let (status_message, is_error) = if let Ok(mut lock) = OVERLAY_STATUS_TOAST.lock() {
+        if let Some((msg, err, instant)) = lock.as_ref() {
+            if instant.elapsed() < std::time::Duration::from_secs(3) {
+                (Some(msg.clone()), *err)
+            } else {
+                *lock = None;
+                (None, false)
+            }
+        } else {
+            (None, false)
+        }
+    } else {
+        (None, false)
+    };
 
     let payload = crate::services::native_overlay::OverlayRenderPayload {
         visible: true,
@@ -88,9 +121,130 @@ pub fn refresh_native_overlay() {
         champion_name: champ,
         strategy_label: strat,
         cards,
-        sprites: Vec::new(),
+        sprites,
+        status_message,
+        is_error,
     };
     let _ = crate::services::native_overlay::update_native_overlay_state(payload);
+}
+
+fn find_field<'a>(payload: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
+    if let Some(val) = payload.get(key) {
+        if !val.is_null() {
+            return Some(val);
+        }
+    }
+    for sub in &["liveAdvice", "buildAdvice", "advice", "build", "recommendation", "stats"] {
+        if let Some(sub_obj) = payload.get(sub) {
+            if let Some(val) = sub_obj.get(key) {
+                if !val.is_null() {
+                    return Some(val);
+                }
+            }
+        }
+    }
+    None
+}
+
+pub async fn build_recommended_item_sprites(
+    boots: Option<u32>,
+    next_items: Vec<u32>,
+    completed_build: Vec<u32>,
+) -> Vec<OverlayPngSprite> {
+    let mut items_to_render: Vec<(String, u32)> = Vec::new();
+    if let Some(boot_id) = boots {
+        if boot_id > 0 {
+            items_to_render.push(("boot".to_string(), boot_id));
+        }
+    }
+    for id in next_items {
+        if id > 0 && !items_to_render.iter().any(|(_, x)| *x == id) {
+            items_to_render.push(("next".to_string(), id));
+        }
+    }
+    for id in completed_build {
+        if id > 0 && !items_to_render.iter().any(|(_, x)| *x == id) {
+            items_to_render.push(("build".to_string(), id));
+        }
+    }
+
+    if items_to_render.is_empty() {
+        return Vec::new();
+    }
+
+    items_to_render.truncate(7);
+
+    let rect = get_league_game_window_rect();
+    let gw = if rect.found && rect.width > 100 { rect.width } else { 1920 };
+    let banner_w = 340;
+    let banner_h = 42;
+    let banner_x = (gw - banner_w - 24).max(0);
+    let banner_y = 18;
+
+    let slot_size: u32 = 36;
+    let gap = 8;
+    let padding_x = 14;
+    let base_y = banner_y + banner_h + 28;
+
+    let cache_dir = crate::services::asset_cache::get_asset_cache_dir().join("items");
+    let _ = tokio::fs::create_dir_all(&cache_dir).await;
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
+
+    let mut sprites = Vec::with_capacity(items_to_render.len());
+
+    for (idx, (role, item_id)) in items_to_render.into_iter().enumerate() {
+        let item_path = cache_dir.join(format!("{item_id}.png"));
+        let exists = match tokio::fs::metadata(&item_path).await {
+            Ok(m) => m.len() > 0,
+            Err(_) => false,
+        };
+
+        if !exists {
+            let url = format!(
+                "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/assets/items/icons2d/{item_id}.png"
+            );
+            if let Ok(resp) = client.get(&url).send().await {
+                if resp.status().is_success() {
+                    if let Ok(bytes) = resp.bytes().await {
+                        let _ = tokio::fs::write(&item_path, &bytes).await;
+                    }
+                }
+            }
+        }
+
+        let png_path = if item_path.exists()
+            && std::fs::metadata(&item_path).map(|m| m.len() > 0).unwrap_or(false)
+        {
+            Some(item_path.to_string_lossy().to_string())
+        } else {
+            None
+        };
+
+        let png_base64_or_bytes = if png_path.is_some() {
+            tokio::fs::read(&item_path).await.ok()
+        } else {
+            None
+        };
+
+        let x = banner_x + padding_x + (idx as i32) * (slot_size as i32 + gap);
+        let y = base_y;
+
+        sprites.push(OverlayPngSprite {
+            id: format!("item_{role}_{item_id}"),
+            png_path,
+            png_base64_or_bytes,
+            x,
+            y,
+            width: slot_size,
+            height: slot_size,
+        });
+    }
+
+    sprites
 }
 
 pub fn notify_overlay_state_from_frontend(payload: &serde_json::Value) {
@@ -110,14 +264,62 @@ pub fn notify_overlay_state_from_frontend(payload: &serde_json::Value) {
     }
     if let Some(cards_val) = payload.get("offeredAugments") {
         if let Ok(cards) = serde_json::from_value::<Vec<OverlayAugmentCard>>(cards_val.clone()) {
-            update_overlay_cards(&cards);
-            return;
+            if let Ok(mut lock) = OVERLAY_OFFERED_CARDS.lock() {
+                *lock = cards.clone();
+            }
+            OVERLAY_HAS_CARDS.store(!cards.is_empty(), Ordering::Relaxed);
         }
     }
     if let Some(b) = payload.get("hasCards").and_then(|v| v.as_bool()) {
         OVERLAY_HAS_CARDS.store(b, Ordering::Relaxed);
     }
-    refresh_native_overlay();
+
+    let parse_item_id = |v: &serde_json::Value| -> Option<u32> {
+        v.as_u64()
+            .map(|n| n as u32)
+            .or_else(|| v.as_str().and_then(|s| s.parse::<u32>().ok()))
+            .or_else(|| v.get("item_id").and_then(|x| x.as_u64().map(|n| n as u32)))
+            .or_else(|| v.get("itemId").and_then(|x| x.as_u64().map(|n| n as u32)))
+    };
+
+    let boots = find_field(payload, "recommendedBoots")
+        .or_else(|| find_field(payload, "recommended_boots"))
+        .and_then(parse_item_id);
+
+    let extract_list = |k1: &str, k2: &str| -> Vec<u32> {
+        find_field(payload, k1)
+            .or_else(|| find_field(payload, k2))
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(parse_item_id).collect())
+            .unwrap_or_default()
+    };
+
+    let mut next_items = extract_list("nextItemIds", "next_item_ids");
+    if next_items.is_empty() {
+        next_items = extract_list("nextItems", "next_items");
+    }
+    let completed_build = extract_list("completedBuild", "completed_build");
+
+    let has_item_keys = find_field(payload, "recommendedBoots").is_some()
+        || find_field(payload, "recommended_boots").is_some()
+        || find_field(payload, "nextItemIds").is_some()
+        || find_field(payload, "next_item_ids").is_some()
+        || find_field(payload, "nextItems").is_some()
+        || find_field(payload, "next_items").is_some()
+        || find_field(payload, "completedBuild").is_some()
+        || find_field(payload, "completed_build").is_some();
+
+    if has_item_keys {
+        tauri::async_runtime::spawn(async move {
+            let sprites = build_recommended_item_sprites(boots, next_items, completed_build).await;
+            if let Ok(mut lock) = OVERLAY_RECOMMENDED_SPRITES.lock() {
+                *lock = sprites;
+            }
+            refresh_native_overlay();
+        });
+    } else {
+        refresh_native_overlay();
+    }
 }
 
 pub fn get_league_window_rect() -> Option<GameWindowRect> {
@@ -244,7 +446,15 @@ pub fn show_overlay_banner_rect(_app: &tauri::AppHandle, game_rect: &GameWindowR
         crate::services::native_overlay::hide_native_overlay();
         return;
     }
-    let _ = crate::services::native_overlay::ensure_overlay_process_started();
+    if let Err(e) = crate::services::native_overlay::ensure_overlay_process_started() {
+        crate::logger::write(
+            crate::logger::Level::Error,
+            "live_overlay",
+            &format!("Failed to start native overlay process: {e}"),
+            None,
+        );
+        return;
+    }
     crate::services::native_overlay::calibrate_if_changed(
         game_rect.x,
         game_rect.y,
@@ -264,6 +474,12 @@ pub fn sync_overlay_window(
     _interactive: bool,
 ) -> Result<GameWindowRect, String> {
     OVERLAY_ENABLED.store(enabled, Ordering::Relaxed);
+    crate::logger::write(
+        crate::logger::Level::Info,
+        "live_overlay",
+        &format!("sync_overlay_window: enabled={enabled}"),
+        None,
+    );
     let rect = get_league_game_window_rect();
     if !enabled || !rect.found {
         hide_overlay_window(app);
@@ -602,7 +818,7 @@ pub async fn scan_title_band_from_image(
         .await?;
 
         let matches = match_ocr_lines_to_augments(&lines, &resp.items);
-        if matches.len() < 2 {
+        if matches.is_empty() {
             return Ok(Vec::new());
         }
 
@@ -638,12 +854,12 @@ pub async fn scan_in_game_augment_cards(
         let (hwnd, rect) = unsafe {
             let hwnd = FindWindowW(std::ptr::null(), title_wide.as_ptr());
             if hwnd.is_null() || IsWindowVisible(hwnd) == 0 || IsIconic(hwnd) != 0 {
-                return Ok(Vec::new());
+                return Err("League client window not found or minimized. Ensure League is running.".to_string());
             }
 
             let fg = GetForegroundWindow();
             if fg != hwnd {
-                return Ok(Vec::new());
+                return Err("League client is not in foreground. Please focus League of Legends window.".to_string());
             }
 
             let mut rc = RECT {
@@ -653,13 +869,13 @@ pub async fn scan_in_game_augment_cards(
                 bottom: 0,
             };
             if GetClientRect(hwnd, &mut rc) == 0 {
-                return Ok(Vec::new());
+                return Err("Failed to query League client window dimensions.".to_string());
             }
 
             let width = rc.right - rc.left;
             let height = rc.bottom - rc.top;
             if width <= 100 || height <= 100 {
-                return Ok(Vec::new());
+                return Err("League client window size is invalid or minimized.".to_string());
             }
 
             let mut pt = POINT { x: 0, y: 0 };
@@ -681,12 +897,15 @@ pub async fn scan_in_game_augment_cards(
         let _ = hwnd;
 
         let strip_x = rect.x + (rect.width as f64 * 0.21) as i32;
-        let strip_y = rect.y + (rect.height as f64 * 0.385) as i32;
+        let strip_y = rect.y + (rect.height as f64 * 0.36) as i32;
         let strip_w = (rect.width as f64 * 0.58) as i32;
-        let strip_h = (rect.height as f64 * 0.065) as i32;
+        let strip_h = (rect.height as f64 * 0.12) as i32;
 
         let (bgra, bw, bh) = capture_bgra_rect(strip_x, strip_y, strip_w, strip_h)?;
         let lines = recognize_text_lines(&bgra, bw, bh).await?;
+        if lines.is_empty() {
+            return Err("No text recognized in augment selection area. Ensure augment selection is open.".to_string());
+        }
 
         let resp = crate::services::history::get_mayhem_augments(MayhemAugmentsQuery {
             champion_id,
@@ -697,8 +916,8 @@ pub async fn scan_in_game_augment_cards(
         .await?;
 
         let matches = match_ocr_lines_to_augments(&lines, &resp.items);
-        if matches.len() < 2 {
-            return Ok(Vec::new());
+        if matches.is_empty() {
+            return Err("No augment cards found on screen. Ensure League is in foreground and augment selection is open.".to_string());
         }
 
         Ok(crate::services::history::enrich_overlay_augment_cards(champion_id, matches).await)
@@ -802,11 +1021,11 @@ mod tests {
         let width = rgba.width();
         let height = rgba.height();
 
-        // Crop title strip: rx = 0.21, ry = 0.385, rw = 0.58, rh = 0.065
+        // Crop title strip: rx = 0.21, ry = 0.36, rw = 0.58, rh = 0.12
         let strip_x = (width as f64 * 0.21) as u32;
-        let strip_y = (height as f64 * 0.385) as u32;
+        let strip_y = (height as f64 * 0.36) as u32;
         let strip_w = (width as f64 * 0.58) as u32;
-        let strip_h = (height as f64 * 0.065) as u32;
+        let strip_h = (height as f64 * 0.12) as u32;
 
         let cropped = image::imageops::crop_imm(&rgba, strip_x, strip_y, strip_w, strip_h).to_image();
         let (cw, ch) = cropped.dimensions();
