@@ -158,7 +158,7 @@ fn augment_catalog_cache_path() -> PathBuf {
     history_data_dir()
         .join("cache")
         .join("match-history")
-        .join("augment_catalog_v10.json")
+        .join("augment_catalog_v11.json")
 }
 
 /// Clears all in-memory and on-disk item, map, and augment caches (triggered on patch updates).
@@ -271,6 +271,8 @@ pub struct CachedItemInfo {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct AugmentCatalogEntry {
     name: String,
+    #[serde(default)]
+    aliases: Vec<String>,
     icon_url: String,
     rarity: Option<String>,
     tooltip: Option<String>,
@@ -1178,8 +1180,110 @@ async fn get_augment_catalog_map() -> Result<HashMap<String, AugmentCatalogEntry
                 _ => cherry_desc.map(str::to_string),
             };
 
+            let mut aliases: Vec<String> = Vec::new();
+            let mut push_alias = |cand: &str| {
+                let trimmed = cand.replace("&nbsp;", " ").trim().to_string();
+                if !trimmed.is_empty()
+                    && !trimmed.starts_with("{{")
+                    && !trimmed.contains('_')
+                    && !trimmed.eq_ignore_ascii_case(&name)
+                    && !aliases.iter().any(|a| a.eq_ignore_ascii_case(&trimmed))
+                {
+                    aliases.push(trimmed);
+                }
+            };
+
+            for k in ["nameTRA", "name", "simpleNameTRA", "displayName"] {
+                if let Some(s) = entry.get(k).and_then(Value::as_str) {
+                    push_alias(s);
+                }
+            }
+
+            if let Some(nid) = name_id_str {
+                let clean_nid = nid
+                    .trim_start_matches("ARAM_")
+                    .trim_start_matches("aram_")
+                    .trim_start_matches("GoH_")
+                    .trim_start_matches("Quest_");
+                // Humanize PascalCase (e.g. "UpgradeSheen" -> "Upgrade Sheen")
+                let mut humanized = String::new();
+                for (i, ch) in clean_nid.chars().enumerate() {
+                    if ch == '_' {
+                        humanized.push(' ');
+                    } else if i > 0 && ch.is_uppercase() {
+                        let prev = clean_nid.chars().nth(i - 1).unwrap_or(' ');
+                        if prev.is_lowercase() {
+                            humanized.push(' ');
+                        }
+                        humanized.push(ch);
+                    } else {
+                        humanized.push(ch);
+                    }
+                }
+                push_alias(&humanized);
+
+                let nid_lower = clean_nid.to_lowercase();
+                for st_key in [
+                    format!("cherry_{nid_lower}_name"),
+                    format!("kiwi_{nid_lower}_name"),
+                    format!("aram_{nid_lower}_name"),
+                    format!("cherry_{}_name", nid.to_lowercase()),
+                    format!("kiwi_{}_name", nid.to_lowercase()),
+                ] {
+                    if let Some(st_val) = stringtable_entries.get(&st_key) {
+                        push_alias(st_val);
+                    }
+                }
+
+                if let Some(kiwi_obj) = kiwi_res.as_ref().and_then(Value::as_object) {
+                    let kiwi_entry = kiwi_obj
+                        .get(&format!("Maps/ModeSpecificData/Augments/{nid}"))
+                        .or_else(|| kiwi_obj.get(&format!("Maps/ModeSpecificData/Augments/ARAM_{nid}")))
+                        .or_else(|| {
+                            kiwi_obj.values().find(|v| {
+                                v.get("AugmentNameId")
+                                    .and_then(Value::as_str)
+                                    .map(|s| s.eq_ignore_ascii_case(nid))
+                                    .unwrap_or(false)
+                            })
+                        });
+                    if let Some(ke) = kiwi_entry {
+                        for k in ["DisplayNameTra", "NameTra", "SimpleNameTra"] {
+                            if let Some(tra_key) = ke.get(k).and_then(Value::as_str) {
+                                if let Some(st_val) = stringtable_entries.get(&tra_key.to_lowercase()) {
+                                    push_alias(st_val);
+                                } else {
+                                    push_alias(tra_key);
+                                }
+                            }
+                        }
+                        if let Some(tt_tra) = ke.get("AugmentTooltipTra").and_then(Value::as_str) {
+                            if let Some(st_tt) = stringtable_entries.get(&tt_tra.to_lowercase()) {
+                                if let Some(start_title) = st_tt.find("<titleLeft>") {
+                                    let slice = &st_tt[start_title + 11..];
+                                    if let Some(end_title) = slice.find("</titleLeft>") {
+                                        push_alias(&slice[..end_title]);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(b_name) = id_str
+                .as_deref()
+                .and_then(|i| tooltips_map.get(i))
+                .or_else(|| name_id_str.and_then(|n| tooltips_map.get(n)))
+                .and_then(|v| v.get("name"))
+                .and_then(Value::as_str)
+            {
+                push_alias(b_name);
+            }
+
             let parsed_entry = AugmentCatalogEntry {
                 name: name.clone(),
+                aliases,
                 icon_url,
                 rarity,
                 tooltip,
@@ -1301,11 +1405,22 @@ fn populate_kiwi_catalog(
                         },
                         _ => None,
                     });
+                    let aliases = obj
+                        .get("aliases")
+                        .and_then(Value::as_array)
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_string)
+                                .collect::<Vec<String>>()
+                        })
+                        .unwrap_or_default();
                     let entry = AugmentCatalogEntry {
                         name,
                         icon_url,
                         rarity,
                         tooltip,
+                        aliases,
                     };
                     map.insert(id_str.clone(), entry.clone());
                     map.insert(id_str.to_lowercase(), entry.clone());
@@ -6109,6 +6224,7 @@ pub async fn get_mayhem_augments(
             global_win_rate,
             global_wpa,
             global_pick_rate,
+            aliases: Vec::new(), // TODO: Populate aliases if needed
         };
 
         scored_list.push(ScoredAugment {
@@ -6278,7 +6394,7 @@ pub async fn get_mayhem_augments(
     });
 
     // 6. Pagination
-    let page_size = query.page_size.unwrap_or(10).clamp(1, 100);
+    let page_size = query.page_size.unwrap_or(10).clamp(1, 1000);
     let total_items = filtered.len();
     let total_pages = (total_items + page_size - 1) / page_size;
     let page = query.page.unwrap_or(1).clamp(1, total_pages.max(1));

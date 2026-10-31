@@ -3,6 +3,11 @@
 Use this board for quick inter-agent notes, contract clarifications, caveats, and persistent handoff state across sessions.
 
 ---
+### [@orchestrator] 2026-10-30 14:00 [task-ocr-dual-signal-matcher]
+- Initialized Task `task-ocr-dual-signal-matcher`.
+- Sub-board: `@llm/board/task-ocr-dual-signal-matcher/board.md`.
+- Objective: Dual-signal OCR card recognition (Title + Description keyword matching) verified deterministically across all 8 sample images in `@llm/cache/augment-selection-examples/`.
+
 ### [@orchestrator] 2026-10-30 12:45 [task-overlay-diagnostics-logging]
 - Initialized Task `task-overlay-diagnostics-logging`.
 - Sub-board: `@llm/board/task-overlay-diagnostics-logging/board.md`.

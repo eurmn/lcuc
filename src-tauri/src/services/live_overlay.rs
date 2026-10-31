@@ -189,6 +189,8 @@ pub async fn build_recommended_item_sprites(
     let cache_dir = crate::services::asset_cache::get_asset_cache_dir().join("items");
     let _ = tokio::fs::create_dir_all(&cache_dir).await;
 
+    let items_catalog = crate::services::history::get_items_by_id().await.ok();
+
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
@@ -204,13 +206,41 @@ pub async fn build_recommended_item_sprites(
         };
 
         if !exists {
-            let url = format!(
-                "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/assets/items/icons2d/{item_id}.png"
-            );
-            if let Ok(resp) = client.get(&url).send().await {
+            // First try resolving the official icon_url from the items catalog
+            let resolved_url = items_catalog
+                .as_ref()
+                .and_then(|cat| cat.get(&(item_id as i32)))
+                .map(|info| info.icon_url.clone())
+                .unwrap_or_else(|| {
+                    format!(
+                        "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/assets/items/icons2d/{item_id}.png"
+                    )
+                });
+
+            let mut fetched = false;
+            if let Ok(resp) = client.get(&resolved_url).send().await {
                 if resp.status().is_success() {
                     if let Ok(bytes) = resp.bytes().await {
-                        let _ = tokio::fs::write(&item_path, &bytes).await;
+                        if !bytes.is_empty() {
+                            let _ = tokio::fs::write(&item_path, &bytes).await;
+                            fetched = true;
+                        }
+                    }
+                }
+            }
+
+            // Fallback: try lowercase direct asset path if catalog url failed
+            if !fetched {
+                let fallback_url = format!(
+                    "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/assets/items/icons2d/{item_id}.png"
+                );
+                if let Ok(resp) = client.get(&fallback_url).send().await {
+                    if resp.status().is_success() {
+                        if let Ok(bytes) = resp.bytes().await {
+                            if !bytes.is_empty() {
+                                let _ = tokio::fs::write(&item_path, &bytes).await;
+                            }
+                        }
                     }
                 }
             }
@@ -598,6 +628,15 @@ pub fn capture_bgra_rect(
 }
 
 #[cfg(windows)]
+pub async fn recognize_text_lines_public_for_test(
+    bgra_bytes: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<Vec<(f32, String)>, String> {
+    recognize_text_lines(bgra_bytes, width, height).await
+}
+
+#[cfg(windows)]
 async fn recognize_text_lines(
     bgra_bytes: &[u8],
     width: u32,
@@ -607,12 +646,14 @@ async fn recognize_text_lines(
     use windows::Media::Ocr::OcrEngine;
     use windows::Storage::Streams::DataWriter;
 
+    let (scaled_bgra, final_w, final_h) = (bgra_bytes.to_vec(), width, height);
+
     let engine = OcrEngine::TryCreateFromUserProfileLanguages()
         .map_err(|e| format!("OCR engine init failed: {e}"))?;
 
     let writer = DataWriter::new().map_err(|e| format!("DataWriter create failed: {e}"))?;
     writer
-        .WriteBytes(bgra_bytes)
+        .WriteBytes(&scaled_bgra)
         .map_err(|e| format!("DataWriter WriteBytes failed: {e}"))?;
     let buffer = writer
         .DetachBuffer()
@@ -621,8 +662,8 @@ async fn recognize_text_lines(
     let bitmap = SoftwareBitmap::CreateCopyFromBuffer(
         &buffer,
         BitmapPixelFormat::Bgra8,
-        width as i32,
-        height as i32,
+        final_w as i32,
+        final_h as i32,
     )
     .map_err(|e| format!("SoftwareBitmap creation failed: {e}"))?;
 
@@ -645,7 +686,7 @@ async fn recognize_text_lines(
             let mut rel_x = 0.5f32;
             if let Ok(words) = line.Words() {
                 if let Ok(w_cnt) = words.Size() {
-                    if w_cnt > 0 && width > 0 {
+                    if w_cnt > 0 && final_w > 0 {
                         let mut min_x = f32::MAX;
                         let mut max_x = f32::MIN;
                         let mut found_word = false;
@@ -659,10 +700,10 @@ async fn recognize_text_lines(
                             }
                         }
                         if found_word {
-                            rel_x = ((min_x + max_x) * 0.5) / (width as f32);
+                            rel_x = ((min_x + max_x) * 0.5) / (final_w as f32);
                         } else if let Ok(first_word) = words.GetAt(0) {
                             if let Ok(rect) = first_word.BoundingRect() {
-                                rel_x = (rect.X + rect.Width * 0.5) / (width as f32);
+                                rel_x = (rect.X + rect.Width * 0.5) / (final_w as f32);
                             }
                         }
                     }
@@ -684,14 +725,68 @@ fn normalize_text(text: &str) -> String {
         .to_lowercase()
 }
 
+// Levenshtein edit distance for OCR misread tolerance (e.g. "Symphony of War" vs "Symphony of Wor")
+fn levenshtein_distance(s1: &str, s2: &str) -> usize {
+    let v1: Vec<char> = s1.chars().collect();
+    let v2: Vec<char> = s2.chars().collect();
+    let l1 = v1.len();
+    let l2 = v2.len();
+    if l1 == 0 {
+        return l2;
+    }
+    if l2 == 0 {
+        return l1;
+    }
+    let mut prev_row: Vec<usize> = (0..=l2).collect();
+    let mut curr_row: Vec<usize> = vec![0; l2 + 1];
+
+    for i in 0..l1 {
+        curr_row[0] = i + 1;
+        for j in 0..l2 {
+            let cost = if v1[i] == v2[j] { 0 } else { 1 };
+            curr_row[j + 1] = (curr_row[j] + 1)
+                .min(prev_row[j + 1] + 1)
+                .min(prev_row[j] + cost);
+        }
+        prev_row.copy_from_slice(&curr_row);
+    }
+    prev_row[l2]
+}
+
+fn fuzzy_string_similarity(candidate: &str, target: &str) -> f64 {
+    let c = normalize_text(candidate);
+    let t = normalize_text(target);
+    if c.is_empty() || t.is_empty() {
+        return 0.0;
+    }
+    if c == t {
+        return 1.0;
+    }
+    let max_len = c.chars().count().max(t.chars().count());
+    if max_len == 0 {
+        return 1.0;
+    }
+    let dist = levenshtein_distance(&c, &t);
+    1.0 - (dist as f64 / max_len as f64)
+}
+
 fn text_similarity_score(candidate: &str, target: &str) -> f64 {
     let c = normalize_text(candidate);
     let t = normalize_text(target);
     if c.is_empty() || t.is_empty() {
         return 0.0;
     }
-    if c.contains(&t) || t.contains(&c) {
+    if c == t {
         return 1.0;
+    }
+    // High fuzzy match
+    let fuzzy = fuzzy_string_similarity(&c, &t);
+    if fuzzy >= 0.80 {
+        return fuzzy;
+    }
+    if c.contains(&t) || t.contains(&c) {
+        let ratio = c.len().min(t.len()) as f64 / c.len().max(t.len()) as f64;
+        return (0.80 + (0.20 * ratio)).max(fuzzy);
     }
     let c_words: Vec<&str> = c.split_whitespace().collect();
     let t_words: Vec<&str> = t.split_whitespace().collect();
@@ -700,11 +795,11 @@ fn text_similarity_score(candidate: &str, target: &str) -> f64 {
     }
     let mut matches = 0;
     for cw in &c_words {
-        if t_words.iter().any(|tw| tw == cw || tw.contains(cw) || cw.contains(tw)) {
+        if t_words.iter().any(|tw| tw == cw || fuzzy_string_similarity(tw, cw) >= 0.85) {
             matches += 1;
         }
     }
-    (matches as f64) / (t_words.len().max(c_words.len()) as f64)
+    ((matches as f64) / (t_words.len().max(c_words.len()) as f64)).max(fuzzy)
 }
 
 pub fn is_category_badge_noise(text: &str) -> bool {
@@ -715,10 +810,68 @@ pub fn is_category_badge_noise(text: &str) -> bool {
     )
 }
 
+#[cfg(windows)]
+pub async fn recognize_text_lines_multi_pass(
+    bgra_bytes: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<Vec<(f32, String)>, String> {
+    if width == 0 || height == 0 || bgra_bytes.len() < (width * height * 4) as usize {
+        return Ok(Vec::new());
+    }
+
+    let mut combined_lines: Vec<(f32, String)> = Vec::new();
+    let mut seen_lines = std::collections::HashSet::new();
+
+    // Pass 1 & 2: Luminance binarization thresholds (130.0 and 150.0)
+    // Isolates bright card titles and body text from animated card artwork backgrounds
+    for threshold in [130.0f32, 150.0f32] {
+        let mut bin_bgra = Vec::with_capacity((width * height * 4) as usize);
+        for chunk in bgra_bytes.chunks_exact(4) {
+            let b = chunk[0] as f32;
+            let g = chunk[1] as f32;
+            let r = chunk[2] as f32;
+            let lum = 0.299 * r + 0.587 * g + 0.114 * b;
+            let v = if lum > threshold { 255u8 } else { 0u8 };
+            bin_bgra.push(v);
+            bin_bgra.push(v);
+            bin_bgra.push(v);
+            bin_bgra.push(255);
+        }
+
+        if let Ok(lines) = recognize_text_lines(&bin_bgra, width, height).await {
+            for (rx, text) in lines {
+                let col_bucket = if rx < 0.36 { 0 } else if rx < 0.65 { 1 } else { 2 };
+                let key = (col_bucket, text.trim().to_lowercase());
+                if !key.1.is_empty() && seen_lines.insert(key) {
+                    combined_lines.push((rx, text));
+                }
+            }
+        }
+    }
+
+    // Fallback Pass 3: Raw un-binarized image if binarized passes yielded sparse results
+    if combined_lines.len() < 3 {
+        if let Ok(lines) = recognize_text_lines(bgra_bytes, width, height).await {
+            for (rx, text) in lines {
+                let col_bucket = if rx < 0.36 { 0 } else if rx < 0.65 { 1 } else { 2 };
+                let key = (col_bucket, text.trim().to_lowercase());
+                if !key.1.is_empty() && seen_lines.insert(key) {
+                    combined_lines.push((rx, text));
+                }
+            }
+        }
+    }
+
+    Ok(combined_lines)
+}
+
 pub fn match_ocr_lines_to_augments(
     lines: &[(f32, String)],
     all_augments: &[MayhemAugmentItem],
 ) -> Vec<(usize, MayhemAugmentItem)> {
+    use crate::services::dual_matcher::{normalize_token, DualSignalMatcher};
+
     let mut columns: [Vec<String>; 3] = [Vec::new(), Vec::new(), Vec::new()];
 
     for (rel_x, text) in lines {
@@ -727,9 +880,9 @@ pub fn match_ocr_lines_to_augments(
             continue;
         }
 
-        let col = if *rel_x < 0.333 {
+        let col = if *rel_x < 0.36 {
             0
-        } else if *rel_x < 0.666 {
+        } else if *rel_x < 0.65 {
             1
         } else {
             2
@@ -737,6 +890,7 @@ pub fn match_ocr_lines_to_augments(
         columns[col].push(trimmed.to_string());
     }
 
+    let matcher = DualSignalMatcher::default();
     let mut matches = Vec::new();
 
     for (col_idx, col_lines) in columns.iter().enumerate() {
@@ -744,33 +898,24 @@ pub fn match_ocr_lines_to_augments(
             continue;
         }
 
+        let col_joined = col_lines.join(" ");
+        let col_text = normalize_token(&col_joined);
+        let col_words: Vec<String> = col_joined
+            .split_whitespace()
+            .map(normalize_token)
+            .filter(|w| !w.is_empty())
+            .collect();
+
         let mut best_score = 0.0;
         let mut best_match: Option<MayhemAugmentItem> = None;
 
-        for line in col_lines {
-            let line_norm = normalize_text(line);
-            if line_norm.is_empty() {
-                continue;
-            }
+        for aug in all_augments {
+            let (total_score, _title_sc, _desc_sc) =
+                matcher.score_candidate(col_lines, &col_text, &col_words, aug);
 
-            for aug in all_augments {
-                let aug_norm = normalize_text(&aug.name);
-                if aug_norm.is_empty() {
-                    continue;
-                }
-
-                let score = if line_norm == aug_norm {
-                    1.0
-                } else if line_norm.contains(&aug_norm) || aug_norm.contains(&line_norm) {
-                    0.95
-                } else {
-                    text_similarity_score(&line_norm, &aug_norm)
-                };
-
-                if score >= 0.60 && score > best_score {
-                    best_score = score;
-                    best_match = Some(aug.clone());
-                }
+            if total_score >= 0.55 && total_score > best_score {
+                best_score = total_score;
+                best_match = Some(aug.clone());
             }
         }
 
@@ -800,19 +945,33 @@ pub async fn scan_title_band_from_image(
             return Ok(Vec::new());
         }
 
-        // Convert RGBA to BGRA
-        let mut bgra = Vec::with_capacity((width * height * 4) as usize);
-        for pixel in img.pixels() {
-            bgra.push(pixel[2]); // B
-            bgra.push(pixel[1]); // G
-            bgra.push(pixel[0]); // R
-            bgra.push(pixel[3]); // A
+        // Crop to the 3-card region (x: 15%..85%, y: 18%..72%) if a full-screen image is passed
+        let (crop_x, crop_y, crop_w, crop_h) = if width > 800 && height > 500 {
+            (
+                (0.15 * width as f64) as u32,
+                (0.18 * height as f64) as u32,
+                (0.70 * width as f64) as u32,
+                (0.54 * height as f64) as u32,
+            )
+        } else {
+            (0, 0, width, height)
+        };
+
+        let mut bgra = Vec::with_capacity((crop_w * crop_h * 4) as usize);
+        for y in crop_y..(crop_y + crop_h) {
+            for x in crop_x..(crop_x + crop_w) {
+                let pixel = img.get_pixel(x, y);
+                bgra.push(pixel[2]); // B
+                bgra.push(pixel[1]); // G
+                bgra.push(pixel[0]); // R
+                bgra.push(pixel[3]); // A
+            }
         }
 
-        let lines = recognize_text_lines(&bgra, width, height).await?;
+        let lines = recognize_text_lines_multi_pass(&bgra, crop_w, crop_h).await?;
         let resp = crate::services::history::get_mayhem_augments(MayhemAugmentsQuery {
             champion_id,
-            page_size: Some(300),
+            page_size: Some(1000),
             ..Default::default()
         })
         .await?;
@@ -896,20 +1055,21 @@ pub async fn scan_in_game_augment_cards(
 
         let _ = hwnd;
 
-        let strip_x = rect.x + (rect.width as f64 * 0.21) as i32;
-        let strip_y = rect.y + (rect.height as f64 * 0.36) as i32;
-        let strip_w = (rect.width as f64 * 0.58) as i32;
-        let strip_h = (rect.height as f64 * 0.12) as i32;
+        // Crop 3-card area (x: 15%..85%, y: 18%..72%) covering titles and descriptions while excluding HUD/top-bar
+        let strip_x = rect.x + (rect.width as f64 * 0.15) as i32;
+        let strip_y = rect.y + (rect.height as f64 * 0.18) as i32;
+        let strip_w = (rect.width as f64 * 0.70) as i32;
+        let strip_h = (rect.height as f64 * 0.54) as i32;
 
         let (bgra, bw, bh) = capture_bgra_rect(strip_x, strip_y, strip_w, strip_h)?;
-        let lines = recognize_text_lines(&bgra, bw, bh).await?;
+        let lines = recognize_text_lines_multi_pass(&bgra, bw, bh).await?;
         if lines.is_empty() {
             return Err("No text recognized in augment selection area. Ensure augment selection is open.".to_string());
         }
 
         let resp = crate::services::history::get_mayhem_augments(MayhemAugmentsQuery {
             champion_id,
-            page_size: Some(300),
+            page_size: Some(1000),
             with_augment_ids: Some(with_augment_ids),
             ..Default::default()
         })
@@ -927,6 +1087,14 @@ pub async fn scan_in_game_augment_cards(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_levenshtein_and_fuzzy_similarity() {
+        assert_eq!(levenshtein_distance("Mystic Punch", "Mystic Punch"), 0);
+        assert_eq!(levenshtein_distance("Clown Colege", "Clown College"), 1);
+        assert!(fuzzy_string_similarity("Clown Colege", "Clown College") >= 0.90);
+        assert!(fuzzy_string_similarity("Symphony of War", "Symphony of Wor") >= 0.90);
+    }
 
     #[test]
     fn test_is_category_badge_noise() {
@@ -957,6 +1125,7 @@ mod tests {
                 global_win_rate: 0.5,
                 global_wpa: 0.02,
                 global_pick_rate: 0.1,
+                aliases: vec!["Phenomenal Evil".into(), "Phenomenal Evil".into()]
             },
             MayhemAugmentItem {
                 id: "2".into(),
@@ -974,6 +1143,7 @@ mod tests {
                 global_win_rate: 0.5,
                 global_wpa: 0.05,
                 global_pick_rate: 0.1,
+                aliases: vec!["Eureka".into(), "Eureka".into()],
             },
         ];
 

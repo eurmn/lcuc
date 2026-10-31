@@ -168,6 +168,8 @@ pub struct MayhemChampionBuildSummary {
 pub struct MayhemAugmentItem {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
     pub icon_url: String,
     #[serde(default)]
     pub rarity: Option<String>,

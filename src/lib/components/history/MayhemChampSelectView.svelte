@@ -488,57 +488,6 @@
     <!-- Header: Match Status, Champ Select, Champion Picker, Overlay sync, Tools -->
     <div class="flex flex-wrap items-center justify-between gap-3 border-b border-gray-800/80 pb-3">
       <div class="flex items-center gap-3">
-        <!-- Champion Selector Dropdown -->
-        <div class="relative">
-          <button
-            type="button"
-            onclick={() => (championPickerOpen = !championPickerOpen)}
-            class="flex items-center gap-2.5 px-3 py-1.5 rounded-xl border border-gray-800 bg-gray-900/90 hover:border-gray-700 text-left transition cursor-pointer"
-          >
-            {#if currentSelectedChampion?.square_icon_url}
-              <img
-                src={currentSelectedChampion.square_icon_url}
-                alt={currentSelectedChampion.name}
-                class="h-7 w-7 rounded-lg object-cover border border-purple-500/50"
-              />
-            {:else}
-              <div class="h-7 w-7 rounded-lg bg-gray-800 flex items-center justify-center text-gray-400">
-                <span class="icon-[heroicons--user] text-sm"></span>
-              </div>
-            {/if}
-            <div class="flex flex-col">
-              <span class="text-xs font-bold text-gray-200 leading-tight">
-                {currentSelectedChampion?.name || `Champ #${selectedChampionId}`}
-              </span>
-              <span class="text-[10px] text-gray-500">Click to switch</span>
-            </div>
-            <span class="icon-[heroicons--chevron-up-down] text-gray-400 text-xs ml-1"></span>
-          </button>
-
-          {#if championPickerOpen}
-            <div class="absolute left-0 top-full mt-2 w-72 rounded-xl border border-gray-700 bg-gray-900 p-2 shadow-2xl z-50 space-y-2">
-              <input
-                type="text"
-                placeholder="Search champion..."
-                bind:value={championSearchQuery}
-                class="w-full rounded-lg border border-gray-700 bg-gray-950 px-2.5 py-1 text-xs text-gray-200 placeholder-gray-500 focus:border-purple-500 focus:outline-none"
-              />
-              <div class="max-h-60 overflow-y-auto scrollbar-thin space-y-1">
-                {#each filteredChampions as champ (champ.id)}
-                  <button
-                    type="button"
-                    onclick={() => handleSelectChampion(champ.id)}
-                    class="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left text-xs transition cursor-pointer {selectedChampionId === champ.id ? 'bg-purple-950/80 text-purple-200 border border-purple-500/40' : 'hover:bg-gray-800/80 text-gray-300'}"
-                  >
-                    <img src={champ.square_icon_url} alt={champ.name} class="h-6 w-6 rounded object-cover" />
-                    <span class="truncate font-semibold">{champ.name}</span>
-                  </button>
-                {/each}
-              </div>
-            </div>
-          {/if}
-        </div>
-
         <!-- Live Match Active Badge -->
         {#if liveGameState?.is_in_game}
           <span class="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/50 bg-emerald-950/80 px-2.5 py-1 text-[11px] font-bold text-emerald-200 animate-pulse">

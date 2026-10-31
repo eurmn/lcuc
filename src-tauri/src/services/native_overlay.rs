@@ -86,8 +86,8 @@ pub fn compute_default_anchor_layout(
     let strip_h = (gh * 0.12) as i32;
 
     let card_w = (gw * 0.17) as i32;
-    let card_h = (gh * 0.24) as i32;
-    let card_y = (gh * 0.08) as i32;
+    let card_h = ((gh * 0.12) as i32).max(140);
+    let card_y = (gh * 0.20) as i32;
 
     let c0_x = (gw * 0.21) as i32;
     let c1_x = (gw * 0.415) as i32;
@@ -1029,18 +1029,17 @@ impl OverlayWinContext {
                 .any(|s| s.id.starts_with("item_") || s.id.starts_with("boot_"));
 
             if is_recommended_items {
-                let min_sprite_y = payload.sprites.iter().map(|s| s.y).min().unwrap_or(by + bh + 28);
-                let max_sprite_bottom = payload
-                    .sprites
-                    .iter()
-                    .map(|s| s.y + s.height as i32)
-                    .max()
-                    .unwrap_or(min_sprite_y + 36);
-
+                // Layout the container directly under the HUD banner
                 let box_x = bx.clamp(0, (w - 10).max(0));
                 let box_w = bw.min(w - box_x);
                 let box_y = (by + bh + 6).clamp(0, (h - 10).max(0));
-                let box_h = (max_sprite_bottom - box_y + 6).max(48).min(h - box_y);
+
+                let slot_size: i32 = 36;
+                let gap: i32 = 8;
+                let padding_x: i32 = 14;
+                let padding_top: i32 = 24;
+                let padding_bottom: i32 = 10;
+                let box_h = padding_top + slot_size + padding_bottom;
                 let box_rect = [box_x, box_y, box_w, box_h];
 
                 fill_premultiplied_rect(buf, w as u32, h as u32, box_rect, 9, 13, 22, 230, 8);
@@ -1058,30 +1057,26 @@ impl OverlayWinContext {
                 );
 
                 if let Some(ref mut tr) = self.text_renderer {
-                    if min_sprite_y >= box_y + 18 {
-                        tr.draw_text_line(
-                            buf,
-                            w as u32,
-                            h as u32,
-                            "RECOMMENDED ITEMS",
-                            box_x + 14,
-                            box_y + 6,
-                            FontKind::Small,
-                            148,
-                            163,
-                            184,
-                            Some(box_w - 28),
-                        );
-                    }
+                    tr.draw_text_line(
+                        buf,
+                        w as u32,
+                        h as u32,
+                        "RECOMMENDED ITEMS",
+                        box_x + 14,
+                        box_y + 6,
+                        FontKind::Small,
+                        148,
+                        163,
+                        184,
+                        Some(box_w - 28),
+                    );
                 }
-            }
 
-            for sprite in &payload.sprites {
-                // Ensure sprite coordinates clip gracefully within window bounds w and h
-                let sx = sprite.x.clamp(0, (w - sprite.width as i32).max(0));
-                let sy = sprite.y.clamp(0, (h - sprite.height as i32).max(0));
+                for (idx, sprite) in payload.sprites.iter().enumerate() {
+                    // Position each slot cleanly inside the container box
+                    let sx = box_x + padding_x + (idx as i32) * (slot_size + gap);
+                    let sy = box_y + padding_top;
 
-                if is_recommended_items {
                     let (border_r, border_g, border_b) = if sprite.id.contains("boot") {
                         (245, 158, 11)
                     } else if sprite.id.contains("next") {
@@ -1094,7 +1089,7 @@ impl OverlayWinContext {
                         buf,
                         w as u32,
                         h as u32,
-                        [sx, sy, sprite.width as i32, sprite.height as i32],
+                        [sx, sy, slot_size, slot_size],
                         15,
                         23,
                         42,
@@ -1105,7 +1100,7 @@ impl OverlayWinContext {
                         buf,
                         w as u32,
                         h as u32,
-                        [sx, sy, sprite.width as i32, sprite.height as i32],
+                        [sx, sy, slot_size, slot_size],
                         1,
                         border_r,
                         border_g,
@@ -1113,45 +1108,75 @@ impl OverlayWinContext {
                         220,
                         4,
                     );
-                }
 
-                if !self.sprite_cache.contains_key(&sprite.id) {
-                    if let Some(ref bytes) = sprite.png_base64_or_bytes {
-                        match image::load_from_memory(bytes) {
-                            Ok(img) => {
-                                emit_child_log("info", &format!("Successfully loaded sprite '{}' from raw IPC bytes ({} bytes)", sprite.id, bytes.len()));
-                                self.sprite_cache.insert(sprite.id.clone(), img.to_rgba8());
+                    if !self.sprite_cache.contains_key(&sprite.id) {
+                        if let Some(ref bytes) = sprite.png_base64_or_bytes {
+                            match image::load_from_memory(bytes) {
+                                Ok(img) => {
+                                    emit_child_log("info", &format!("Successfully loaded sprite '{}' from raw IPC bytes ({} bytes)", sprite.id, bytes.len()));
+                                    self.sprite_cache.insert(sprite.id.clone(), img.to_rgba8());
+                                }
+                                Err(e) => {
+                                    emit_child_log("error", &format!("Failed to load sprite '{}' from IPC memory: {e}", sprite.id));
+                                }
                             }
-                            Err(e) => {
-                                emit_child_log("error", &format!("Failed to load sprite '{}' from IPC memory: {e}", sprite.id));
+                        } else if let Some(ref path) = sprite.png_path {
+                            match image::open(path) {
+                                Ok(img) => {
+                                    emit_child_log("info", &format!("Successfully loaded sprite '{}' from disk path '{path}'", sprite.id));
+                                    self.sprite_cache.insert(sprite.id.clone(), img.to_rgba8());
+                                }
+                                Err(e) => {
+                                    emit_child_log("error", &format!("Failed to open sprite '{}' at path '{path}': {e}", sprite.id));
+                                }
                             }
+                        } else {
+                            emit_child_log("warn", &format!("Sprite '{}' has neither bytes nor file path", sprite.id));
                         }
-                    } else if let Some(ref path) = sprite.png_path {
-                        match image::open(path) {
-                            Ok(img) => {
-                                emit_child_log("info", &format!("Successfully loaded sprite '{}' from disk path '{path}'", sprite.id));
-                                self.sprite_cache.insert(sprite.id.clone(), img.to_rgba8());
-                            }
-                            Err(e) => {
-                                emit_child_log("error", &format!("Failed to open sprite '{}' at path '{path}': {e}", sprite.id));
-                            }
-                        }
-                    } else {
-                        emit_child_log("warn", &format!("Sprite '{}' has neither bytes nor file path", sprite.id));
+                    }
+
+                    if let Some(img) = self.sprite_cache.get(&sprite.id) {
+                        blit_rgba_sprite(
+                            buf,
+                            w as u32,
+                            h as u32,
+                            img,
+                            sx,
+                            sy,
+                            slot_size as u32,
+                            slot_size as u32,
+                        );
                     }
                 }
+            } else {
+                for sprite in &payload.sprites {
+                    let sx = sprite.x.clamp(0, (w - sprite.width as i32).max(0));
+                    let sy = sprite.y.clamp(0, (h - sprite.height as i32).max(0));
 
-                if let Some(img) = self.sprite_cache.get(&sprite.id) {
-                    blit_rgba_sprite(
-                        buf,
-                        w as u32,
-                        h as u32,
-                        img,
-                        sx,
-                        sy,
-                        sprite.width,
-                        sprite.height,
-                    );
+                    if !self.sprite_cache.contains_key(&sprite.id) {
+                        if let Some(ref bytes) = sprite.png_base64_or_bytes {
+                            if let Ok(img) = image::load_from_memory(bytes) {
+                                self.sprite_cache.insert(sprite.id.clone(), img.to_rgba8());
+                            }
+                        } else if let Some(ref path) = sprite.png_path {
+                            if let Ok(img) = image::open(path) {
+                                self.sprite_cache.insert(sprite.id.clone(), img.to_rgba8());
+                            }
+                        }
+                    }
+
+                    if let Some(img) = self.sprite_cache.get(&sprite.id) {
+                        blit_rgba_sprite(
+                            buf,
+                            w as u32,
+                            h as u32,
+                            img,
+                            sx,
+                            sy,
+                            sprite.width,
+                            sprite.height,
+                        );
+                    }
                 }
             }
         }
@@ -1817,9 +1842,9 @@ mod tests {
         assert_eq!(l1080.game_height, 1080);
         assert_eq!(l1080.hud_banner_rect, [1920 - 340 - 24, 18, 340, 42]);
         assert_eq!(l1080.title_strip_rect, [(1920.0 * 0.21) as i32, (1080.0 * 0.36) as i32, (1920.0 * 0.58) as i32, (1080.0 * 0.12) as i32]);
-        assert_eq!(l1080.card_rects[0], [(1920.0 * 0.21) as i32, (1080.0 * 0.08) as i32, (1920.0 * 0.17) as i32, (1080.0 * 0.24) as i32]);
-        assert_eq!(l1080.card_rects[1], [(1920.0 * 0.415) as i32, (1080.0 * 0.08) as i32, (1920.0 * 0.17) as i32, (1080.0 * 0.24) as i32]);
-        assert_eq!(l1080.card_rects[2], [(1920.0 * 0.62) as i32, (1080.0 * 0.08) as i32, (1920.0 * 0.17) as i32, (1080.0 * 0.24) as i32]);
+        assert_eq!(l1080.card_rects[0], [(1920.0 * 0.21) as i32, (1080.0 * 0.20) as i32, (1920.0 * 0.17) as i32, ((1080.0 * 0.12) as i32).max(140)]);
+        assert_eq!(l1080.card_rects[1], [(1920.0 * 0.415) as i32, (1080.0 * 0.20) as i32, (1920.0 * 0.17) as i32, ((1080.0 * 0.12) as i32).max(140)]);
+        assert_eq!(l1080.card_rects[2], [(1920.0 * 0.62) as i32, (1080.0 * 0.20) as i32, (1920.0 * 0.17) as i32, ((1080.0 * 0.12) as i32).max(140)]);
 
         // 2560x1440
         let l1440 = compute_default_anchor_layout(100, 50, 2560, 1440);
@@ -1829,7 +1854,7 @@ mod tests {
         assert_eq!(l1440.game_height, 1440);
         assert_eq!(l1440.hud_banner_rect, [2560 - 340 - 24, 18, 340, 42]);
         assert_eq!(l1440.card_rects[0][2], (2560.0 * 0.17) as i32);
-        assert_eq!(l1440.card_rects[0][3], (1440.0 * 0.24) as i32);
+        assert_eq!(l1440.card_rects[0][3], ((1440.0 * 0.12) as i32).max(140));
     }
 
     #[test]

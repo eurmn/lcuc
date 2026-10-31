@@ -1,7 +1,6 @@
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
-// @ts-expect-error type error without @types/node package
 import process from "node:process";
 
 const host = process.env.TAURI_DEV_HOST;
@@ -28,7 +27,7 @@ export default defineConfig(() => ({
       : undefined,
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      ignored: ["**/src-tauri/**","**/@llm/**"],
     },
   },
   build: {
@@ -36,7 +35,7 @@ export default defineConfig(() => ({
       process.env.TAURI_ENV_PLATFORM === "windows"
         ? "chrome105"
         : ["es2022", "chrome105", "safari15"],
-    minify: !process.env.TAURI_ENV_DEBUG ? "esbuild" : false,
+    minify: !process.env.TAURI_ENV_DEBUG ? "esbuild" as const : false,
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
     reportCompressedSize: false,
   },
