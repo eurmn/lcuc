@@ -55,6 +55,21 @@ export interface LiveGameState {
   items: LivePlayerItem[];
   stats: LivePlayerStats;
   game_mode?: string;
+  is_dead?: boolean;
+  respawn_timer?: number;
+  is_augment_checkpoint?: boolean;
+  augment_slot?: number | null;
+
+  // camelCase mirrors
+  isInGame?: boolean;
+  gameTime?: number;
+  championName?: string;
+  currentGold?: number;
+  gameMode?: string;
+  isDead?: boolean;
+  respawnTimer?: number;
+  isAugmentCheckpoint?: boolean;
+  augmentSlot?: number | null;
 }
 
 export interface GameWindowRect {
@@ -266,7 +281,20 @@ export interface ActiveComboSynergy {
   label: string;
   win_rate: number;
   wpa: number;
+  synergy_lift?: number;
+  lcb_synergy_lift?: number;
   sample_size: number;
+  confidence_grade?: string;
+
+  // camelCase mirrors
+  comboType?: string;
+  itemIds?: number[];
+  augmentIds?: string[];
+  winRate?: number;
+  synergyLift?: number;
+  lcbSynergyLift?: number;
+  sampleSize?: number;
+  confidenceGrade?: string;
 }
 
 export interface ItemRecommendation {
@@ -276,6 +304,18 @@ export interface ItemRecommendation {
   sample_size: number;
   is_boot: boolean;
   reason: string;
+  synergy_lift?: number;
+  lcb_lift?: number;
+  confidence_grade?: string;
+
+  // camelCase mirrors
+  itemId?: number;
+  winRate?: number;
+  sampleSize?: number;
+  isBoot?: boolean;
+  synergyLift?: number;
+  lcbLift?: number;
+  confidenceGrade?: string;
 }
 
 export interface EnginePerformanceStats {
@@ -284,15 +324,158 @@ export interface EnginePerformanceStats {
   total_time_ms: number;
   match_count: number;
   cache_hit: boolean;
+
+  // camelCase mirrors
+  loadTimeMs?: number;
+  computeTimeMs?: number;
+  totalTimeMs?: number;
+  matchCount?: number;
+  cacheHit?: boolean;
+}
+
+export interface AugmentCardRecommendation {
+  augment_id: string;
+  name: string;
+  icon_url: string;
+  tier: string;
+  tooltip: string;
+  score: number;
+  wpa: number;
+  kit_lift: number;
+  lcb_wpa: number;
+  sample_size: number;
+  verdict: "best_pick" | "reroll" | "neutral" | string;
+  confidence_grade: string;
+  expected_reroll_gain?: number | null;
+  upgrade_probability?: number | null;
+  active_combos?: ActiveComboSynergy[];
+  lookahead_partner_id?: number | null;
+  lookahead_partner_kind?: "item" | "augment" | string | null;
+  lookahead_synergy_lift?: number | null;
+
+  // camelCase mirrors
+  augmentId?: string;
+  iconUrl?: string;
+  kitLift?: number;
+  lcbWpa?: number;
+  sampleSize?: number;
+  confidenceGrade?: string;
+  expectedRerollGain?: number | null;
+  upgradeProbability?: number | null;
+  activeCombos?: ActiveComboSynergy[];
+  lookaheadPartnerId?: number | null;
+  lookaheadPartnerKind?: string | null;
+  lookaheadSynergyLift?: number | null;
+}
+
+export interface RerollEvRecommendation {
+  ev_reroll: number;
+  pool_size: number;
+  tier: string;
+  target_tier: string;
+  best_pick_id?: string | null;
+  should_reroll: boolean;
+
+  // camelCase mirrors
+  evReroll?: number;
+  poolSize?: number;
+  targetTier?: string;
+  bestPickId?: string | null;
+  shouldReroll?: boolean;
+}
+
+export interface AugmentRecommendation {
+  augment_id: string;
+  name: string;
+  icon_url: string;
+  tier: string;
+  tooltip: string;
+  score: number;
+  wpa: number;
+  kit_lift: number;
+  lcb_wpa: number;
+  sample_size: number;
+  confidence_grade: string;
+  lookahead_partner_id?: number | null;
+  lookahead_partner_kind?: string | null;
+  lookahead_synergy_lift?: number | null;
+
+  // camelCase mirrors
+  augmentId?: string;
+  iconUrl?: string;
+  kitLift?: number;
+  lcbWpa?: number;
+  sampleSize?: number;
+  confidenceGrade?: string;
+  lookaheadPartnerId?: number | null;
+  lookaheadPartnerKind?: string | null;
+  lookaheadSynergyLift?: number | null;
 }
 
 export interface BuildRecommendationResult {
   champion_id: number;
+  champion_baseline_winrate?: number;
+  build_winrate?: number;
+  build_wpa?: number;
   active_combos: ActiveComboSynergy[];
+  anti_synergies?: ActiveComboSynergy[];
+  evaluated_cards?: AugmentCardRecommendation[];
+  reroll_ev?: RerollEvRecommendation | null;
   next_items: ItemRecommendation[];
   recommended_boots: ItemRecommendation | null;
   completed_build: ItemRecommendation[];
   alternative_items: ItemRecommendation[];
+  recommended_augments_by_tier?: Record<string, AugmentRecommendation[]>;
   stats: EnginePerformanceStats;
+
+  // camelCase mirrors
+  championId?: number;
+  championBaselineWinrate?: number;
+  buildWinrate?: number;
+  buildWpa?: number;
+  activeCombos?: ActiveComboSynergy[];
+  antiSynergies?: ActiveComboSynergy[];
+  evaluatedCards?: AugmentCardRecommendation[];
+  rerollEv?: RerollEvRecommendation | null;
+  nextItems?: ItemRecommendation[];
+  recommendedBoots?: ItemRecommendation | null;
+  completedBuild?: ItemRecommendation[];
+  alternativeItems?: ItemRecommendation[];
+  recommendedAugmentsByTier?: Record<string, AugmentRecommendation[]>;
+}
+
+export interface MayhemComboDto {
+  id: string;
+  name: string;
+  category: string;
+  champion_id?: number;
+  championId?: number;
+  components: Array<{
+    kind: string;
+    id: string | number;
+    name: string;
+    icon_url: string;
+    rarity?: string;
+    item_class?: string;
+    description?: string;
+    price_total?: number;
+    categories?: string[];
+  }>;
+  games: number;
+  wins: number;
+  win_rate: number;
+  winRate?: number;
+  combo_wpa: number;
+  comboWpa?: number;
+  wpa: number;
+  synergy_lift: number;
+  synergyLift?: number;
+  lift?: number;
+  synergy_score?: number;
+  synergyScore?: number;
+  lcb_synergy_lift: number;
+  lcbSynergyLift?: number;
+  confidence_grade: string;
+  confidenceGrade?: string;
 }
 

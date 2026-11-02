@@ -15,6 +15,7 @@ use commands::{
         api_stop_global_aram_crawler,
     },
     api_champ_select_session, api_champ_select_swap, api_compute_mayhem_build_recommendation,
+    compute_mayhem_build_recommendation, api_query_mayhem_combos, query_mayhem_combos,
     api_get_items_catalog,
     api_delete_runeset,
     api_delete_saved_mayhem_build, api_detect_champion_from_name, api_emit_overlay_state,
@@ -245,6 +246,9 @@ pub fn run() {
             api_scan_live_augment_cards,
             api_emit_overlay_state,
             api_compute_mayhem_build_recommendation,
+            compute_mayhem_build_recommendation,
+            api_query_mayhem_combos,
+            query_mayhem_combos,
             api_get_items_catalog,
         ])
         .build(tauri::generate_context!())

@@ -25,6 +25,7 @@
 
   import MayhemRosterBar from "./MayhemRosterBar.svelte";
   import MayhemBuildEnginePanel from "./MayhemBuildEnginePanel.svelte";
+  import MayhemAugmentAdvisorCard from "./MayhemAugmentAdvisorCard.svelte";
   import MayhemBuildSimulator from "./MayhemBuildSimulator.svelte";
   import MayhemAugmentPicker from "./MayhemAugmentPicker.svelte";
   import MayhemCombosCard from "./MayhemCombosCard.svelte";
@@ -61,6 +62,10 @@
   let buildEngineRec = $state<BuildRecommendationResult | null>(null);
   let loadingRec = $state(false);
 
+  let offeredCards = $state<string[]>([]);
+  let commandLineReroll = $state<boolean>(false);
+  let activeAugmentSlot = $state<number>(1);
+
   // Debounced recommendation state (mirrors MayhemBuildSimulator pattern)
   let recDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   let lastGoodRec: BuildRecommendationResult | null = $state(null);
@@ -68,9 +73,34 @@
   let recRequestSeq = 0;
   const REC_DEBOUNCE_MS = 150;
 
-  function computeRecKey(champId: number, itemIds: number[], augs: string[]): string {
-    return `${champId}:${[...itemIds].sort((a, b) => a - b).join(",")}:${[...augs].sort().join(",")}`;
+  function computeRecKey(
+    champId: number,
+    itemIds: number[],
+    augs: string[],
+    cards: string[],
+    reroll: boolean,
+    slot: number,
+  ): string {
+    return `${champId}:${[...itemIds].sort((a, b) => a - b).join(",")}:${[...augs].sort().join(",")}:${cards.join(",")}:${reroll}:${slot}`;
   }
+
+  const baselineWr = $derived(
+    buildEngineRec?.championBaselineWinrate ??
+      buildEngineRec?.champion_baseline_winrate ??
+      (currentSelectedChampion?.win_rate ?? 0.50)
+  );
+
+  const predictedWr = $derived(
+    buildEngineRec?.buildWinrate ?? buildEngineRec?.build_winrate ?? baselineWr
+  );
+
+  const predictedWpa = $derived(
+    buildEngineRec?.buildWpa ?? buildEngineRec?.build_wpa ?? 0.0
+  );
+
+  const activeCombosList = $derived(
+    buildEngineRec?.activeCombos ?? buildEngineRec?.active_combos ?? []
+  );
 
   let overlayEnabled = $state<boolean>(true);
   let liveGameState = $state<LiveGameState | null>(null);
@@ -133,30 +163,34 @@
       });
     }
     if (!buildEngineRec) return map;
-    if (buildEngineRec.recommended_boots) {
-      const b = buildEngineRec.recommended_boots;
-      if (!map.has(b.item_id)) {
-        map.set(b.item_id, {
-          id: b.item_id,
-          name: `Boot #${b.item_id}`,
-          icon_url: `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/assets/items/icons2d/${b.item_id}.png`.toLowerCase(),
+    const boot = buildEngineRec.recommended_boots ?? buildEngineRec.recommendedBoots;
+    if (boot) {
+      const bId = boot.item_id ?? boot.itemId;
+      if (bId && !map.has(bId)) {
+        map.set(bId, {
+          id: bId,
+          name: `Boot #${bId}`,
+          icon_url: `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/assets/items/icons2d/${bId}.png`.toLowerCase(),
           price_total: 0,
         });
       }
     }
-    for (const it of buildEngineRec.next_items ?? []) {
-      if (!map.has(it.item_id)) {
-        map.set(it.item_id, {
-          id: it.item_id,
-          name: `Item #${it.item_id}`,
-          icon_url: `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/assets/items/icons2d/${it.item_id}.png`.toLowerCase(),
+    const nextList = buildEngineRec.next_items ?? buildEngineRec.nextItems ?? [];
+    for (const it of nextList) {
+      const itId = it.item_id ?? it.itemId;
+      if (itId && !map.has(itId)) {
+        map.set(itId, {
+          id: itId,
+          name: `Item #${itId}`,
+          icon_url: `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/assets/items/icons2d/${itId}.png`.toLowerCase(),
           price_total: 0,
         });
       }
     }
-    for (const it of buildEngineRec.completed_build ?? []) {
-      const id = typeof it === "number" ? it : it.item_id;
-      if (!map.has(id)) {
+    const completedList = buildEngineRec.completed_build ?? buildEngineRec.completedBuild ?? [];
+    for (const it of completedList) {
+      const id = typeof it === "number" ? it : (it.item_id ?? it.itemId);
+      if (id && !map.has(id)) {
         map.set(id, {
           id,
           name: `Item #${id}`,
@@ -220,7 +254,14 @@
     }
   });
 
-  async function scheduleRecCompute(champId: number, itemIds: number[], augs: string[]) {
+  async function scheduleRecCompute(
+    champId: number,
+    itemIds: number[],
+    augs: string[],
+    cards: string[],
+    reroll: boolean,
+    slot: number,
+  ) {
     if (!champId || champId <= 0) {
       buildEngineRec = null;
       lastGoodRec = null;
@@ -239,7 +280,7 @@
       recDebounceTimer = null;
     }
 
-    const currentKey = computeRecKey(champId, itemIds, augs);
+    const currentKey = computeRecKey(champId, itemIds, augs, cards, reroll, slot);
 
     if (lastRecKey === currentKey && buildEngineRec) {
       // No-op: recommendation already computed for this state
@@ -252,7 +293,7 @@
 
     recDebounceTimer = setTimeout(() => {
       recDebounceTimer = null;
-      void doRecCompute(champId, itemIds, augs, seq);
+      void doRecCompute(champId, itemIds, augs, cards, reroll, slot, seq);
     }, REC_DEBOUNCE_MS);
   }
 
@@ -260,13 +301,20 @@
     champId: number,
     itemIds: number[],
     augs: string[],
+    cards: string[],
+    reroll: boolean,
+    slot: number,
     seq: number,
   ) {
     try {
-      const rec = await computeMayhemBuildRecommendation(champId, itemIds, augs);
+      const rec = await computeMayhemBuildRecommendation(champId, itemIds, augs, {
+        offeredCards: cards.length > 0 ? cards : undefined,
+        commandLineReroll: reroll,
+        augmentSlot: slot,
+      });
       // Stale response guard: discard if a newer request superseded this one.
       if (seq !== recRequestSeq) return;
-      lastRecKey = computeRecKey(champId, itemIds, augs);
+      lastRecKey = computeRecKey(champId, itemIds, augs, cards, reroll, slot);
       lastGoodRec = rec;
       buildEngineRec = rec;
       if (overlayEnabled) {
@@ -276,9 +324,9 @@
           championName: currentSelectedChampion?.name ?? selectedChampion?.name ?? "",
           strategyId: "engine_v2",
           augmentIds: augs,
-          recommendedBoots: rec?.recommended_boots?.item_id,
-          nextItemIds: rec?.next_items?.map((i) => i.item_id) ?? [],
-          completedBuild: rec?.completed_build?.map((i) => (typeof i === "number" ? i : i.item_id)) ?? [],
+          recommendedBoots: rec?.recommended_boots?.item_id ?? rec?.recommendedBoots?.item_id ?? rec?.recommendedBoots?.itemId,
+          nextItemIds: (rec?.next_items ?? rec?.nextItems)?.map((i) => i.item_id ?? i.itemId) ?? [],
+          completedBuild: (rec?.completed_build ?? rec?.completedBuild)?.map((i) => (typeof i === "number" ? i : (i.item_id ?? i.itemId))) ?? [],
           buildEngineRec: rec,
         });
       }
@@ -293,8 +341,31 @@
     const champId = selectedChampionId;
     const items = userBuildItemIds;
     const augs = augmentIds;
-    void scheduleRecCompute(champId, items, augs);
+    const cards = offeredCards;
+    const reroll = commandLineReroll;
+    const slot = activeAugmentSlot;
+    void scheduleRecCompute(champId, items, augs, cards, reroll, slot);
   });
+
+  function handleSyncLiveInventory() {
+    if (!liveGameState?.items || liveGameState.items.length === 0) return;
+    const newSlots: (MayhemBuildItem | null)[] = Array(6).fill(null);
+    let count = 0;
+    for (const it of liveGameState.items) {
+      if (count >= 6) break;
+      const itemId = Number(it.item_id);
+      const known = knownItemMap.get(itemId);
+      newSlots[count] = known ?? {
+        id: itemId,
+        name: it.display_name || `Item #${itemId}`,
+        icon_url: `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/assets/items/icons2d/${itemId}.png`.toLowerCase(),
+        price_total: it.price || 0,
+      };
+      count++;
+    }
+    userBuildSlots = newSlots;
+    showScanToast(`Synced ${count} items from live inventory!`);
+  }
 
   function handleSelectChampion(champId: number) {
     selectedChampionId = champId;
@@ -659,10 +730,82 @@
       />
     </div>
 
+    <!-- Log-Odds Build Power Bar -->
+    <div class="rounded-xl border border-gray-800 bg-gray-950/70 p-3.5 flex flex-col md:flex-row items-center justify-between gap-3 shadow-lg backdrop-blur-sm">
+      <!-- Left: Champion Baseline -> Predicted Build Win Rate -->
+      <div class="flex items-center gap-3">
+        <div class="flex flex-col">
+          <span class="text-[10px] uppercase font-bold text-gray-400">Champ Baseline WR</span>
+          <span class="font-mono text-sm font-semibold text-gray-300">
+            {(baselineWr * 100).toFixed(1)}%
+          </span>
+        </div>
+
+        <span class="icon-[heroicons--arrow-right] text-gray-500 text-sm"></span>
+
+        <div class="flex flex-col">
+          <span class="text-[10px] uppercase font-bold text-amber-400 flex items-center gap-1">
+            <span class="icon-[heroicons--bolt] text-xs"></span>
+            Predicted Build WR
+          </span>
+          <div class="flex items-baseline gap-1.5">
+            <span class="font-mono text-base font-bold text-white">
+              {(predictedWr * 100).toFixed(1)}%
+            </span>
+            <span class="font-mono text-xs font-bold {predictedWpa >= 0 ? 'text-emerald-400' : 'text-rose-400'}">
+              {predictedWpa >= 0 ? '+' : ''}{(predictedWpa * 100).toFixed(1)}% WPA
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Middle: Dynamic Power Bar visual fill -->
+      <div class="flex-1 w-full max-w-xs h-2.5 rounded-full bg-gray-800 overflow-hidden border border-gray-700/60 relative">
+        <div
+          class="h-full bg-gradient-to-r from-cyan-500 via-amber-400 to-emerald-400 transition-all duration-300 ease-out"
+          style="width: {Math.min(100, Math.max(10, predictedWr * 100))}%;"
+        ></div>
+      </div>
+
+      <!-- Right: Active pure synergy combo micro-badges -->
+      <div class="flex items-center gap-1.5 flex-wrap">
+        {#if activeCombosList.length === 0}
+          <span class="text-[10px] text-gray-500 italic">No active synergies slotted</span>
+        {:else}
+          {#each activeCombosList.slice(0, 3) as combo}
+            {@const syn = combo.synergy_lift ?? combo.synergyLift ?? 0}
+            <span class="rounded bg-purple-950/80 border border-purple-600/60 px-2 py-0.5 text-[10px] font-mono text-purple-200" title={combo.label}>
+              +{((syn) * 100).toFixed(1)}% Δsyn
+            </span>
+          {/each}
+          {#if activeCombosList.length > 3}
+            <span class="text-[10px] font-mono text-gray-400">+{activeCombosList.length - 3} more</span>
+          {/if}
+        {/if}
+      </div>
+    </div>
+
     <!-- Section 3: Two-Column Main Content Grid -->
     <div class="grid grid-cols-1 xl:grid-cols-12 gap-4">
-      <!-- Left Column: Recommendation Engine Panel + Build Simulator -->
+      <!-- Left Column: Augment Draft Advisor + Recommendation Engine Panel + Build Simulator -->
       <div class="xl:col-span-7 space-y-4">
+        <!-- 3-Card Augment Draft & Reroll Advisor Panel -->
+        <MayhemAugmentAdvisorCard
+          championId={selectedChampionId}
+          championName={currentSelectedChampion?.name ?? selectedChampion?.name ?? ""}
+          evaluatedCards={buildEngineRec?.evaluated_cards ?? buildEngineRec?.evaluatedCards ?? []}
+          rerollEv={buildEngineRec?.reroll_ev ?? buildEngineRec?.rerollEv ?? null}
+          recommendedAugmentsByTier={buildEngineRec?.recommended_augments_by_tier ?? buildEngineRec?.recommendedAugmentsByTier ?? {}}
+          {liveGameState}
+          {commandLineReroll}
+          {activeAugmentSlot}
+          {knownItemMap}
+          onSelectAugment={(augId, name) => toggleSimulatedAugment(name || augId)}
+          onToggleCommandLineReroll={() => (commandLineReroll = !commandLineReroll)}
+          onSyncLiveInventory={handleSyncLiveInventory}
+          onSlotChange={(s) => (activeAugmentSlot = s)}
+        />
+
         <MayhemBuildEnginePanel
           recommendation={buildEngineRec}
           loading={loadingRec}
@@ -674,6 +817,7 @@
         <MayhemBuildSimulator
           buildSlots={userBuildSlots}
           selectedSlotIndex={selectedBuildSlotIndex}
+          pending={loadingRec}
           onSelectSlot={(idx: number) => {
             selectedBuildSlotIndex = selectedBuildSlotIndex === idx ? null : idx;
           }}

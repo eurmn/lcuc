@@ -35,6 +35,19 @@ pub struct LiveGameState {
     pub respawn_timer: f64,
     pub items: Vec<LivePlayerItem>,
     pub stats: LivePlayerStats,
+    pub is_augment_checkpoint: bool,
+    pub augment_slot: Option<u8>,
+
+    // camelCase mirrors
+    pub isInGame: bool,
+    pub gameMode: String,
+    pub gameTime: f64,
+    pub championName: String,
+    pub currentGold: f64,
+    pub isDead: bool,
+    pub respawnTimer: f64,
+    pub isAugmentCheckpoint: bool,
+    pub augmentSlot: Option<u8>,
 }
 
 impl LiveGameState {
@@ -50,6 +63,17 @@ impl LiveGameState {
             respawn_timer: 0.0,
             items: Vec::new(),
             stats: LivePlayerStats::default(),
+            is_augment_checkpoint: false,
+            augment_slot: None,
+            isInGame: false,
+            gameMode: String::new(),
+            gameTime: 0.0,
+            championName: String::new(),
+            currentGold: 0.0,
+            isDead: false,
+            respawnTimer: 0.0,
+            isAugmentCheckpoint: false,
+            augmentSlot: None,
         }
     }
 }
@@ -57,7 +81,7 @@ impl LiveGameState {
 pub async fn fetch_live_game_state() -> Result<LiveGameState, String> {
     let client = reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
-        .timeout(Duration::from_millis(1500))
+        .timeout(Duration::from_millis(800))
         .build()
         .map_err(|e| format!("Failed to create client: {e}"))?;
 
@@ -186,17 +210,37 @@ pub async fn fetch_live_game_state() -> Result<LiveGameState, String> {
         }
     }
 
+    let is_augment_checkpoint = (level > 0 && level <= 3) || level == 7 || level == 11 || level == 15;
+    let augment_slot = match level {
+        1..=3 => Some(1),
+        7 => Some(2),
+        11 => Some(3),
+        15 => Some(4),
+        _ => None,
+    };
+
     Ok(LiveGameState {
         is_in_game: true,
-        game_mode,
+        game_mode: game_mode.clone(),
         game_time,
-        champion_name: champ_name,
+        champion_name: champ_name.clone(),
         level,
         current_gold,
         is_dead,
         respawn_timer,
         items,
         stats,
+        is_augment_checkpoint,
+        augment_slot,
+        isInGame: true,
+        gameMode: game_mode,
+        gameTime: game_time,
+        championName: champ_name,
+        currentGold: current_gold,
+        isDead: is_dead,
+        respawnTimer: respawn_timer,
+        isAugmentCheckpoint: is_augment_checkpoint,
+        augmentSlot: augment_slot,
     })
 }
 

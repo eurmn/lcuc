@@ -9,6 +9,7 @@ import type {
   MayhemAugmentsQuery,
   MayhemAugmentsResponse,
   MayhemChampionBuildSummary,
+  MayhemComboDto,
   MayhemLiveAdvice,
   OverlayAugmentCard,
   SaveMayhemBuildPayload,
@@ -129,11 +130,39 @@ export async function computeMayhemBuildRecommendation(
   championId: number,
   ownedItems: number[],
   ownedAugments: string[],
+  options?: {
+    offeredCards?: string[];
+    seenAugments?: string[];
+    augmentSlot?: number;
+    commandLineReroll?: boolean;
+  }
 ): Promise<BuildRecommendationResult> {
   return invoke<BuildRecommendationResult>("api_compute_mayhem_build_recommendation", {
     championId,
     ownedItems,
     ownedAugments,
+    offeredCards: options?.offeredCards ?? null,
+    seenAugments: options?.seenAugments ?? null,
+    augmentSlot: options?.augmentSlot ?? null,
+    commandLineReroll: options?.commandLineReroll ?? null,
+  });
+}
+
+export async function queryMayhemCombos(params: {
+  championId?: number;
+  comboCategory?: string;
+  sortBy?: string;
+  descending?: boolean;
+  limit?: number;
+  offset?: number;
+} = {}): Promise<MayhemComboDto[]> {
+  return invoke<MayhemComboDto[]>("api_query_mayhem_combos", {
+    championId: params.championId ?? null,
+    comboCategory: params.comboCategory ?? null,
+    sortBy: params.sortBy ?? null,
+    descending: params.descending ?? true,
+    limit: params.limit ?? 50,
+    offset: params.offset ?? 0,
   });
 }
 

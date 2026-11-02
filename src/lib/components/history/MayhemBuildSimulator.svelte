@@ -6,6 +6,7 @@
     buildSlots = Array(6).fill(null),
     selectedSlotIndex = null,
     starterItem = null,
+    pending = false,
     onSelectSlot,
     onClearSlot,
     onItemClick,
@@ -14,6 +15,7 @@
     buildSlots: (MayhemBuildItem | null)[];
     selectedSlotIndex: number | null;
     starterItem?: MayhemBuildItem | null;
+    pending?: boolean;
     onSelectSlot: (index: number) => void;
     onClearSlot: (index: number) => void;
     onItemClick?: (item: MayhemBuildItem, index: number) => void;
@@ -67,6 +69,12 @@
     </div>
 
     <div class="flex items-center gap-2.5">
+      {#if pending}
+        <span class="inline-flex items-center gap-1 rounded bg-amber-500/10 border border-amber-500/30 px-1.5 py-0.5 text-[9px] font-medium text-amber-300 animate-pulse">
+          <span class="icon-[heroicons--arrow-path] text-[10px] animate-spin"></span>
+          Updating...
+        </span>
+      {/if}
       <span class="text-xs font-mono font-bold text-amber-400 flex items-center gap-1">
         <span class="icon-[heroicons--circle-stack] text-xs"></span>
         {totalGold.toLocaleString()}g

@@ -32,3 +32,6 @@ src-tauri/gen/schemas
 .deagle/
 @llm/.dontread-dontwrite.bkp/
 *.bkp
+
+/.md
+/.AGENTS.md.OLD
