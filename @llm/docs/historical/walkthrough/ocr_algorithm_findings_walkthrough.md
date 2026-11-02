@@ -50,6 +50,10 @@ Similarity threshold lowered from 0.60 to 0.55. Requires >= 2 matches to confirm
 - `test_levenshtein_and_fuzzy_similarity`: verifies `levenshtein_distance` and `fuzzy_string_similarity` on typo-tolerant pairs.
 - `test_is_category_badge_noise`: verifies category tag filtering.
 
+## Follow-up (2026-10-31)
+
+The four legacy helpers in `live_overlay.rs` (`normalize_text`, `levenshtein_distance`, `fuzzy_string_similarity`, `text_similarity_score`) were deleted, since §4 replaced them with `dual_matcher.rs` equivalents. The typo-tolerance assertions moved to `dual_matcher.rs` as `test_normalize_token_strips_punctuation_and_case`, `test_word_levenshtein_distance`, and `test_word_similarity_typo_tolerance`, now covering `normalize_token`, `word_levenshtein`, and `word_similarity` directly (including the unmatched-title rejection case).
+
 ## Verification
 
 - `cargo test --manifest-path src-tauri/Cargo.toml --lib live_overlay`: OCR unit tests pass.

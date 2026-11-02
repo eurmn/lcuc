@@ -800,7 +800,6 @@ import { isLcuConnected as fetchIsLcuConnected } from "./lib/api/champ_select";
               onSelectChampion={handleSelectChampionFilter}
               {hideLowPickrate}
               {isLcuConnected}
-              {agentOperations}
             />
           {:else}
           <!-- Content container for Statistics -->

@@ -28,3 +28,8 @@ The user directive is:
 - Implemented `DualSignalMatcher` in `src-tauri/src/services/dual_matcher.rs` with HTML/placeholder stripping, word Levenshtein similarity, multi-word title ratio penalties, and description keyword matching.
 - Integrated multi-pass luminance binarization (`recognize_text_lines_multi_pass` at `130.0` and `150.0` luminance thresholds + raw fallback) and `DualSignalMatcher` into `match_ocr_lines_to_augments`, `scan_title_band_from_image`, and `scan_in_game_augment_cards` in `src-tauri/src/services/live_overlay.rs`.
 - Tuned 3-card crop region (`x: 15%..85%`, `y: 18%..72%`), horizontal column boundaries (`0.36` and `0.65`), and full catalog page size (`1000`).
+
+### [@orchestrator] 2026-10-31
+- Dead-code cleanup follow-up: removed the superseded OCR string helpers from `src-tauri/src/services/live_overlay.rs` (`normalize_text`, `levenshtein_distance`, `fuzzy_string_similarity`, `text_similarity_score`), which had been orphaned by the `DualSignalMatcher` switch and were emitting `dead_code` warnings.
+- Relocated the typo-tolerance regression coverage into `dual_matcher.rs` (`test_normalize_token_strips_punctuation_and_case`, `test_word_levenshtein_distance`, `test_word_similarity_typo_tolerance`) so `normalize_token` / `word_levenshtein` / `word_similarity` are now tested directly.
+- Preserved `is_category_badge_noise` in `live_overlay.rs` — still live and still covered by `test_is_category_badge_noise`.

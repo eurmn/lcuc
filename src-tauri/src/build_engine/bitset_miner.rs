@@ -243,12 +243,31 @@ pub fn compute_build_recommendation_from_index(
     // 2. Candidate items evaluation
     // ponytail: pairwise synergy lift instead of full-subgraph frequent itemset tree; upgrade to FP-Growth when dataset exceeds 1M matches.
     let m_item = 20.0f64;
-    let mut candidate_scores: Vec<(u32, f64, f64, usize, bool, String)> = Vec::new();
+    let wilson_z = 1.96f64; // 95% confidence Wilson Score
+    let min_sample_for_full_confidence = 50usize;
+    let mut candidate_scores: Vec<(u32, f64, f64, f64, f64, usize, bool, String)> = Vec::new();
+    // Fields: (item_id, conservative_wr, delta_wpa, cost_efficiency, avg_compat_lift, sample_size, is_boot, reason)
+
+    // Pre-compute owned item categories for exclusion (prevents redundant passive stacking).
+    let owned_categories: Vec<Vec<String>> = owned_legendaries
+        .iter()
+        .map(|&id| crate::build_engine::item_catalog::get_categories(id))
+        .collect();
 
     for (&cand_id, &(cand_games, cand_wins)) in &index.item_counts {
         if owned_items.contains(&cand_id)
             || !crate::build_engine::item_catalog::is_valid_build_item(cand_id)
         {
+            continue;
+        }
+
+        // Category exclusion: skip candidates sharing a category tag with any owned legendary
+        // (e.g. stacking multiple spellblade or health-scaling passives). Boots are exempt.
+        let cand_cats = crate::build_engine::item_catalog::get_categories(cand_id);
+        let excluded = owned_categories.iter().any(|owned_cats| {
+            owned_cats.iter().any(|oc| cand_cats.iter().any(|cc| cc.eq_ignore_ascii_case(oc)))
+        });
+        if excluded && !crate::build_engine::item_catalog::is_completed_boot(cand_id) {
             continue;
         }
 
@@ -261,53 +280,104 @@ pub fn compute_build_recommendation_from_index(
         }
 
         let is_boot = crate::build_engine::item_catalog::is_completed_boot(cand_id);
+
+        // Bayesian shrinkage win rate (unconditional)
         let uncond_wr = (cand_wins as f64 + m_item * index.champion_win_rate)
             / (cand_games as f64 + m_item);
+
+        // Wilson Score Interval for small samples: penalize low-confidence high-WR anomalies
+        // so niche items with 100% WR over 3 games don't outrank robust choices.
+        let conservative_wr = if cand_games < min_sample_for_full_confidence && cand_games > 0 {
+            let p = uncond_wr;
+            let n = cand_games as f64;
+            let z = wilson_z;
+            let denom = 1.0 + z * z / n;
+            let center = p + z * z / (2.0 * n);
+            let margin = z * ((p * (1.0 - p) / n) + (z * z / (4.0 * n * n))).sqrt();
+            let lower = (center - margin) / denom;
+            lower.max(0.0).min(1.0)
+        } else {
+            uncond_wr
+        };
+
+        // ΔWPA: win probability added over champion baseline (primary sort metric).
+        let delta_wpa = conservative_wr - index.champion_win_rate;
+
+        // Cost-efficiency: ΔWPA / log(gold_cost). Prioritizes high-impact power spikes
+        // over expensive items that merely coincide with late-game gold advantages.
+        let gold_cost = crate::build_engine::item_catalog::get_gold_cost(cand_id).max(1) as f64;
+        let cost_efficiency = if gold_cost > 1.0 {
+            delta_wpa / gold_cost.ln()
+        } else {
+            delta_wpa
+        };
 
         let cand_bitset = match index.item_bitsets.get(&cand_id) {
             Some(b) => b,
             None => continue,
         };
 
-        let mut lifts = Vec::new();
+        let mut compat_lifts = Vec::new();
         let mut augment_synergy_count = 0usize;
 
-        // Synergy with owned legendary items
+        // Compatibility Vector synergy with owned legendary items:
+        // Lift(A,B) = P(Win|A∩B) / (P(Win|A) * P(Win|B))
         for &owned_item in &owned_legendaries {
             if let Some(b_owned) = index.item_bitsets.get(&owned_item) {
                 let intersect = bitset_and(cand_bitset, b_owned);
                 let joint_games = bitset_count_ones(&intersect);
                 if joint_games >= 2 {
                     let joint_wins = bitset_count_wins(&intersect, &index.win_mask);
-                    let joint_wr = joint_wins as f64 / joint_games as f64;
+                    let p_win_joint = joint_wins as f64 / joint_games as f64;
                     let (o_games, o_wins) = index
                         .item_counts
                         .get(&owned_item)
                         .copied()
                         .unwrap_or((1, 0));
-                    let o_wr = o_wins as f64 / o_games.max(1) as f64;
-                    lifts.push(joint_wr - o_wr);
+                    let p_win_owned = if o_games > 0 {
+                        o_wins as f64 / o_games as f64
+                    } else {
+                        index.champion_win_rate
+                    };
+                    let p_win_cand = uncond_wr;
+                    let expected_independent = p_win_cand * p_win_owned;
+                    let lift = if expected_independent > 0.0 {
+                        p_win_joint / expected_independent
+                    } else {
+                        1.0
+                    };
+                    compat_lifts.push(lift);
                 }
             }
         }
 
-        // Synergy with owned augments
+        // Compatibility Vector synergy with owned augments
         for owned_aug in &owned_augments {
             if let Some(b_aug) = index.augment_bitsets.get(owned_aug) {
                 let intersect = bitset_and(cand_bitset, b_aug);
                 let joint_games = bitset_count_ones(&intersect);
                 if joint_games >= 2 {
                     let joint_wins = bitset_count_wins(&intersect, &index.win_mask);
-                    let joint_wr = joint_wins as f64 / joint_games as f64;
+                    let p_win_joint = joint_wins as f64 / joint_games as f64;
                     let (a_games, a_wins) = index
                         .augment_counts
                         .get(owned_aug)
                         .copied()
                         .unwrap_or((1, 0));
-                    let a_wr = a_wins as f64 / a_games.max(1) as f64;
-                    let lift = joint_wr - a_wr;
-                    lifts.push(lift);
-                    if lift > 0.01 {
+                    let p_win_aug = if a_games > 0 {
+                        a_wins as f64 / a_games as f64
+                    } else {
+                        index.champion_win_rate
+                    };
+                    let p_win_cand = uncond_wr;
+                    let expected_independent = p_win_cand * p_win_aug;
+                    let lift = if expected_independent > 0.0 {
+                        p_win_joint / expected_independent
+                    } else {
+                        1.0
+                    };
+                    compat_lifts.push(lift);
+                    if lift > 1.01 {
                         augment_synergy_count += 1;
                     }
                 }
@@ -334,35 +404,45 @@ pub fn compute_build_recommendation_from_index(
                 }
             } else {
                 // Later/deeper context: allow low pickrate only if it has positive synergy with current build
-                let has_active_synergy = augment_synergy_count > 0 || lifts.iter().any(|&l| l > 0.02);
+                let has_active_synergy =
+                    augment_synergy_count > 0 || compat_lifts.iter().any(|&l| l > 1.02);
                 if pick_rate < 0.02 && !has_active_synergy {
                     continue;
                 }
             }
         }
 
-        let avg_lift = if lifts.is_empty() {
+        let avg_compat_lift = if compat_lifts.is_empty() {
             0.0
         } else {
-            lifts.iter().sum::<f64>() / lifts.len() as f64
+            compat_lifts.iter().sum::<f64>() / compat_lifts.len() as f64
         };
 
-        let score = uncond_wr + 0.4 * avg_lift;
-        let reason = if avg_lift.abs() > 0.005 {
+        // Reason string reflects ΔWPA and compatibility lift
+        let reason = if avg_compat_lift > 1.005 {
             format!(
-                "+{:.1}% synergy lift across active build ({} games)",
-                avg_lift * 100.0,
+                "{:.1}× compat lift with active build ({} games)",
+                avg_compat_lift,
                 cand_games
             )
         } else {
             format!(
-                "{:.1}% Bayesian win rate ({} games)",
-                uncond_wr * 100.0,
+                "{:.1}% ΔWPA ({} games)",
+                delta_wpa * 100.0,
                 cand_games
             )
         };
 
-        candidate_scores.push((cand_id, score, avg_lift, cand_games, is_boot, reason));
+        candidate_scores.push((
+            cand_id,
+            conservative_wr,
+            delta_wpa,
+            cost_efficiency,
+            avg_compat_lift,
+            cand_games,
+            is_boot,
+            reason,
+        ));
     }
 
     // 3. Boots recommendation
@@ -372,15 +452,20 @@ pub fn compute_build_recommendation_from_index(
     } else {
         let mut boot_candidates: Vec<_> = candidate_scores
             .iter()
-            .filter(|(_, _, _, _, is_boot, _)| *is_boot)
+            .filter(|(_, _, _, _, _, _, is_boot, _)| *is_boot)
             .collect();
-        boot_candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        boot_candidates.sort_by(|a, b| {
+            b.2
+                .partial_cmp(&a.2)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal))
+        });
         boot_candidates.first().map(|entry| {
-            let (item_id, score, lift, sample_size, is_boot, ref reason) = **entry;
+            let (item_id, conservative_wr, delta_wpa, _cost_efficiency, _avg_compat_lift, sample_size, is_boot, ref reason) = **entry;
             ItemRecommendation {
                 item_id,
-                win_rate: score,
-                lift,
+                win_rate: conservative_wr,
+                lift: delta_wpa,
                 sample_size,
                 is_boot,
                 reason: reason.clone(),
@@ -391,19 +476,24 @@ pub fn compute_build_recommendation_from_index(
     // 4. Next 2 items recommendation (strictly legendary non-boots)
     let mut regular_candidates: Vec<_> = candidate_scores
         .iter()
-        .filter(|(cand_id, _, _, _, is_boot, _)| !*is_boot && crate::build_engine::item_catalog::is_legendary_item(*cand_id))
+        .filter(|(cand_id, _, _, _, _, _, is_boot, _)| !*is_boot && crate::build_engine::item_catalog::is_legendary_item(*cand_id))
         .collect();
-    regular_candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    regular_candidates.sort_by(|a, b| {
+        b.2
+            .partial_cmp(&a.2)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal))
+    });
 
     let next_items: Vec<ItemRecommendation> = regular_candidates
         .iter()
         .take(2)
         .map(|entry| {
-            let (item_id, score, lift, sample_size, is_boot, ref reason) = **entry;
+            let (item_id, conservative_wr, delta_wpa, _cost_efficiency, _avg_compat_lift, sample_size, is_boot, ref reason) = **entry;
             ItemRecommendation {
                 item_id,
-                win_rate: score,
-                lift,
+                win_rate: conservative_wr,
+                lift: delta_wpa,
                 sample_size,
                 is_boot,
                 reason: reason.clone(),
@@ -440,11 +530,11 @@ pub fn compute_build_recommendation_from_index(
             if let Some(cand) = candidate_scores.iter().find(|c| c.0 == item_id) {
                 ItemRecommendation {
                     item_id,
-                    win_rate: cand.1,
-                    lift: cand.2,
-                    sample_size: cand.3,
-                    is_boot: cand.4,
-                    reason: cand.5.clone(),
+                    win_rate: cand.1, // conservative_wr
+                    lift: cand.2,     // delta_wpa
+                    sample_size: cand.5, // cand_games
+                    is_boot: cand.6,
+                    reason: cand.7.clone(),
                 }
             } else {
                 let (games, wins) = index.item_counts.get(&item_id).copied().unwrap_or((0, 0));
@@ -452,7 +542,7 @@ pub fn compute_build_recommendation_from_index(
                 ItemRecommendation {
                     item_id,
                     win_rate: wr,
-                    lift: 0.0,
+                    lift: wr - index.champion_win_rate,
                     sample_size: games,
                     is_boot: false,
                     reason: format!("{:.1}% win rate ({} games)", wr * 100.0, games),
@@ -467,11 +557,11 @@ pub fn compute_build_recommendation_from_index(
         .filter(|entry| !completed_build_ids.contains(&entry.0))
         .take(8)
         .map(|entry| {
-            let (item_id, score, lift, sample_size, is_boot, ref reason) = **entry;
+            let (item_id, conservative_wr, delta_wpa, _cost_efficiency, _avg_compat_lift, sample_size, is_boot, ref reason) = **entry;
             ItemRecommendation {
                 item_id,
-                win_rate: score,
-                lift,
+                win_rate: conservative_wr,
+                lift: delta_wpa,
                 sample_size,
                 is_boot,
                 reason: reason.clone(),
@@ -501,11 +591,26 @@ pub fn compute_build_recommendation_from_index(
 pub fn compute_build_recommendation(
     request: BuildEngineRequest,
 ) -> Result<BuildRecommendationResult, String> {
+    let cache_key = crate::build_engine::cache::compute_recommendation_cache_key(
+        request.champion_id,
+        &request.owned_items,
+        &request.owned_augments,
+    );
+
+    if let Some(mut cached) = crate::build_engine::cache::get_cached_result(cache_key) {
+        cached.stats.cache_hit = true;
+        return Ok(cached);
+    }
+
     let load_start = Instant::now();
     let (index, cache_hit) =
         crate::build_engine::cache::get_or_build_champion_index(request.champion_id)?;
     let load_ms = load_start.elapsed().as_secs_f64() * 1000.0;
-    compute_build_recommendation_from_index(&index, request, load_ms, cache_hit)
+    let result = compute_build_recommendation_from_index(&index, request.clone(), load_ms, cache_hit)?;
+
+    crate::build_engine::cache::cache_result(request.champion_id, cache_key, result.clone());
+
+    Ok(result)
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 
 use crate::build_engine::bitset_miner::compute_build_recommendation;
@@ -25,7 +25,12 @@ struct EngineSupervisor {
 lazy_static::lazy_static! {
     static ref SUPERVISOR: Mutex<Option<EngineSupervisor>> = Mutex::new(None);
     static ref NEXT_REQ_ID: AtomicU64 = AtomicU64::new(1);
+    /// Tracks the last time a JSON line was sent to the subprocess, for 50ms trailing debounce.
+    static ref LAST_IPC_SEND: Mutex<Option<Instant>> = Mutex::new(None);
 }
+
+/// Minimum delay between successive IPC JSON lines to the subprocess (50ms trailing debounce).
+const IPC_DEBOUNCE_MS: u64 = 50;
 
 fn resolve_build_engine_binary_path() -> Option<PathBuf> {
     let binary_name = if cfg!(windows) {
@@ -159,6 +164,33 @@ pub async fn request_build_recommendation(
 
     let (tx, rx) = oneshot::channel();
     let mut sent = false;
+
+    // 50ms trailing debounce on the Tauri-to-subprocess JSON line channel.
+    // Prevents redundant subprocess compute cycles when users rapidly click
+    // through inventory items during Champion Select.
+    let debounce_delay = {
+        let mut last = LAST_IPC_SEND.lock().map_err(|e| e.to_string())?;
+        let now = Instant::now();
+        if let Some(last_time) = *last {
+            let elapsed = now.duration_since(last_time);
+            if elapsed < Duration::from_millis(IPC_DEBOUNCE_MS) {
+                Some(Duration::from_millis(IPC_DEBOUNCE_MS) - elapsed)
+            } else {
+                *last = Some(now);
+                None
+            }
+        } else {
+            *last = Some(now);
+            None
+        }
+    };
+
+    if let Some(delay) = debounce_delay {
+        tokio::time::sleep(delay).await;
+        if let Ok(mut last) = LAST_IPC_SEND.lock() {
+            *last = Some(Instant::now());
+        }
+    }
 
     {
         if let Ok(mut lock) = SUPERVISOR.lock() {

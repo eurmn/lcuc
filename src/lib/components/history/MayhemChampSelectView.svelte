@@ -21,7 +21,6 @@
     LiveGameState,
     BuildRecommendationResult,
   } from "../../types/champ_select";
-  import type { AgentOperationDto } from "../../api/agent";
   import { logger } from "../../utils/logger";
 
   import MayhemRosterBar from "./MayhemRosterBar.svelte";
@@ -36,20 +35,16 @@
     onSelectChampion,
     hideLowPickrate = false,
     isLcuConnected = false,
-    agentOperations = [],
   }: {
     selectedChampion?: ChampionSummary | null;
     onSelectChampion?: (champ: ChampionSummary | null) => void;
     hideLowPickrate?: boolean;
     isLcuConnected?: boolean;
-    agentOperations?: AgentOperationDto[];
   } = $props();
 
   let session = $state<ChampSelectSession | null>(null);
   let allChampions = $state<ChampionSummary[]>([]);
   let selectedChampionId = $state<number>(22);
-  let championSearchQuery = $state("");
-  let championPickerOpen = $state(false);
 
   let userBuildSlots = $state<(MayhemBuildItem | null)[]>(Array(6).fill(null));
   let selectedBuildSlotIndex = $state<number | null>(null);
@@ -65,6 +60,17 @@
   }>>({});
   let buildEngineRec = $state<BuildRecommendationResult | null>(null);
   let loadingRec = $state(false);
+
+  // Debounced recommendation state (mirrors MayhemBuildSimulator pattern)
+  let recDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastGoodRec: BuildRecommendationResult | null = $state(null);
+  let lastRecKey = "";
+  let recRequestSeq = 0;
+  const REC_DEBOUNCE_MS = 150;
+
+  function computeRecKey(champId: number, itemIds: number[], augs: string[]): string {
+    return `${champId}:${[...itemIds].sort((a, b) => a - b).join(",")}:${[...augs].sort().join(",")}`;
+  }
 
   let overlayEnabled = $state<boolean>(true);
   let liveGameState = $state<LiveGameState | null>(null);
@@ -98,14 +104,6 @@
 
   const currentSelectedChampion = $derived(
     allChampions.find((c) => c.id === selectedChampionId) ?? null
-  );
-
-  const filteredChampions = $derived(
-    championSearchQuery.trim() === ""
-      ? allChampions
-      : allChampions.filter((c) =>
-          c.name.toLowerCase().includes(championSearchQuery.toLowerCase())
-        )
   );
 
   const isInChampSelect = $derived(
@@ -222,21 +220,54 @@
     }
   });
 
-  let lastRecKey = "";
-
-  async function updateRecommendation(champId: number, itemIds: number[], augs: string[]) {
+  async function scheduleRecCompute(champId: number, itemIds: number[], augs: string[]) {
     if (!champId || champId <= 0) {
       buildEngineRec = null;
+      lastGoodRec = null;
       lastRecKey = "";
+      loadingRec = false;
+      if (recDebounceTimer) {
+        clearTimeout(recDebounceTimer);
+        recDebounceTimer = null;
+      }
+      recRequestSeq++;
       return;
     }
-    const currentKey = `${champId}:${itemIds.slice().sort().join(",")}:${augs.slice().sort().join(",")}`;
-    if (currentKey === lastRecKey) return;
-    lastRecKey = currentKey;
+
+    if (recDebounceTimer) {
+      clearTimeout(recDebounceTimer);
+      recDebounceTimer = null;
+    }
+
+    const currentKey = computeRecKey(champId, itemIds, augs);
+
+    if (lastRecKey === currentKey && buildEngineRec) {
+      // No-op: recommendation already computed for this state
+      return;
+    }
 
     loadingRec = true;
+    recRequestSeq++;
+    const seq = recRequestSeq;
+
+    recDebounceTimer = setTimeout(() => {
+      recDebounceTimer = null;
+      void doRecCompute(champId, itemIds, augs, seq);
+    }, REC_DEBOUNCE_MS);
+  }
+
+  async function doRecCompute(
+    champId: number,
+    itemIds: number[],
+    augs: string[],
+    seq: number,
+  ) {
     try {
       const rec = await computeMayhemBuildRecommendation(champId, itemIds, augs);
+      // Stale response guard: discard if a newer request superseded this one.
+      if (seq !== recRequestSeq) return;
+      lastRecKey = computeRecKey(champId, itemIds, augs);
+      lastGoodRec = rec;
       buildEngineRec = rec;
       if (overlayEnabled) {
         void emitOverlayState({
@@ -254,7 +285,7 @@
     } catch (err) {
       logger.warn("frontend.build_engine", "Failed computing recommendation", err);
     } finally {
-      loadingRec = false;
+      if (seq === recRequestSeq) loadingRec = false;
     }
   }
 
@@ -262,12 +293,11 @@
     const champId = selectedChampionId;
     const items = userBuildItemIds;
     const augs = augmentIds;
-    void updateRecommendation(champId, items, augs);
+    void scheduleRecCompute(champId, items, augs);
   });
 
   function handleSelectChampion(champId: number) {
     selectedChampionId = champId;
-    championPickerOpen = false;
     const champ = allChampions.find((c) => c.id === champId) ?? null;
     if (champ) {
       onSelectChampion?.(champ);
@@ -644,7 +674,7 @@
         <MayhemBuildSimulator
           buildSlots={userBuildSlots}
           selectedSlotIndex={selectedBuildSlotIndex}
-          onSelectSlot={(idx) => {
+          onSelectSlot={(idx: number) => {
             selectedBuildSlotIndex = selectedBuildSlotIndex === idx ? null : idx;
           }}
           onClearSlot={handleClearSlot}
@@ -663,8 +693,6 @@
           currentAugmentIds={augmentIds}
           currentBuildItemIds={userBuildItemIds}
           {hideLowPickrate}
-          {agentOperations}
-          {itemsCatalog}
           onSelectItem={(it) => {
             handleEquipItem({
               id: it.id,

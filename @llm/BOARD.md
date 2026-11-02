@@ -3,6 +3,15 @@
 Use this board for quick inter-agent notes, contract clarifications, caveats, and persistent handoff state across sessions.
 
 ---
+### [@orchestrator] 2026-11-01 16:25 [task-mayhem-build-engine-review]
+- Sub-board: `@llm/board/task-mayhem-build-engine-review/board.md`.
+- Completed fixes for all Rust compilation errors and runtime/UI regressions:
+  - `host.rs`: Fixed non-`Send` mutex guard across `await`.
+  - `cache.rs`: Fixed trait bounds on `evict_if_over_capacity` and removed invalid `?` in `cache_result`.
+  - `item_catalog.rs`: Added `#[serde(default)]` to prevent catalog wipeout at runtime.
+  - `bitset_miner.rs`: Connected `RESULT_CACHE` and restored `win_rate` as actual percentage win rate with `lift` for $\Delta\text{WPA}$.
+  - Frontend: Restored image previews, clean glyphs, removed `championId: 0` calls, and corrected dedupe tracking in `MayhemChampSelectView.svelte`.
+
 ### [@orchestrator] 2026-10-30 14:00 [task-ocr-dual-signal-matcher]
 - Initialized Task `task-ocr-dual-signal-matcher`.
 - Sub-board: `@llm/board/task-ocr-dual-signal-matcher/board.md`.
@@ -89,6 +98,16 @@ Use this board for quick inter-agent notes, contract clarifications, caveats, an
 - Resolving missing item sprites in native overlay via byte embedding in IPC.
 - Rewriting augment card synergy enrichment with empirical bitset co-occurrence for 1-2 commonly bought legendary items.
 - Widening OCR title band, allowing 1+ card detections, and displaying on-screen error/status feedback.
+
+### [@orchestrator] 2026-10-31 [task-mayhem-build-engine-full-optimization]
+- Initialized Task `task-mayhem-build-engine-full-optimization`.
+- Sub-board: `@llm/board/task-mayhem-build-engine-full-optimization/board.md`.
+- @engineer 4-wave YAML plan created. Waves 1-3 COMPLETE; Wave 4 (verification) pending user request.
+- Wave 1 (worker-rust-data, DONE): models.rs reconciliation + item_catalog.rs gold_cost/categories + data_loader.rs filtering.
+- Wave 2 (worker-rust-compute, DONE): cache.rs bounded LRU (128) + result cache + bitset_miner.rs scoring (Wilson Score/ΔWPA primary/cost-efficiency/compatibility-vector lift/category exclusion).
+- Wave 3 (worker-svelte-ipc, DONE): host.rs 50ms IPC debounce + MayhemChampSelectView.svelte 150ms debounce/lastGoodRec/request-id guard + MayhemCombosCard.svelte pagination removed (virtualized only).
+- Wave 4 (pending): cargo check --bins, cargo test --lib build_engine, bun run type_check.
+- Items 4A/4B already completed under task-mayhem-build-engine-optimization.
 
 
 

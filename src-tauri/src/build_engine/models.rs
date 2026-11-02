@@ -17,7 +17,7 @@ pub struct BuildEngineResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ActiveComboSynergy {
-    pub combo_type: String, // "item-augment" or "item-item"
+    pub combo_type: String,
     pub item_ids: Vec<u32>,
     pub augment_ids: Vec<String>,
     pub label: String,
