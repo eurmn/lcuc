@@ -3,6 +3,7 @@ pub mod agent_supervisor;
 pub mod build_engine;
 pub mod commands;
 pub mod logger;
+pub mod mayhem_math;
 pub mod models;
 pub mod services;
 
