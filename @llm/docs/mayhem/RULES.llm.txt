@@ -30,3 +30,10 @@
 - THE BEE BAND: Bees/honey fly across lane; bees deal 10-20% max HP true damage, honey heals 15-30% and grants gold.
 - TRUE DAMAGE: Kills and turrets drop Stat Anvils of random tier.
 
+
+## Recommender model (v3, overlay)
+- Effects estimated in log-odds, Normal-Normal empirical Bayes shrink (tau^2 via DerSimonian-Laird, floor 0.01).
+- Build prediction: L = logit(p_champ) + sum(beta) + sum(0.70^k * gamma), tanh-saturated at 1.5, 80% band.
+- Reroll EV: exact expected max of a 3-card SRSWOR draw from the unseen tier pool; P(improve) = 1 - C(m,3)/C(P,3).
+- Overlay renders natively (DIB + GDI text, right-edge row stack). No HTML over the game.
+- Card rows are labelled LEFT/MID/RIGHT (screen order) and PICK/REROLL/SKIP (engine verdict).
