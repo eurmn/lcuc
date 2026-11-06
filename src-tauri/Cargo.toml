@@ -26,6 +26,10 @@ path = "src/bin/lcu-companion-agent.rs"
 name = "lcu-build-engine"
 path = "src/bin/lcu_build_engine.rs"
 
+[[bin]]
+name = "overlay-preview"
+path = "src/bin/overlay_preview.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

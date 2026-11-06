@@ -6636,6 +6636,7 @@ pub async fn enrich_overlay_augment_cards(
             games: aug.games,
             synergy_items,
             combos,
+            ..Default::default()
         });
     }
 

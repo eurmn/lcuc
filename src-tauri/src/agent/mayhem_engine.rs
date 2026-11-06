@@ -1817,3 +1817,345 @@ pub fn query_mayhem_combos(
 
     results.into_iter().skip(offset).take(limit).collect()
 }
+
+// --- Overlay card decisions (v3 math) ---
+
+use crate::mayhem_math::{
+    estimate_tau2, evaluate_reroll, logit as math_logit, pair_effect, sample_effect,
+    sigmoid as math_sigmoid, PairEffect, RerollEval, SingleEffect, TAU2_FLOOR, Z80,
+};
+
+/// Reroll is only advised when the expected log-odds gain clears this threshold
+/// (0.02 nats ~ 0.5% win rate).
+pub const REROLL_SIGNIFICANCE: f64 = 0.02;
+
+#[derive(Debug, Clone)]
+pub struct CardDecision {
+    pub augment_id: u32,
+    pub effect: f64,
+    pub win_rate: f64,
+    pub win_rate_low: f64,
+    pub win_rate_high: f64,
+    pub wpa: f64,
+    pub games: u32,
+    pub verdict: &'static str,
+    pub rank: u8,
+    pub reroll_gain: f64,
+    pub reroll_probability: f64,
+}
+
+/// Returns one verdict per candidate score and the reroll evaluation it used.
+pub fn apply_verdicts(
+    candidate_scores: &[f64],
+    pool_scores: &[f64],
+    draw_count: usize,
+    margin: f64,
+) -> (Vec<&'static str>, RerollEval) {
+    let best = candidate_scores
+        .iter()
+        .cloned()
+        .fold(f64::NEG_INFINITY, f64::max);
+    let eval = evaluate_reroll(pool_scores, best, draw_count);
+    let reroll_best = eval.drawable && eval.gain > margin;
+
+    let verdicts = candidate_scores
+        .iter()
+        .map(|score| {
+            if (score - best).abs() < 1e-9 {
+                if reroll_best {
+                    "reroll"
+                } else {
+                    "pick"
+                }
+            } else {
+                "skip"
+            }
+        })
+        .collect();
+
+    (verdicts, eval)
+}
+
+fn resource_counts(
+    index: &MayhemSynergyIndex,
+    champ_id: u16,
+    id: u32,
+    is_augment: bool,
+) -> (u32, u32) {
+    let kind = if is_augment {
+        KIND_AUG_CHAMP
+    } else {
+        KIND_ITEM_CHAMP
+    };
+    let c = index.get_counts(pack_combo_key(kind, champ_id, id, 0));
+    (c.wins, c.games)
+}
+
+fn pair_counts(
+    index: &MayhemSynergyIndex,
+    champ_id: u16,
+    a: (u32, bool),
+    b: (u32, bool),
+) -> (u32, u32) {
+    let (kind, entity_a, entity_b) = match (a.1, b.1) {
+        (true, true) => (KIND_AUG_AUG_CHAMP, a.0.min(b.0), a.0.max(b.0)),
+        (false, false) => (KIND_ITEM_ITEM_CHAMP, a.0.min(b.0), a.0.max(b.0)),
+        (true, false) => (KIND_ITEM_AUG_CHAMP, a.0, b.0),
+        (false, true) => (KIND_ITEM_AUG_CHAMP, b.0, a.0),
+    };
+    let c = index.get_counts(pack_combo_key(kind, champ_id, entity_a, entity_b));
+    (c.wins, c.games)
+}
+
+fn population_tau2(
+    index: &MayhemSynergyIndex,
+    champ_id: u16,
+    p_champ: f64,
+    is_augment: bool,
+) -> f64 {
+    let kind = if is_augment {
+        KIND_AUG_CHAMP
+    } else {
+        KIND_ITEM_CHAMP
+    };
+    let mut samples = Vec::new();
+    for (key, counts) in index.counts.iter() {
+        let (k, champ, _, entity_b) = unpack_combo_key(*key);
+        if k == kind && champ == champ_id && entity_b == 0 && counts.games > 0 {
+            samples.push((counts.wins, counts.games));
+        }
+    }
+    estimate_tau2(p_champ, &samples)
+}
+
+struct LockedResource {
+    id: u32,
+    is_augment: bool,
+    effect: SingleEffect,
+}
+
+fn score_candidate(
+    index: &MayhemSynergyIndex,
+    champ_id: u16,
+    p_champ: f64,
+    tau2_aug: f64,
+    tau2_item: f64,
+    locked: &[LockedResource],
+    candidate: (u32, bool),
+) -> (SingleEffect, f64) {
+    let tau2 = if candidate.1 { tau2_aug } else { tau2_item };
+    let (wins, games) = resource_counts(index, champ_id, candidate.0, candidate.1);
+    let effect = sample_effect(p_champ, wins, games, tau2);
+    let base = math_logit(p_champ);
+
+    let mut pair_sum = 0.0;
+    for locked_res in locked {
+        let (pw, pn) = pair_counts(
+            index,
+            champ_id,
+            candidate,
+            (locked_res.id, locked_res.is_augment),
+        );
+        if pn < 5 {
+            continue;
+        }
+        let pe: PairEffect = pair_effect(
+            base + effect.effect + locked_res.effect.effect,
+            pw,
+            pn,
+            effect.posterior_var,
+            locked_res.effect.posterior_var,
+            TAU2_FLOOR,
+        );
+        pair_sum += pe.effect;
+    }
+
+    (effect, pair_sum)
+}
+
+/// Score every offered card, rank them, and decide pick vs reroll.
+pub fn decide_offered_cards(
+    index: &MayhemSynergyIndex,
+    champ_id: u16,
+    offered: &[u32],
+    locked_augments: &[u32],
+    locked_items: &[u32],
+    tier: &str,
+    seen: &[u32],
+) -> Vec<CardDecision> {
+    if offered.is_empty() {
+        return Vec::new();
+    }
+
+    let p_champ = index.evaluate_champion_baseline(champ_id);
+    let l0 = math_logit(p_champ);
+    let tau2_aug = population_tau2(index, champ_id, p_champ, true);
+    let tau2_item = population_tau2(index, champ_id, p_champ, false);
+
+    let mut locked: Vec<LockedResource> = Vec::new();
+    for &id in locked_augments {
+        let (wins, games) = resource_counts(index, champ_id, id, true);
+        locked.push(LockedResource {
+            id,
+            is_augment: true,
+            effect: sample_effect(p_champ, wins, games, tau2_aug),
+        });
+    }
+    for &id in locked_items {
+        if id == 0 || PORO_SNAX_IDS.contains(&id) {
+            continue;
+        }
+        let (wins, games) = resource_counts(index, champ_id, id, false);
+        locked.push(LockedResource {
+            id,
+            is_augment: false,
+            effect: sample_effect(p_champ, wins, games, tau2_item),
+        });
+    }
+
+    let mut candidate_effects = Vec::with_capacity(offered.len());
+    let mut candidate_scores = Vec::with_capacity(offered.len());
+    for &id in offered {
+        let (effect, pair_sum) = score_candidate(
+            index,
+            champ_id,
+            p_champ,
+            tau2_aug,
+            tau2_item,
+            &locked,
+            (id, true),
+        );
+        candidate_effects.push(effect);
+        candidate_scores.push(effect.effect + pair_sum);
+    }
+
+    let mut excluded: HashSet<u32> = seen.iter().copied().collect();
+    excluded.extend(offered.iter().copied());
+
+    let mut pool_scores = Vec::new();
+    let mut dedupe: HashSet<u32> = HashSet::new();
+    for meta in AUGMENT_METADATA.values() {
+        if meta.tier != tier
+            || !dedupe.insert(meta.numeric_id)
+            || excluded.contains(&meta.numeric_id)
+        {
+            continue;
+        }
+        let (effect, pair_sum) = score_candidate(
+            index,
+            champ_id,
+            p_champ,
+            tau2_aug,
+            tau2_item,
+            &locked,
+            (meta.numeric_id, true),
+        );
+        pool_scores.push(effect.effect + pair_sum);
+    }
+
+    let (verdicts, eval) = apply_verdicts(&candidate_scores, &pool_scores, 3, REROLL_SIGNIFICANCE);
+
+    let mut decisions = Vec::with_capacity(offered.len());
+    for i in 0..offered.len() {
+        let effect = candidate_effects[i];
+        let score = candidate_scores[i];
+        let log_odds = l0 + effect.effect;
+        let p = math_sigmoid(log_odds).clamp(0.01, 0.99);
+        let se = effect.posterior_var.sqrt();
+        let rank = candidate_scores.iter().filter(|s| **s > score).count() + 1;
+        decisions.push(CardDecision {
+            augment_id: offered[i],
+            effect: effect.effect,
+            win_rate: p,
+            win_rate_low: math_sigmoid(log_odds - Z80 * se),
+            win_rate_high: math_sigmoid(log_odds + Z80 * se),
+            wpa: p - p_champ,
+            games: effect.games,
+            verdict: verdicts[i],
+            rank: rank as u8,
+            reroll_gain: eval.gain,
+            reroll_probability: eval.improve_probability,
+        });
+    }
+
+    decisions
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn synthetic_index() -> MayhemSynergyIndex {
+        let mut index = MayhemSynergyIndex::default();
+        index.total_matches = 1000;
+        index.counts.insert(
+            pack_combo_key(KIND_CHAMP_BASE, 1, 0, 0),
+            WinGameCount {
+                wins: 500,
+                games: 1000,
+            },
+        );
+        index.counts.insert(
+            pack_combo_key(KIND_AUG_CHAMP, 1, 40, 0),
+            WinGameCount {
+                wins: 60,
+                games: 100,
+            },
+        );
+        index.counts.insert(
+            pack_combo_key(KIND_AUG_CHAMP, 1, 41, 0),
+            WinGameCount {
+                wins: 45,
+                games: 100,
+            },
+        );
+        index.id_to_augment_string.insert(40, "Test A".to_string());
+        index.id_to_augment_string.insert(41, "Test B".to_string());
+        index
+    }
+
+    #[test]
+    fn picks_when_the_pool_cannot_beat_the_best_card() {
+        let (verdicts, eval) = apply_verdicts(&[0.30, 0.10], &[0.0, 0.05], 3, REROLL_SIGNIFICANCE);
+        assert_eq!(verdicts, vec!["pick", "skip"]);
+        assert!(!eval.drawable);
+    }
+
+    #[test]
+    fn rerolls_when_the_pool_is_clearly_better() {
+        let pool = [0.40, 0.35, 0.30, 0.25];
+        let (verdicts, eval) = apply_verdicts(&[0.10, 0.05], &pool, 3, REROLL_SIGNIFICANCE);
+        assert_eq!(verdicts[0], "reroll");
+        assert_eq!(verdicts[1], "skip");
+        assert!(eval.gain > REROLL_SIGNIFICANCE);
+        assert_eq!(eval.improve_probability, 1.0);
+    }
+
+    #[test]
+    fn verdicts_track_the_highest_score_only() {
+        let (verdicts, _) = apply_verdicts(&[0.05, 0.02, 0.01], &[], 3, REROLL_SIGNIFICANCE);
+        assert_eq!(verdicts, vec!["pick", "skip", "skip"]);
+    }
+
+    #[test]
+    fn picks_the_higher_winrate_augment() {
+        let index = synthetic_index();
+        let decisions = decide_offered_cards(&index, 1, &[40, 41], &[], &[], "Gold", &[]);
+        assert_eq!(decisions.len(), 2);
+        assert!(decisions[0].wpa > decisions[1].wpa);
+        assert_eq!(decisions[0].rank, 1);
+        assert_eq!(decisions[1].rank, 2);
+        assert_eq!(decisions[0].verdict, "pick");
+        assert_eq!(decisions[1].verdict, "skip");
+    }
+
+    #[test]
+    fn card_winrate_is_anchored_on_the_champion_baseline() {
+        let index = synthetic_index();
+        let decisions = decide_offered_cards(&index, 1, &[40], &[], &[], "Gold", &[]);
+        let p_champ = index.evaluate_champion_baseline(1);
+        assert!((decisions[0].win_rate - p_champ - decisions[0].wpa).abs() < 1e-9);
+        assert!(decisions[0].win_rate_low < decisions[0].win_rate);
+        assert!(decisions[0].win_rate_high > decisions[0].win_rate);
+    }
+}

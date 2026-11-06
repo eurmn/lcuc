@@ -213,7 +213,7 @@ pub struct OverlayComboEntry {
     pub items: Vec<OverlaySynergyItem>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OverlayAugmentCard {
     pub slot: usize,
     pub id: String,
@@ -224,6 +224,22 @@ pub struct OverlayAugmentCard {
     pub games: usize,
     pub synergy_items: Vec<OverlaySynergyItem>,
     pub combos: Vec<OverlayComboEntry>,
+
+    // v3 decision payload (all optional: older JSON stays valid)
+    #[serde(default)]
+    pub score: Option<f64>,
+    #[serde(default)]
+    pub decision: Option<String>,
+    #[serde(default)]
+    pub rank: Option<u8>,
+    #[serde(default)]
+    pub win_rate_low: Option<f64>,
+    #[serde(default)]
+    pub win_rate_high: Option<f64>,
+    #[serde(default)]
+    pub reroll_gain: Option<f64>,
+    #[serde(default)]
+    pub reroll_probability: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -283,4 +299,18 @@ pub struct SaveMayhemBuildPayload {
     pub strategy_label: String,
     pub augment_ids: Vec<String>,
     pub build: MayhemBuildStrategy,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overlay_card_decisions_are_optional_in_json() {
+        let json = r#"{"slot":0,"id":"1","name":"X","rarity":null,"wpa":0.1,"win_rate":0.55,"games":10,"synergy_items":[],"combos":[]}"#;
+        let card: OverlayAugmentCard = serde_json::from_str(json).expect("deserialize");
+        assert!(card.decision.is_none());
+        assert!(card.rank.is_none());
+        assert_eq!(card.name, "X");
+    }
 }

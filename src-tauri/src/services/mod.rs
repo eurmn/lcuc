@@ -9,6 +9,7 @@ pub mod lcu_websocket;
 pub mod live_game;
 pub mod live_overlay;
 pub mod native_overlay;
+pub mod overlay_presenter;
 pub mod patch_manager;
 pub mod rune_stats;
 pub mod rune_store;

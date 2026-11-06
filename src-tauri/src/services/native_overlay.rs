@@ -34,6 +34,10 @@ pub struct OverlayRenderPayload {
     pub champion_name: String,
     pub strategy_label: String,
     pub cards: Vec<OverlayAugmentCard>,
+    #[serde(default)]
+    pub rows: Vec<crate::services::overlay_presenter::OverlayCardRow>,
+    #[serde(default)]
+    pub hud_text: String,
     pub sprites: Vec<OverlayPngSprite>,
     #[serde(default)]
     pub status_message: Option<String>,
@@ -999,17 +1003,16 @@ impl OverlayWinContext {
                     Some(bw - 28),
                 );
             } else {
-                let champ = if payload.champion_name.is_empty() {
-                    "ARAM MAYHEM"
+                let text = if payload.hud_text.is_empty() {
+                    "ARAM MAYHEM  •  F8 SCAN".to_string()
                 } else {
-                    &payload.champion_name
+                    payload.hud_text.clone()
                 };
-                let status_text = format!("LCU OVERLAY • {} • [F8] SCAN  [F7] HIDE", champ.to_uppercase());
                 tr.draw_text_line(
                     buf,
                     w as u32,
                     h as u32,
-                    &status_text,
+                    &text,
                     bx + 14,
                     by + 12,
                     FontKind::Bold,
@@ -1181,216 +1184,99 @@ impl OverlayWinContext {
             }
         }
 
-        // 3. Draw Augment Cards
-        if !payload.cards.is_empty() {
-            let mut sorted_cards = payload.cards.clone();
-            sorted_cards.sort_by(|a, b| b.wpa.partial_cmp(&a.wpa).unwrap_or(std::cmp::Ordering::Equal));
-            let best_id = sorted_cards.first().map(|c| c.id.clone()).unwrap_or_default();
+        // 3. Augment verdict rows: fixed right-edge stack, never over the game's cards.
+        if !payload.rows.is_empty() {
+            let row_w: i32 = 320;
+            let row_h: i32 = 84;
+            let gap: i32 = 8;
+            let count = payload.rows.len() as i32;
+            let stack_h = count * (row_h + gap) - gap;
+            let x = (layout.game_width - row_w - 24).max(0);
+            let y0 = ((layout.game_height - stack_h) / 2).max(0);
 
-            for card in &payload.cards {
-                let slot = card.slot.min(2);
-                let rect = layout.card_rects[slot];
-                let [cx, cy, cw, _ch] = rect;
-                let is_best = card.id == best_id;
-
-                let rarity_lower = card.rarity.as_deref().unwrap_or("").to_lowercase();
-                let (cr_r, cr_g, cr_b) = if is_best {
-                    (16, 185, 129) // Emerald
-                } else if rarity_lower.contains("prismatic") {
-                    (168, 85, 247) // Prismatic
-                } else if rarity_lower.contains("gold") {
-                    (245, 158, 11) // Gold
-                } else {
-                    (148, 163, 184) // Silver
-                };
-
-                fill_premultiplied_rect(buf, w as u32, h as u32, rect, 10, 14, 23, 238, 10);
-                draw_premultiplied_border(buf, w as u32, h as u32, rect, 2, cr_r, cr_g, cr_b, 240, 10);
+            for (i, row) in payload.rows.iter().enumerate() {
+                let rect = [x, y0 + i as i32 * (row_h + gap), row_w, row_h];
+                fill_premultiplied_rect(buf, w as u32, h as u32, rect, 9, 13, 22, 235, 8);
+                draw_premultiplied_border(
+                    buf,
+                    w as u32,
+                    h as u32,
+                    rect,
+                    2,
+                    row.accent[0],
+                    row.accent[1],
+                    row.accent[2],
+                    240,
+                    8,
+                );
+                fill_premultiplied_rect(
+                    buf,
+                    w as u32,
+                    h as u32,
+                    [rect[0], rect[1] + 8, 3, row_h - 16],
+                    row.accent[0],
+                    row.accent[1],
+                    row.accent[2],
+                    255,
+                    1,
+                );
 
                 if let Some(ref mut tr) = self.text_renderer {
-                    let p = 12;
-                    let mut cur_y = cy + p;
-
-                    // Header badge
-                    if is_best {
-                        tr.draw_text_line(
-                            buf,
-                            w as u32,
-                            h as u32,
-                            "★ #1 BEST PICK",
-                            cx + p,
-                            cur_y,
-                            FontKind::Bold,
-                            16,
-                            185,
-                            129,
-                            Some(cw - p * 2),
-                        );
-                    } else {
-                        let rank = sorted_cards.iter().position(|c| c.id == card.id).unwrap_or(slot) + 1;
-                        let badge = format!("OPTION #{}", rank);
-                        tr.draw_text_line(
-                            buf,
-                            w as u32,
-                            h as u32,
-                            &badge,
-                            cx + p,
-                            cur_y,
-                            FontKind::Bold,
-                            156,
-                            163,
-                            175,
-                            Some(cw - p * 2),
-                        );
-                    }
-
-                    let rarity_badge = card.rarity.as_deref().unwrap_or("SILVER").to_uppercase();
+                    let pad = 18;
+                    let text_w = row_w - pad - 12;
+                    let tx = rect[0] + pad;
                     tr.draw_text_line(
                         buf,
                         w as u32,
                         h as u32,
-                        &rarity_badge,
-                        cx + cw - p - 65,
-                        cur_y,
-                        FontKind::Small,
-                        cr_r,
-                        cr_g,
-                        cr_b,
-                        Some(65),
+                        &row.header,
+                        tx,
+                        rect[1] + 8,
+                        FontKind::Bold,
+                        row.accent[0],
+                        row.accent[1],
+                        row.accent[2],
+                        Some(text_w),
                     );
-
-                    cur_y += 20;
                     tr.draw_text_line(
                         buf,
                         w as u32,
                         h as u32,
-                        &card.name,
-                        cx + p,
-                        cur_y,
+                        &row.name,
+                        tx,
+                        rect[1] + 26,
                         FontKind::Title,
                         241,
                         245,
                         249,
-                        Some(cw - p * 2),
+                        Some(text_w),
                     );
-
-                    cur_y += 22;
-                    let wr_text = format!("WR {:.1}%", card.win_rate * 100.0);
                     tr.draw_text_line(
                         buf,
                         w as u32,
                         h as u32,
-                        &wr_text,
-                        cx + p,
-                        cur_y,
-                        FontKind::Bold,
-                        220,
-                        225,
-                        235,
-                        Some(80),
+                        &row.stats,
+                        tx,
+                        rect[1] + 48,
+                        FontKind::Normal,
+                        209,
+                        213,
+                        219,
+                        Some(text_w),
                     );
-
-                    let wpa_sign = if card.wpa >= 0.0 { "+" } else { "" };
-                    let wpa_text = format!("{}{:.1}% WPA", wpa_sign, card.wpa * 100.0);
-                    let (wpa_r, wpa_g, wpa_b) = if card.wpa >= 0.0 { (16, 185, 129) } else { (248, 113, 113) };
-                    tr.draw_text_line(
-                        buf,
-                        w as u32,
-                        h as u32,
-                        &wpa_text,
-                        cx + p + 82,
-                        cur_y,
-                        FontKind::Bold,
-                        wpa_r,
-                        wpa_g,
-                        wpa_b,
-                        Some(95),
-                    );
-
-                    let games_text = format!("{}g", card.games);
-                    tr.draw_text_line(
-                        buf,
-                        w as u32,
-                        h as u32,
-                        &games_text,
-                        cx + cw - p - 45,
-                        cur_y,
-                        FontKind::Small,
-                        156,
-                        163,
-                        175,
-                        Some(45),
-                    );
-
-                    cur_y += 18;
-                    fill_premultiplied_rect(buf, w as u32, h as u32, [cx + p, cur_y, cw - p * 2, 1], 31, 41, 55, 200, 0);
-
-                    cur_y += 8;
-                    tr.draw_text_line(
-                        buf,
-                        w as u32,
-                        h as u32,
-                        "TOP COMBOS & SYNERGIES",
-                        cx + p,
-                        cur_y,
-                        FontKind::Small,
-                        156,
-                        163,
-                        175,
-                        Some(cw - p * 2),
-                    );
-
-                    cur_y += 16;
-                    if !card.combos.is_empty() {
-                        for combo in card.combos.iter().take(2) {
-                            let wr_str = format!("{:.1}% WR", combo.win_rate * 100.0);
-                            tr.draw_text_line(
-                                buf,
-                                w as u32,
-                                h as u32,
-                                &combo.label,
-                                cx + p,
-                                cur_y,
-                                FontKind::Small,
-                                209,
-                                213,
-                                219,
-                                Some(cw - p * 2 - 65),
-                            );
-                            tr.draw_text_line(
-                                buf,
-                                w as u32,
-                                h as u32,
-                                &wr_str,
-                                cx + cw - p - 55,
-                                cur_y,
-                                FontKind::Small,
-                                16,
-                                185,
-                                129,
-                                Some(55),
-                            );
-                            cur_y += 14;
-                        }
-                    } else if !card.synergy_items.is_empty() {
-                        let items_str = card
-                            .synergy_items
-                            .iter()
-                            .map(|i| i.name.as_str())
-                            .collect::<Vec<_>>()
-                            .join(" + ");
+                    if !row.footer.is_empty() {
                         tr.draw_text_line(
                             buf,
                             w as u32,
                             h as u32,
-                            &items_str,
-                            cx + p,
-                            cur_y,
+                            &row.footer,
+                            tx,
+                            rect[1] + 64,
                             FontKind::Small,
-                            209,
-                            213,
-                            219,
-                            Some(cw - p * 2),
+                            148,
+                            163,
+                            184,
+                            Some(text_w),
                         );
                     }
                 }
@@ -1630,6 +1516,12 @@ pub fn run_detached_overlay_process() {
         use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
         unsafe {
+            // Must run before any window/DC is created: without it GetClientRect is
+            // virtualised at 125%/150% scaling and the overlay drifts off the game.
+            let _ = windows_sys::Win32::UI::WindowsAndMessaging::SetProcessDPIAware();
+        }
+
+        unsafe {
             let instance = GetModuleHandleW(std::ptr::null());
             let class_name: Vec<u16> = "LcuNativeOverlayClass\0".encode_utf16().collect();
 
@@ -1743,6 +1635,39 @@ pub fn run_detached_overlay_process() {
     }
 }
 
+#[cfg(windows)]
+pub fn render_overlay_png(
+    payload: &OverlayRenderPayload,
+    width: i32,
+    height: i32,
+    path: &str,
+) -> Result<(), String> {
+    let layout = compute_default_anchor_layout(0, 0, width, height);
+    let mut context = OverlayWinContext::new(std::ptr::null_mut());
+    let total = (width * height * 4) as usize;
+    let mut buffer = vec![0u8; total];
+    context.render_to_buffer(&mut buffer, &layout, payload);
+
+    // Premultiplied BGRA -> opaque RGBA composited over a dark background.
+    let mut out = vec![0u8; total];
+    for i in (0..total).step_by(4) {
+        let alpha = buffer[i + 3] as u32;
+        let inv = 255 - alpha;
+        out[i] = (buffer[i + 2] as u32 + 18 * inv / 255).min(255) as u8;
+        out[i + 1] = (buffer[i + 1] as u32 + 16 * inv / 255).min(255) as u8;
+        out[i + 2] = (buffer[i] as u32 + 16 * inv / 255).min(255) as u8;
+        out[i + 3] = 255;
+    }
+    image::save_buffer(
+        path,
+        &out,
+        width as u32,
+        height as u32,
+        image::ColorType::Rgba8,
+    )
+    .map_err(|e| e.to_string())
+}
+
 // ---------------------------------------------------------
 // Unit Tests
 // ---------------------------------------------------------
@@ -1785,6 +1710,7 @@ mod tests {
                     games: 120,
                     synergy_items: Vec::new(),
                     combos: Vec::new(),
+                    ..Default::default()
                 }],
                 sprites: vec![OverlayPngSprite {
                     id: "icon1".to_string(),
@@ -1797,6 +1723,7 @@ mod tests {
                 }],
                 status_message: None,
                 is_error: false,
+                ..Default::default()
             },
         };
         let render_json = serde_json::to_string(&render_cmd).expect("serialize Render");

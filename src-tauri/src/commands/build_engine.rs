@@ -7,7 +7,7 @@ use crate::agent::mayhem_engine::{
 };
 use crate::agent::{database_path, global_aram_database_path};
 
-async fn ensure_index_ready() -> Result<(), String> {
+pub(crate) async fn ensure_index_ready() -> Result<(), String> {
     let needs_build = {
         let read = MAYHEM_SYNERGY_INDEX.read().map_err(|e| e.to_string())?;
         read.is_none()

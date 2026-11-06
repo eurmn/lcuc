@@ -7,6 +7,8 @@ use std::sync::Mutex;
 pub static OVERLAY_ENABLED: AtomicBool = AtomicBool::new(true);
 pub static OVERLAY_HAS_CARDS: AtomicBool = AtomicBool::new(false);
 pub static OVERLAY_SCANNING: AtomicBool = AtomicBool::new(false);
+static OVERLAY_LEVEL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static OVERLAY_GOLD: Mutex<f64> = Mutex::new(0.0);
 static F8_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static F7_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 
@@ -83,6 +85,17 @@ pub fn set_overlay_champion_and_strategy(champ: &str, strat: &str) {
     }
 }
 
+pub fn set_overlay_vitals(level: u32, gold: f64) {
+    let previous_level = OVERLAY_LEVEL.swap(level, Ordering::Relaxed);
+    let previous_gold = OVERLAY_GOLD.lock().map(|g| *g).unwrap_or(0.0);
+    if let Ok(mut g) = OVERLAY_GOLD.lock() {
+        *g = gold;
+    }
+    if previous_level != level || (previous_gold - gold).abs() > 1.0 {
+        refresh_native_overlay();
+    }
+}
+
 pub fn show_overlay_status_toast(message: &str, is_error: bool) {
     if let Ok(mut lock) = OVERLAY_STATUS_TOAST.lock() {
         *lock = Some((message.to_string(), is_error, std::time::Instant::now()));
@@ -115,12 +128,20 @@ pub fn refresh_native_overlay() {
         (None, false)
     };
 
+    let level = OVERLAY_LEVEL.load(Ordering::Relaxed);
+    let gold = OVERLAY_GOLD.lock().map(|g| *g).unwrap_or(0.0);
+    let rows = crate::services::overlay_presenter::build_rows(&cards, 26);
+    let hud_text =
+        crate::services::overlay_presenter::build_hud_text(&champ, level, gold, !cards.is_empty());
+
     let payload = crate::services::native_overlay::OverlayRenderPayload {
         visible: true,
         scanning,
         champion_name: champ,
         strategy_label: strat,
         cards,
+        rows,
+        hud_text,
         sprites,
         status_message,
         is_error,
@@ -985,6 +1006,69 @@ pub async fn scan_title_band_from_image(
     }
 }
 
+async fn apply_card_decisions(
+    champion_id: Option<i64>,
+    locked_augments: &[String],
+    inventory_item_ids: &[u32],
+    cards: &mut [OverlayAugmentCard],
+) {
+    let Some(champ_id) = champion_id.filter(|id| *id > 0) else {
+        return;
+    };
+    if cards.is_empty() {
+        return;
+    }
+    if crate::commands::build_engine::ensure_index_ready()
+        .await
+        .is_err()
+    {
+        return;
+    }
+
+    let tier = crate::agent::mayhem_engine::get_augment_meta(&cards[0].id).tier;
+    let offered: Vec<u32> = cards
+        .iter()
+        .map(|c| crate::agent::mayhem_engine::parse_or_hash_augment_id(&c.id))
+        .collect();
+    let locked: Vec<u32> = locked_augments
+        .iter()
+        .map(|s| crate::agent::mayhem_engine::parse_or_hash_augment_id(s))
+        .collect();
+
+    let decisions = {
+        let Ok(read) = crate::agent::mayhem_engine::MAYHEM_SYNERGY_INDEX.read() else {
+            return;
+        };
+        let Some(index) = read.as_ref() else {
+            return;
+        };
+        crate::agent::mayhem_engine::decide_offered_cards(
+            index,
+            champ_id as u16,
+            &offered,
+            &locked,
+            inventory_item_ids,
+            &tier,
+            &[],
+        )
+    };
+
+    for (card, decision) in cards.iter_mut().zip(decisions.iter()) {
+        card.wpa = decision.wpa;
+        card.win_rate = decision.win_rate;
+        card.score = Some(decision.effect);
+        card.decision = Some(decision.verdict.to_string());
+        card.rank = Some(decision.rank);
+        card.win_rate_low = Some(decision.win_rate_low);
+        card.win_rate_high = Some(decision.win_rate_high);
+        card.reroll_gain = Some(decision.reroll_gain);
+        card.reroll_probability = Some(decision.reroll_probability);
+        if card.games == 0 {
+            card.games = decision.games as usize;
+        }
+    }
+}
+
 pub async fn scan_in_game_augment_cards(
     champion_id: Option<i64>,
     with_augment_ids: Vec<String>,
@@ -1070,7 +1154,7 @@ pub async fn scan_in_game_augment_cards(
         let resp = crate::services::history::get_mayhem_augments(MayhemAugmentsQuery {
             champion_id,
             page_size: Some(1000),
-            with_augment_ids: Some(with_augment_ids),
+            with_augment_ids: Some(with_augment_ids.clone()),
             ..Default::default()
         })
         .await?;
@@ -1080,7 +1164,20 @@ pub async fn scan_in_game_augment_cards(
             return Err("No augment cards found on screen. Ensure League is in foreground and augment selection is open.".to_string());
         }
 
-        Ok(crate::services::history::enrich_overlay_augment_cards(champion_id, matches).await)
+        let mut cards =
+            crate::services::history::enrich_overlay_augment_cards(champion_id, matches).await;
+        let inventory = crate::services::live_game::fetch_live_game_state()
+            .await
+            .map(|state| {
+                state
+                    .items
+                    .iter()
+                    .map(|i| i.item_id as u32)
+                    .collect::<Vec<u32>>()
+            })
+            .unwrap_or_default();
+        apply_card_decisions(champion_id, &with_augment_ids, &inventory, &mut cards).await;
+        Ok(cards)
     }
 }
 

@@ -287,6 +287,7 @@ pub fn start_live_game_polling(app: AppHandle) {
                             was_in_game = true;
                             last_champ_name = state.champion_name.clone();
                             crate::services::live_overlay::set_overlay_champion_and_strategy(&state.champion_name, "");
+                            crate::services::live_overlay::set_overlay_vitals(state.level, state.current_gold);
                             let _ = app.emit("live:game-state", &state);
                             let _ = app.emit("live:state-updated", &state);
                         } else if was_in_game {

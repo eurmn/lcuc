@@ -35,3 +35,6 @@ src-tauri/gen/schemas
 
 /.md
 /.AGENTS.md.OLD
+
+# native overlay preview artifact
+src-tauri/overlay-preview.png
