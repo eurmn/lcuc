@@ -182,6 +182,13 @@ export interface OverlayAugmentCard {
   tooltip?: string | null;
   synergy_items: OverlaySynergyItem[];
   combos: OverlayComboEntry[];
+  score?: number | null;
+  decision?: "pick" | "reroll" | "skip" | string | null;
+  rank?: number | null;
+  win_rate_low?: number | null;
+  win_rate_high?: number | null;
+  reroll_gain?: number | null;
+  reroll_probability?: number | null;
 }
 
 export interface MayhemAugmentItem {
