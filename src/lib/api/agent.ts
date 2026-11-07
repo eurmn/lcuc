@@ -199,3 +199,5 @@ export function resetGlobalAramDatabase(): Promise<{
 export function getGlobalAramStatistics(): Promise<AgentBuildStatistics> {
   return invoke<AgentBuildStatistics>('api_global_aram_statistics');
 }
+
+export { queryMayhemCombos } from './champ_select';

@@ -30,3 +30,75 @@
 - THE BEE BAND: Bees/honey fly across lane; bees deal 10-20% max HP true damage, honey heals 15-30% and grants gold.
 - TRUE DAMAGE: Kills and turrets drop Stat Anvils of random tier.
 
+
+## Recommender model (v3, overlay)
+- Effects estimated in log-odds, Normal-Normal empirical Bayes shrink (tau^2 via DerSimonian-Laird, floor 0.01).
+- Build prediction: L = logit(p_champ) + sum(beta) + sum(0.70^k * gamma), tanh-saturated at 1.5, 80% band.
+- Hierarchy for a champion x resource cell is champion baseline -> that resource's own global ARAM
+  effect -> champion x resource counts -> personal counts. The level-2 prior is the resource's
+  global effect (`p_glob_resource`), NOT the champion baseline: a cell with 1 game must fall back
+  to "how strong is this item in ARAM", not to "how strong is this champion".
+- Item ranking: `(wpa + sum of pair LCBs) * 3000/gold`. Pair synergy is scored on its Wilson lower
+  confidence bound, so a +10% point estimate from a handful of games cannot float an item to the
+  top; the point estimate is still what the row reports as synergy. Missing gold cost counts as
+  3000g (the catalogue median) so unknown items get no cost-efficiency bonus.
+- The index ingests every `aram_participants` row (600k on a mature install, ~50 s) and caches the
+  compiled counts to `cache/mayhem_synergy_index.bin`, keyed by the databases' size+mtime: later
+  starts load in <1 s and any new rows trigger one background rebuild.
+- Reroll EV: exact expected max of a 3-card SRSWOR draw from the unseen tier pool; P(improve) = 1 - C(m,3)/C(P,3).
+- Overlay renders natively (DIB + GDI text, right-edge row stack). No HTML over the game.
+- Card rows are labelled LEFT/MID/RIGHT (screen order) and PICK/REROLL/SKIP (engine verdict).
+- Build panel: three stacked rows on the right edge, above the minimap. Row 1 is the three
+  next items, each with its own rank, WR/lift/sample line and the engine's reason
+  ("Pairs with X (+2.1% synergy)" or the standalone lift). Row 2 is the full build in
+  purchase order (boots included). Row 3 is up to six alternatives with their lift, i.e. the
+  candidates that scored well but lost the ranking. Items are ranked by
+  `(wpa + synergy_lift) * 3000/gold`, with wpa from empirical-Bayes-shrunk win rates, so the
+  order is the model's, not pick-rate popularity.
+- The panel recomputes on every augment pick, on every inventory change (the live-game
+  poller fingerprints the sorted item ids) and at match start, so both new augments and
+  bought items re-rank the remaining slots.
+- Hotkeys: F8 rescan · F9/F10/F11 record the pick on LEFT/MID/RIGHT · F6 undo a pick ·
+  F7 clear the cards.
+
+## In-game augment flow
+- The panel is detected automatically (`probe_panel`): three similar bright runs in one row
+  with a dimmed backdrop above them. On detection the scan runs by itself, so the player
+  never has to press F8 mid-fight; failures of those automatic scans are silent.
+- Picks are remembered in `IN_GAME_AUGMENTS` for the whole game and cleared when the game
+  ends. Every later scan uses them as `locked_augments`, and each pick immediately
+  recomputes the item build (`recompute_in_game_build`) and the card verdicts.
+- Pick detection has two paths: the F9/F10/F11 hotkeys (always reliable) and watching for a
+  card that brightens **over its own first-probe brightness** just before the panel closes
+  (`picked_from_baseline`). Comparing cards against each other does not work: the middle
+  card is ~1.16x brighter on every panel regardless of art, so absolute brightness would
+  call every middle card a pick. Two consecutive agreeing probes are required; anything
+  ambiguous is left for the hotkeys, and the overlay toasts "Picked which card?" then.
+- A reroll swaps the art without closing the panel, so the watcher compares a 4x4 luma grid
+  per card (`signature_changed`, per-card NCC) and rescans when it changes.
+- 26 of the 242 augments (`IsAbilityAugment`) share **three generic icons** — one per
+  rarity: 6 silver (Siphon, Bolstered, It's Go Time, Stay Resolute, Trusty Weapon,
+  Adaptive Ward), 14 gold, 6 prismatic. Art names only the class there, so the card is
+  resolved from text: the title first, then the body text (`description_rect`, the card's
+  inner width, OCR'd at 2x since body glyphs are ~11 px on a 720p capture) scored by
+  distinctive-word overlap against each candidate's tooltip. If neither decides, the row
+  shows `Name ?` / "unread card" instead of a confident wrong name. A fuzzy read may never
+  escape a shared-art group: that is how Siphon was reported as "Spin Me Right Round".
+- Augments are identified by their ARAM pool key (`aram_augment_id_for`), never by name
+  hashing: "Jeweled Gauntlet" exists as Arena id 48 and ARAM id 1048, and only 1048 has
+  statistics. `augment_numeric_id` is the single place that resolves names to ids.
+
+
+## Reading the cards off screen (`services/augment_scan.rs`)
+- Source of truth for what can be offered: `Maps/ModeSpecificData/Augments/*` (`__type == "AugmentData"`) in
+  `raw.communitydragon.org/latest/game/maps/modespecificdata/kiwi.bin.json`, joined to `cherry-augments.json`
+  and `lol.stringtable.json` for display names. `AugmentLargeIconPath` is the art the card actually draws.
+- Identification is primary **card art**, not OCR: 32x32 masked NCC fingerprint against one thumbnail per
+  distinct art (194 arts for 242 augments on 2026-11 patch). No OCR at all when the art maps to one augment.
+- Riot reuses art across augments (~29% of the pool shares its art with another augment), so ties fall back
+  to OCR of the title strip only (x = card, y = 42-55% of card height, 2x upscale), scored against the tied
+  names only. A title matching nothing may overrule a bad art match.
+- Card geometry comes from the bright bar along the cards' top edge: 3 bright runs in one row, centres from
+  the runs, width = 0.866 * centre pitch, art = 0.50 * width at 0.12 * width below the bar.
+- The whole scan is ~100-150 ms (release). Stats and verdicts are computed afterwards in a spawned task.
+

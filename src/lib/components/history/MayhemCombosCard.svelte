@@ -2,11 +2,19 @@
   import { onDestroy } from "svelte";
   import { requestStatistics } from "../../utils/statistics-data";
   import { getGlobalAramConfig, type ServerStatisticRow, type ComboComponentDto, type AgentOperationDto } from "../../api/agent";
+  import { queryMayhemCombos } from "../../api/champ_select";
   import AugmentIcon from "../common/AugmentIcon.svelte";
   import GameEntityPopover from "../common/GameEntityPopover.svelte";
   import { logger } from "../../utils/logger";
 
-  export type ComboShapeFilter = "all" | "1A+1I" | "1A+2I" | "2A+1I" | "2A+2I" | "2A+3I";
+  export type ComboCategoryFilter =
+    | "All"
+    | "ItemAug"
+    | "AugAug"
+    | "ItemItem"
+    | "AugChamp"
+    | "ItemChamp"
+    | "ThreeWayChamp";
 
   let {
     championId = 0,
@@ -39,17 +47,21 @@
 
   let allRows = $state<ServerStatisticRow[]>([]);
   let loading = $state(false);
-  let shapeFilter = $state<ComboShapeFilter>("all");
+  let categoryFilter = $state<ComboCategoryFilter>("All");
   let search = $state("");
   let debouncedSearch = $state("");
-  let sortKey = $state<"wpa" | "winRate" | "games">("wpa");
+  let sortKey = $state<"wpa" | "winRate" | "games" | "synergyLift">("wpa");
   let sortDescending = $state(true);
-  let page = $state(1);
-  let pageSize = $state(10);
   let prioritizeSynergy = $state(true);
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
   let polledOperations = $state<AgentOperationDto[]>([]);
   let pollInterval: ReturnType<typeof setInterval> | null = null;
+
+  // 60 FPS Window Virtualization State
+  let scrollTop = $state(0);
+  const ROW_HEIGHT = 68;
+  const CONTAINER_HEIGHT = 520;
+  const OVERSCAN = 3;
 
   function startPollingOperations() {
     if (pollInterval) return;
@@ -101,20 +113,43 @@
   });
 
   function formatPct(val: number | undefined): string {
-    if (val === undefined || isNaN(val)) return "0.0%";
-    return (val * 100).toFixed(1) + "%";
+    if (val === undefined || Number.isNaN(val)) return "0.0%";
+    const pct = val > 1 ? val : val * 100;
+    return `${pct.toFixed(1)}%`;
   }
 
   function formatWpa(val: number | undefined): string {
-    if (val === undefined || isNaN(val)) return "+0.0%";
-    const sign = val >= 0 ? "+" : "";
-    return `${sign}${(val * 100).toFixed(1)}%`;
+    if (val === undefined || Number.isNaN(val)) return "+0.0%";
+    const pct = Math.abs(val) <= 1 ? val * 100 : val;
+    return `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
   }
 
   function formatGames(n: number | undefined): string {
     if (!n) return "0";
     if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
     return n.toString();
+  }
+
+  function getGrade(row: ServerStatisticRow): string {
+    const r = row as unknown as Record<string, unknown>;
+    if (typeof r.confidence_grade === "string") return r.confidence_grade;
+    if (typeof r.confidenceGrade === "string") return r.confidenceGrade;
+    const w = row.wpa ?? 0;
+    if (w >= 0.08) return "S+";
+    if (w >= 0.05) return "S";
+    if (w >= 0.025) return "A";
+    if (w >= 0.0) return "B";
+    if (w >= -0.025) return "C";
+    return "D";
+  }
+
+  function getSynergyLift(row: ServerStatisticRow): number {
+    const r = row as unknown as Record<string, unknown>;
+    if (typeof r.synergy_lift === "number") return r.synergy_lift;
+    if (typeof r.synergyLift === "number") return r.synergyLift;
+    if (typeof r.synergy_score === "number") return r.synergy_score;
+    if (typeof r.lift === "number") return r.lift;
+    return row.wpa ?? 0;
   }
 
   function isAugmentQuestItem(id: number): boolean {
@@ -137,7 +172,6 @@
     const id = Number(comp.id);
     if (!id || id <= 0) return false;
 
-    // Filter out augment-exclusive reward items unless player has the augment
     if (isAugmentQuestItem(id) && !playerHasAugmentForItem(id, currentAugmentIds)) {
       return false;
     }
@@ -153,10 +187,8 @@
       }
       return true;
     }
-    // Fallback: exclude known components/starters/boots
     if ([1001, 3006, 3009, 3020, 3047, 3111, 3117, 3158, 2422].includes(id)) return false;
     if ([1054, 1055, 1056, 1082, 1083, 2055, 3184, 3850, 3851, 3853, 3854, 3855, 3857, 3858, 3859, 3860, 3862, 3863, 3864].includes(id)) return false;
-    // Known basic/epic components:
     if ([1036, 1052, 1058, 1037, 1038, 1053, 3044, 3067, 1018, 3076, 3145, 1011, 1028, 4630, 3070, 2031, 2003, 220013].includes(id)) return false;
     return true;
   }
@@ -173,15 +205,17 @@
     return false;
   }
 
-  function getComboShape(components: ComboComponentDto[]): "1A+1I" | "1A+2I" | "2A+1I" | "2A+2I" | "2A+3I" | null {
-    const augs = components.filter((c) => c.kind === "augment").length;
-    const items = components.filter((c) => c.kind === "item").length;
-    if (augs === 1 && items === 1) return "1A+1I";
-    if (augs === 1 && items === 2) return "1A+2I";
-    if (augs === 2 && items === 1) return "2A+1I";
-    if (augs === 2 && items === 2) return "2A+2I";
-    if (augs === 2 && items === 3) return "2A+3I";
-    return null;
+  function getComboCategory(comps: ComboComponentDto[]): ComboCategoryFilter {
+    const augs = comps.filter((c) => c.kind === "augment").length;
+    const items = comps.filter((c) => c.kind === "item").length;
+    const champs = comps.filter((c) => c.kind === "champion").length;
+    if (champs > 0 && augs + items >= 2) return "ThreeWayChamp";
+    if (champs > 0 && augs > 0) return "AugChamp";
+    if (champs > 0 && items > 0) return "ItemChamp";
+    if (augs > 0 && items > 0) return "ItemAug";
+    if (augs >= 2) return "AugAug";
+    if (items >= 2) return "ItemItem";
+    return "ItemAug";
   }
 
   function countMatches(components: ComboComponentDto[]): { augMatches: number; itemMatches: number; total: number } {
@@ -201,16 +235,30 @@
     loading = true;
     startPollingOperations();
     try {
-      const res = await requestStatistics({
-        scope: "global",
-        kind: "combo",
-        champion_id: championId > 0 ? championId : undefined,
-        hide_low_pickrate: hideLowPickrate,
-        sort_key: sortKey === "winRate" ? "winRate" : sortKey === "games" ? "games" : "wpa",
+      // 1. Attempt sub-millisecond query from MayhemSynergyIndex
+      const backendRes = await queryMayhemCombos({
+        championId: championId > 0 ? championId : undefined,
+        comboCategory: categoryFilter !== "All" ? categoryFilter : undefined,
+        sortBy: sortKey,
         descending: sortDescending,
-        limit: 1000,
+        limit: 500,
       });
-      allRows = res.rows || [];
+
+      if (backendRes && backendRes.length > 0) {
+        allRows = backendRes as unknown as ServerStatisticRow[];
+      } else {
+        // Fallback to SQLite statistics query
+        const res = await requestStatistics({
+          scope: "global",
+          kind: "combo",
+          champion_id: championId > 0 ? championId : undefined,
+          hide_low_pickrate: hideLowPickrate,
+          sort_key: sortKey === "winRate" ? "winRate" : sortKey === "games" ? "games" : "wpa",
+          descending: sortDescending,
+          limit: 1000,
+        });
+        allRows = res.rows || [];
+      }
     } catch (err) {
       logger.error("frontend.mayhem_combos_card", "Failed loading combo statistics", err);
       allRows = [];
@@ -223,6 +271,7 @@
   $effect(() => {
     hideLowPickrate;
     championId;
+    categoryFilter;
     void loadCombos();
   });
 
@@ -232,14 +281,14 @@
     if (searchTimer) clearTimeout(searchTimer);
     searchTimer = setTimeout(() => {
       debouncedSearch = val.toLowerCase().trim();
-      page = 1;
+      scrollTop = 0;
     }, 200);
   }
 
   function clearSearch() {
     search = "";
     debouncedSearch = "";
-    page = 1;
+    scrollTop = 0;
     if (searchTimer) clearTimeout(searchTimer);
   }
 
@@ -249,13 +298,15 @@
 
     const result: Array<{
       row: ServerStatisticRow;
-      shape: "1A+1I" | "1A+2I" | "2A+1I" | "2A+2I" | "2A+3I";
+      category: ComboCategoryFilter;
       matches: { augMatches: number; itemMatches: number; total: number };
+      synergyLift: number;
+      grade: string;
     }> = [];
 
     for (const row of allRows) {
       if (!row.components || row.components.length === 0) continue;
-      if ((row.games ?? 0) < 3) continue;
+      if ((row.games ?? 0) < 2) continue;
 
       // Filter out combos with other champions
       const champComps = row.components.filter((c) => c.kind === "champion");
@@ -265,31 +316,28 @@
         }
       }
 
-      // Filter out combos containing boots, starters, or non-legendary item components
+      // Filter out boots/starters/components
       if (row.components.some(isBootOrStarter) || !row.components.every(isLegendaryItem)) {
         continue;
       }
 
-      // Check shape
-      const shape = getComboShape(row.components);
-      if (!shape) continue;
-
-      // Filter by shape tab
-      if (shapeFilter !== "all" && shape !== shapeFilter) {
+      const comboCat = getComboCategory(row.components);
+      if (categoryFilter !== "All" && comboCat !== categoryFilter) {
         continue;
       }
 
-      // Search filter
       if (debouncedSearch) {
         const matchesName = row.components.some((c) => c.name.toLowerCase().includes(debouncedSearch));
         if (!matchesName) continue;
       }
 
       const matches = countMatches(row.components);
-      result.push({ row, shape, matches });
+      const synLift = getSynergyLift(row);
+      const grade = getGrade(row);
+
+      result.push({ row, category: comboCat, matches, synergyLift: synLift, grade });
     }
 
-    // Sort with synergy prioritization
     result.sort((a, b) => {
       if (prioritizeSynergy) {
         if (a.matches.total > 0 && b.matches.total === 0) return -1;
@@ -305,51 +353,44 @@
         const diff = (a.row.games ?? 0) - (b.row.games ?? 0);
         return sortDescending ? -diff : diff;
       }
+      if (sortKey === "synergyLift") {
+        const diff = a.synergyLift - b.synergyLift;
+        return sortDescending ? -diff : diff;
+      }
       // default: wpa
-      const diff = (a.row.synergy_score ?? a.row.wpa ?? 0) - (b.row.synergy_score ?? b.row.wpa ?? 0);
+      const diff = (a.row.wpa ?? 0) - (b.row.wpa ?? 0);
       return sortDescending ? -diff : diff;
     });
-
-    if (!debouncedSearch) {
-      const MAX_PER_COMPONENT = 2;
-      const counts = new Map<string, number>();
-      const diversified: typeof result = [];
-      for (const item of result) {
-        const comps = (item.row.components ?? []).filter(
-          (c) => c.kind === "item" || c.kind === "augment"
-        );
-        if (comps.every((c) => (counts.get(`${c.kind}:${c.id}`) ?? 0) < MAX_PER_COMPONENT)) {
-          diversified.push(item);
-          for (const c of comps) {
-            const k = `${c.kind}:${c.id}`;
-            counts.set(k, (counts.get(k) ?? 0) + 1);
-          }
-        }
-      }
-      return diversified;
-    }
 
     return result;
   });
 
-  const totalPages = $derived(Math.max(1, Math.ceil(processedCombos.length / pageSize)));
-  const paginatedCombos = $derived(
-    processedCombos.slice((page - 1) * pageSize, page * pageSize)
+  // Fixed Row-Height Virtualization (~15 visible nodes)
+  const totalHeight = $derived(processedCombos.length * ROW_HEIGHT);
+  const startIndex = $derived(Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN));
+  const endIndex = $derived(
+    Math.min(processedCombos.length, Math.ceil((scrollTop + CONTAINER_HEIGHT) / ROW_HEIGHT) + OVERSCAN)
   );
+  const visibleCombos = $derived(processedCombos.slice(startIndex, endIndex));
+  const offsetY = $derived(startIndex * ROW_HEIGHT);
 
-  function handleShapeChange(shape: ComboShapeFilter) {
-    shapeFilter = shape;
-    page = 1;
+  function handleScroll(e: Event) {
+    scrollTop = (e.currentTarget as HTMLElement).scrollTop;
   }
 
-  function handleSort(key: "wpa" | "winRate" | "games") {
+  function handleCategoryChange(cat: ComboCategoryFilter) {
+    categoryFilter = cat;
+    scrollTop = 0;
+  }
+
+  function handleSort(key: "wpa" | "winRate" | "games" | "synergyLift") {
     if (sortKey === key) {
       sortDescending = !sortDescending;
     } else {
       sortKey = key;
       sortDescending = true;
     }
-    page = 1;
+    scrollTop = 0;
   }
 
   function handleComponentClick(comp: ComboComponentDto) {
@@ -374,7 +415,7 @@
   }
 </script>
 
-<div class="rounded-2xl border border-gray-800 bg-gray-900/60 p-4 shadow-xl space-y-4">
+<div class="rounded-2xl border border-gray-800 bg-gray-900/60 p-4 shadow-xl space-y-3">
   <!-- Header -->
   <div class="flex flex-wrap items-center justify-between gap-2 border-b border-gray-800 pb-3">
     <div class="flex items-center gap-2">
@@ -386,11 +427,11 @@
             <span class="text-xs font-normal text-gray-400">· {championName}</span>
           {/if}
           <span class="rounded bg-amber-950/80 border border-amber-700/50 px-1.5 py-0.2 text-[10px] font-semibold text-amber-300">
-            Augment + Item Builds
+            Hierarchical Bayes
           </span>
         </h2>
         <p class="text-[11px] text-gray-400">
-          Click any augment or item to add to your build
+          Ranked by empirical synergy lift and Lower Confidence Bound
         </p>
       </div>
     </div>
@@ -403,8 +444,6 @@
           <span>{operationTitle}</span>
           {#if operationPct !== null}
             <span class="font-mono text-[10px] text-amber-200">({operationPct}%)</span>
-          {:else if operationStep !== null && operationTotal}
-            <span class="font-mono text-[10px] text-amber-200">({operationStep}/{operationTotal})</span>
           {/if}
         </div>
       {/if}
@@ -419,26 +458,27 @@
         <span class="icon-[heroicons--bolt] h-3.5 w-3.5 {prioritizeSynergy ? 'text-purple-400' : 'text-gray-500'}"></span>
         Synergy First
       </button>
-      <span class="text-[11px] font-mono text-gray-500">
+      <span class="text-[11px] font-mono text-gray-400">
         {processedCombos.length} combos
       </span>
     </div>
   </div>
 
-  <!-- Combo Shape Tabs (1A+1I, 1A+2I, 2A+1I, 2A+2I, 2A+3I) -->
+  <!-- Category Filter Pills -->
   <div class="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-thin">
     {#each [
-      { id: "all", label: "All Shapes" },
-      { id: "1A+1I", label: "1A + 1I" },
-      { id: "1A+2I", label: "1A + 2I" },
-      { id: "2A+1I", label: "2A + 1I" },
-      { id: "2A+2I", label: "2A + 2I" },
-      { id: "2A+3I", label: "2A + 3I" }
+      { id: "All", label: "All Combos" },
+      { id: "ItemAug", label: "Item + Augment" },
+      { id: "AugAug", label: "Augment + Augment" },
+      { id: "ItemItem", label: "Item + Item" },
+      { id: "AugChamp", label: "Augment + Champ" },
+      { id: "ItemChamp", label: "Item + Champ" },
+      { id: "ThreeWayChamp", label: "3-Way Champion" }
     ] as tab}
       <button
         type="button"
-        onclick={() => handleShapeChange(tab.id as ComboShapeFilter)}
-        class="whitespace-nowrap px-2.5 py-1 text-xs font-semibold rounded-lg transition-colors border {shapeFilter === tab.id
+        onclick={() => handleCategoryChange(tab.id as ComboCategoryFilter)}
+        class="whitespace-nowrap px-2.5 py-1 text-xs font-semibold rounded-lg transition-colors border {categoryFilter === tab.id
           ? 'bg-amber-500/20 text-amber-300 border-amber-500/60 shadow-sm'
           : 'bg-gray-800/40 text-gray-400 border-transparent hover:bg-gray-800/80 hover:text-gray-200'}"
       >
@@ -463,7 +503,6 @@
         <button
           type="button"
           aria-label="Clear search"
-          title="Clear search"
           onclick={clearSearch}
           class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-200"
         >
@@ -483,6 +522,19 @@
       >
         WPA
         {#if sortKey === "wpa"}
+          <span class="icon-[heroicons--chevron-{sortDescending ? 'down' : 'up'}] h-3 w-3"></span>
+        {/if}
+      </button>
+
+      <button
+        type="button"
+        onclick={() => handleSort("synergyLift")}
+        class="flex items-center gap-1 rounded px-2 py-1 text-[11px] font-semibold border transition-colors {sortKey === 'synergyLift'
+          ? 'bg-cyan-950/70 border-cyan-700 text-cyan-300'
+          : 'bg-gray-800/40 border-gray-700 text-gray-400 hover:text-gray-200'}"
+      >
+        Δsyn Lift
+        {#if sortKey === "synergyLift"}
           <span class="icon-[heroicons--chevron-{sortDescending ? 'down' : 'up'}] h-3 w-3"></span>
         {/if}
       </button>
@@ -515,57 +567,30 @@
     </div>
   </div>
 
-  <!-- Combos List / Table -->
+  <!-- Combos List: 60 FPS Fixed-Height Window Virtualization -->
   {#if loading && allRows.length === 0}
     <div class="flex flex-col items-center justify-center gap-3.5 rounded-xl border border-gray-800 bg-gray-950/50 p-6 text-xs text-gray-300">
       <div class="flex items-center gap-2.5">
         <span class="icon-[heroicons--arrow-path] h-4 w-4 animate-spin text-amber-400"></span>
         <span class="font-medium text-gray-200">{operationTitle}</span>
-        {#if operationStep !== null && operationTotal}
-          <span class="rounded bg-amber-950/80 border border-amber-700/60 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
-            Step {operationStep} of {operationTotal}
-          </span>
-        {/if}
       </div>
-
-      <!-- Progress bar track -->
       <div class="w-full max-w-md h-2 rounded-full bg-gray-800 overflow-hidden border border-gray-700/60">
         <div
-          class="h-full bg-gradient-to-r from-cyan-500 via-amber-400 to-purple-500 transition-all duration-300 ease-out shadow-sm"
+          class="h-full bg-gradient-to-r from-cyan-500 via-amber-400 to-purple-500 transition-all duration-300 ease-out"
           style="width: {operationPct ?? 35}%;"
         ></div>
       </div>
-
-      <!-- Stage breakdown pills -->
-      <div class="flex flex-wrap items-center justify-center gap-1.5 pt-1 text-[10px]">
-        {#each [
-          { step: 1, label: "1. Load Facts" },
-          { step: 2, label: "2. Frequency" },
-          { step: 3, label: "3. Synergy Pairs" },
-          { step: 4, label: "4. Win Rate & WPA" },
-        ] as stage}
-          <span
-            class="rounded-md px-2 py-0.5 font-medium border transition-colors {operationStep === stage.step
-              ? 'bg-amber-500/20 text-amber-300 border-amber-500/60 shadow-sm'
-              : operationStep !== null && operationStep > stage.step
-                ? 'bg-emerald-950/40 text-emerald-400 border-emerald-700/40'
-                : 'bg-gray-900/60 text-gray-500 border-gray-800'}"
-          >
-            {stage.label}
-          </span>
-        {/each}
-      </div>
     </div>
-  {:else if paginatedCombos.length === 0}
+  {:else if processedCombos.length === 0}
     <div class="flex h-36 flex-col items-center justify-center rounded-xl border border-gray-800 bg-gray-950/40 text-xs text-gray-500 p-4 text-center">
       <span class="icon-[heroicons--cube-transparent] h-8 w-8 text-gray-600 mb-1"></span>
       <span>No combos match current filters</span>
-      {#if search || shapeFilter !== "all"}
+      {#if search || categoryFilter !== "All"}
         <button
           type="button"
           onclick={() => {
             clearSearch();
-            shapeFilter = "all";
+            categoryFilter = "All";
           }}
           class="mt-2 text-amber-400 hover:underline text-[11px]"
         >
@@ -574,143 +599,139 @@
       {/if}
     </div>
   {:else}
-    <div class="space-y-2">
-      {#each paginatedCombos as { row, matches }, idx (row.id || idx)}
-        {@const hasSynergy = matches.total > 0}
-        <div
-          class="flex items-center justify-between gap-3 p-2.5 rounded-xl border transition-all {hasSynergy
-            ? 'border-purple-600/50 bg-purple-950/20 hover:border-purple-500 shadow-sm'
-            : 'border-gray-800 bg-gray-950/60 hover:border-gray-700'}"
-        >
-          <!-- Left: Components Row with '+' separators -->
-          <div class="flex items-center gap-1.5 flex-wrap min-w-0">
-            {#if hasSynergy}
-              <span class="rounded bg-purple-900/60 border border-purple-500/60 px-1 py-0.2 text-[9px] font-bold text-purple-200 shrink-0">
-                Synergy
-              </span>
-            {/if}
+    <div
+      class="relative overflow-y-auto rounded-xl border border-gray-800/80 bg-gray-950/40 p-2 scrollbar-thin"
+      style="height: {CONTAINER_HEIGHT}px;"
+      onscroll={handleScroll}
+    >
+      <div style="height: {totalHeight}px; position: relative; width: 100%;">
+        <div style="transform: translateY({offsetY}px); position: absolute; top: 0; left: 0; right: 0; display: flex; flex-direction: column; gap: 8px;">
+          {#each visibleCombos as { row, matches, synergyLift, grade }, vIdx (row.id || (startIndex + vIdx))}
+            {@const hasSynergy = matches.total > 0}
+            <div
+              class="flex items-center justify-between gap-3 p-2.5 rounded-xl border transition-all h-[60px] {hasSynergy
+                ? 'border-purple-600/50 bg-purple-950/20 hover:border-purple-500 shadow-sm'
+                : 'border-gray-800 bg-gray-950/60 hover:border-gray-700'}"
+            >
+              <!-- Left: Components Row with '+' separators -->
+              <div class="flex items-center gap-1.5 flex-wrap min-w-0">
+                <!-- Confidence Grade Badge -->
+                <span class="rounded px-1.5 py-0.5 text-[10px] font-mono font-bold border {grade.startsWith('S')
+                  ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
+                  : grade === 'A'
+                    ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/50'
+                    : 'bg-gray-800 text-gray-300 border-gray-700'}">
+                  {grade}
+                </span>
 
-            {#if row.components}
-              {#each row.components as comp, cIdx}
-                {@const compId = `combo-comp-${page}-${idx}-${cIdx}`}
-                {@const isAugment = comp.kind === "augment"}
-                {@const isItem = comp.kind === "item"}
-                {@const isChamp = comp.kind === "champion"}
-                {@const isAugMatch = isAugment && currentAugmentIds.includes(String(comp.id))}
-                {@const isItemMatch = isItem && currentBuildItemIds.includes(Number(comp.id))}
-                {@const isCompMatched = isAugMatch || isItemMatch}
-
-                {#if cIdx > 0}
-                  <span class="text-gray-500 text-[10px] font-bold select-none">+</span>
+                {#if hasSynergy}
+                  <span class="rounded bg-purple-900/60 border border-purple-500/60 px-1 py-0.2 text-[9px] font-bold text-purple-200 shrink-0">
+                    Active
+                  </span>
                 {/if}
 
-                <div class="relative shrink-0 group">
-                  <button
-                    type="button"
-                    id={compId}
-                    onclick={() => handleComponentClick(comp)}
-                    class="relative block rounded-lg transition-transform hover:scale-110 active:scale-95 focus:outline-none cursor-pointer {isCompMatched
-                      ? 'ring-2 ring-emerald-400 ring-offset-1 ring-offset-gray-950'
-                      : ''}"
-                    title={`Click to add ${comp.name} to ${isAugment ? 'augments' : 'build'}`}
-                  >
-                    {#if isAugment}
-                      <AugmentIcon
-                        src={comp.icon_url}
+                {#if row.components}
+                  {#each row.components as comp, cIdx}
+                    {@const compId = `v-combo-comp-${startIndex + vIdx}-${cIdx}`}
+                    {@const isAugment = comp.kind === "augment"}
+                    {@const isItem = comp.kind === "item"}
+                    {@const isChamp = comp.kind === "champion"}
+                    {@const isAugMatch = isAugment && currentAugmentIds.includes(String(comp.id))}
+                    {@const isItemMatch = isItem && currentBuildItemIds.includes(Number(comp.id))}
+                    {@const isCompMatched = isAugMatch || isItemMatch}
+
+                    {#if cIdx > 0}
+                      <span class="text-gray-500 text-[10px] font-bold select-none">+</span>
+                    {/if}
+
+                    <div class="relative shrink-0 group">
+                      <button
+                        type="button"
+                        id={compId}
+                        onclick={() => handleComponentClick(comp)}
+                        class="relative block rounded-lg transition-transform hover:scale-110 active:scale-95 focus:outline-none cursor-pointer {isCompMatched
+                          ? 'ring-2 ring-emerald-400 ring-offset-1 ring-offset-gray-950'
+                          : ''}"
+                        title={`Click to add ${comp.name} to ${isAugment ? 'augments' : 'build'}`}
+                      >
+                        {#if isAugment}
+                          <AugmentIcon
+                            src={comp.icon_url}
+                            name={comp.name}
+                            rarity={comp.rarity}
+                            class="h-8 w-8"
+                            roundedClass="rounded-lg"
+                          />
+                        {:else if isItem}
+                          {#if comp.icon_url}
+                            <img
+                              src={comp.icon_url}
+                              alt={comp.name}
+                              class="h-8 w-8 rounded-lg object-cover border border-gray-700 shadow-sm bg-gray-950"
+                            />
+                          {:else}
+                            <div class="h-8 w-8 rounded-lg bg-gray-800 border border-gray-700 flex items-center justify-center text-[10px] font-bold text-gray-300">
+                              {comp.name.slice(0, 1)}
+                            </div>
+                          {/if}
+                        {:else if isChamp}
+                          {#if comp.icon_url}
+                            <img
+                              src={comp.icon_url}
+                              alt={comp.name}
+                              class="h-8 w-8 rounded-full object-cover border border-cyan-600/70 shadow-sm"
+                            />
+                          {:else}
+                            <div class="h-8 w-8 rounded-full bg-cyan-950 border border-cyan-700 flex items-center justify-center text-[10px] font-bold text-cyan-300">
+                              {comp.name.slice(0, 1)}
+                            </div>
+                          {/if}
+                        {/if}
+
+                        {#if isCompMatched}
+                          <span class="absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full bg-emerald-400 border border-gray-950 shadow-sm" title="Already in your build/augments"></span>
+                        {/if}
+                      </button>
+
+                      <GameEntityPopover
+                        targetId={compId}
                         name={comp.name}
+                        iconUrl={comp.icon_url}
+                        description={comp.description}
                         rarity={comp.rarity}
-                        class="h-8 w-8"
-                        roundedClass="rounded-lg"
+                        itemClass={comp.item_class}
+                        priceTotal={comp.price_total}
+                        categories={comp.categories}
+                        placement="top"
                       />
-                    {:else if isItem}
-                      {#if comp.icon_url}
-                        <img
-                          src={comp.icon_url}
-                          alt={comp.name}
-                          class="h-8 w-8 rounded-lg object-cover border border-gray-700 shadow-sm bg-gray-950"
-                        />
-                      {:else}
-                        <div class="h-8 w-8 rounded-lg bg-gray-800 border border-gray-700 flex items-center justify-center text-[10px] font-bold text-gray-300">
-                          {comp.name.slice(0, 1)}
-                        </div>
-                      {/if}
-                    {:else if isChamp}
-                      {#if comp.icon_url}
-                        <img
-                          src={comp.icon_url}
-                          alt={comp.name}
-                          class="h-8 w-8 rounded-full object-cover border border-cyan-600/70 shadow-sm"
-                        />
-                      {:else}
-                        <div class="h-8 w-8 rounded-full bg-cyan-950 border border-cyan-700 flex items-center justify-center text-[10px] font-bold text-cyan-300">
-                          {comp.name.slice(0, 1)}
-                        </div>
-                      {/if}
-                    {/if}
+                    </div>
+                  {/each}
+                {/if}
+              </div>
 
-                    <!-- Matched Indicator Dot -->
-                    {#if isCompMatched}
-                      <span class="absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full bg-emerald-400 border border-gray-950 shadow-sm" title="Already in your build/augments"></span>
-                    {/if}
-                  </button>
-
-                  <GameEntityPopover
-                    targetId={compId}
-                    name={comp.name}
-                    iconUrl={comp.icon_url}
-                    description={comp.description}
-                    rarity={comp.rarity}
-                    itemClass={comp.item_class}
-                    priceTotal={comp.price_total}
-                    categories={comp.categories}
-                    placement="top"
-                  />
+              <!-- Right: Dual Metrics (Combo WPA + Pure Synergy Lift + Win Rate) -->
+              <div class="flex items-center gap-2.5 shrink-0 text-right">
+                <div class="flex flex-col items-end">
+                  <div class="flex items-center gap-1.5">
+                    <span class="text-xs font-mono font-bold {(row.wpa ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}">
+                      {formatWpa(row.wpa)}
+                    </span>
+                    <span class="rounded bg-cyan-950/60 border border-cyan-700/60 px-1 py-0.2 text-[9px] font-mono font-semibold text-cyan-300" title="Pure Synergy Lift above main effects">
+                      +{((synergyLift) * 100).toFixed(1)}% Δsyn
+                    </span>
+                  </div>
+                  <div class="text-[10px] font-mono text-purple-300">
+                    {formatPct(row.win_rate)}
+                  </div>
                 </div>
-              {/each}
-            {/if}
-          </div>
-
-          <!-- Right: Metrics (WPA, Win Rate, Games) -->
-          <div class="flex items-center gap-2.5 shrink-0 text-right">
-            <div>
-              <div class="text-xs font-mono font-bold {(row.wpa ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}">
-                {formatWpa(row.wpa)}
-              </div>
-              <div class="text-[10px] font-mono text-purple-300">
-                {formatPct(row.win_rate)}
+                <div class="text-[10px] font-mono text-gray-500 w-10">
+                  {formatGames(row.games)}g
+                </div>
               </div>
             </div>
-            <div class="text-[10px] font-mono text-gray-500 w-10">
-              {formatGames(row.games)}g
-            </div>
-          </div>
-        </div>
-      {/each}
-    </div>
-
-    <!-- Pagination Controls -->
-    {#if totalPages > 1}
-      <div class="flex items-center justify-between border-t border-gray-800 pt-3 text-xs text-gray-400">
-        <span>Page {page} of {totalPages}</span>
-        <div class="flex items-center gap-1.5">
-          <button
-            type="button"
-            disabled={page <= 1}
-            onclick={() => (page = Math.max(1, page - 1))}
-            class="rounded px-2 py-1 border border-gray-700 bg-gray-800/40 text-gray-300 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-800"
-          >
-            Prev
-          </button>
-          <button
-            type="button"
-            disabled={page >= totalPages}
-            onclick={() => (page = Math.min(totalPages, page + 1))}
-            class="rounded px-2 py-1 border border-gray-700 bg-gray-800/40 text-gray-300 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-800"
-          >
-            Next
-          </button>
+          {/each}
         </div>
       </div>
-    {/if}
+    </div>
   {/if}
 </div>

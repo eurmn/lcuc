@@ -34,6 +34,14 @@ pub struct OverlayRenderPayload {
     pub champion_name: String,
     pub strategy_label: String,
     pub cards: Vec<OverlayAugmentCard>,
+    #[serde(default)]
+    pub rows: Vec<crate::services::overlay_presenter::OverlayCardRow>,
+    /// Three-row item plan: next three picks with reasons, the full build, and
+    /// the alternatives the engine also considered.
+    #[serde(default)]
+    pub build_panel: crate::services::overlay_presenter::OverlayBuildPanel,
+    #[serde(default)]
+    pub hud_text: String,
     pub sprites: Vec<OverlayPngSprite>,
     #[serde(default)]
     pub status_message: Option<String>,
@@ -792,7 +800,7 @@ impl ScratchTextRenderer {
                 DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX,
             );
 
-            let drawn_w = (rc.right - rc.left).min(self.width);
+            let drawn_w = (rc.right - rc.left).min(limit_w).min(self.width);
             let drawn_h = (rc.bottom - rc.top).min(self.height);
 
             for sy in 0..drawn_h {
@@ -843,6 +851,57 @@ impl Drop for ScratchTextRenderer {
             DeleteDC(self.hdc);
         }
     }
+}
+
+#[cfg(windows)]
+const BUILD_PANEL_W: i32 = 352;
+#[cfg(windows)]
+const BUILD_PANEL_MARGIN: i32 = 24;
+#[cfg(windows)]
+const BUILD_PAD: i32 = 10;
+#[cfg(windows)]
+const BUILD_HEADER_H: i32 = 16;
+#[cfg(windows)]
+const BUILD_NEXT_H: i32 = 52;
+#[cfg(windows)]
+const BUILD_NEXT_ICON: i32 = 38;
+#[cfg(windows)]
+const BUILD_FULL_ICON: i32 = 40;
+#[cfg(windows)]
+const BUILD_ALT_ROW_H: i32 = 20;
+#[cfg(windows)]
+const BUILD_ALT_ICON: i32 = 16;
+#[cfg(windows)]
+const VERDICT_ROW_H: i32 = 84;
+#[cfg(windows)]
+const VERDICT_ROW_GAP: i32 = 8;
+/// Share of the window height the minimap occupies from the bottom edge.
+#[cfg(windows)]
+const MINIMAP_HEIGHT_FRAC: f64 = 0.235;
+
+/// Sprite id for one item icon inside the build panel. Keyed by item only, so
+/// the same item appearing in "next" and in the full build is decoded once.
+pub fn build_item_sprite_id(item_id: u32) -> String {
+    format!("build_item_{item_id}")
+}
+
+#[cfg(windows)]
+fn build_panel_height(panel: &crate::services::overlay_presenter::OverlayBuildPanel) -> i32 {
+    let mut h = BUILD_PAD * 2;
+    if !panel.next_items.is_empty() {
+        h += BUILD_HEADER_H + panel.next_items.len() as i32 * BUILD_NEXT_H;
+    }
+    if !panel.full_build.is_empty() {
+        h += 8 + BUILD_HEADER_H + 4 + BUILD_FULL_ICON;
+    }
+    if !panel.alternatives.is_empty() {
+        let rows = ((panel.alternatives.len() as i32) + 1) / 2;
+        h += 8 + BUILD_HEADER_H + rows * BUILD_ALT_ROW_H;
+    }
+    if !panel.footer.is_empty() {
+        h += 14;
+    }
+    h
 }
 
 #[cfg(windows)]
@@ -929,6 +988,295 @@ impl OverlayWinContext {
         }
     }
 
+    fn load_sprite(&mut self, sprite: &OverlayPngSprite) {
+        if self.sprite_cache.contains_key(&sprite.id) {
+            return;
+        }
+        if let Some(bytes) = &sprite.png_base64_or_bytes {
+            if let Ok(img) = image::load_from_memory(bytes) {
+                self.sprite_cache.insert(sprite.id.clone(), img.to_rgba8());
+                return;
+            }
+        }
+        if let Some(path) = &sprite.png_path {
+            if let Ok(img) = image::open(path) {
+                self.sprite_cache.insert(sprite.id.clone(), img.to_rgba8());
+            }
+        }
+    }
+
+    fn blit_item_icon(
+        &mut self,
+        buf: &mut [u8],
+        buf_w: u32,
+        buf_h: u32,
+        item_id: u32,
+        sprites: &[OverlayPngSprite],
+        x: i32,
+        y: i32,
+        size: i32,
+    ) {
+        let id = build_item_sprite_id(item_id);
+        if !self.sprite_cache.contains_key(&id) {
+            if let Some(sprite) = sprites.iter().find(|s| s.id == id) {
+                self.load_sprite(sprite);
+            }
+        }
+        if let Some(img) = self.sprite_cache.get(&id) {
+            blit_rgba_sprite(buf, buf_w, buf_h, img, x, y, size as u32, size as u32);
+        }
+    }
+
+    /// Three rows: next three picks with their reasons, the full build order,
+    /// then the alternatives the engine also considered.
+    fn draw_build_panel(
+        &mut self,
+        buf: &mut [u8],
+        buf_w: u32,
+        buf_h: u32,
+        rect: [i32; 4],
+        panel: &crate::services::overlay_presenter::OverlayBuildPanel,
+        sprites: &[OverlayPngSprite],
+    ) {
+        let [px, py, pw, ph] = rect;
+
+        fill_premultiplied_rect(buf, buf_w, buf_h, rect, 9, 13, 22, 238, 8);
+        draw_premultiplied_border(buf, buf_w, buf_h, rect, 1, 6, 182, 212, 200, 8);
+        fill_premultiplied_rect(
+            buf,
+            buf_w,
+            buf_h,
+            [px, py + 8, 3, (ph - 16).max(1)],
+            16,
+            185,
+            129,
+            255,
+            1,
+        );
+
+        let mut y = py + BUILD_PAD;
+        let text_x = px + BUILD_PAD + 6;
+        let text_w = pw - BUILD_PAD * 2 - 8;
+
+        // Row 1 — next items, with the engine's reason under each.
+        if !panel.next_items.is_empty() {
+            if let Some(ref mut tr) = self.text_renderer {
+                tr.draw_text_line(
+                    buf,
+                    buf_w,
+                    buf_h,
+                    &panel.headline,
+                    text_x,
+                    y,
+                    FontKind::Small,
+                    16,
+                    185,
+                    129,
+                    Some(text_w),
+                );
+            }
+            y += BUILD_HEADER_H;
+            for entry in &panel.next_items {
+                let icon_x = px + BUILD_PAD;
+                let icon_y = y + 7;
+                self.blit_item_icon(
+                    buf,
+                    buf_w,
+                    buf_h,
+                    entry.item_id,
+                    sprites,
+                    icon_x,
+                    icon_y,
+                    BUILD_NEXT_ICON,
+                );
+                draw_premultiplied_border(
+                    buf,
+                    buf_w,
+                    buf_h,
+                    [icon_x, icon_y, BUILD_NEXT_ICON, BUILD_NEXT_ICON],
+                    1,
+                    71,
+                    85,
+                    105,
+                    220,
+                    3,
+                );
+
+                let tx = px + BUILD_PAD + BUILD_NEXT_ICON + 8;
+                let tw = (pw - (tx - px) - BUILD_PAD).max(40);
+                let (ar, ag, ab) = if entry.rank == 1 {
+                    (16, 185, 129)
+                } else {
+                    (6, 182, 212)
+                };
+                if let Some(ref mut tr) = self.text_renderer {
+                    tr.draw_text_line(
+                        buf,
+                        buf_w,
+                        buf_h,
+                        &format!("{}. {}", entry.rank, entry.name),
+                        tx,
+                        y + 4,
+                        FontKind::Bold,
+                        ar,
+                        ag,
+                        ab,
+                        Some(tw),
+                    );
+                    tr.draw_text_line(
+                        buf,
+                        buf_w,
+                        buf_h,
+                        &entry.stats,
+                        tx,
+                        y + 22,
+                        FontKind::Normal,
+                        209,
+                        213,
+                        219,
+                        Some(tw),
+                    );
+                    if !entry.reason.is_empty() {
+                        tr.draw_text_line(
+                            buf,
+                            buf_w,
+                            buf_h,
+                            &entry.reason,
+                            tx,
+                            y + 39,
+                            FontKind::Small,
+                            148,
+                            163,
+                            184,
+                            Some(tw),
+                        );
+                    }
+                }
+                y += BUILD_NEXT_H;
+            }
+            y += 8;
+        }
+
+        // Row 2 — the full build, in purchase order.
+        if !panel.full_build.is_empty() {
+            if let Some(ref mut tr) = self.text_renderer {
+                tr.draw_text_line(
+                    buf,
+                    buf_w,
+                    buf_h,
+                    "FULL BUILD",
+                    text_x,
+                    y,
+                    FontKind::Small,
+                    148,
+                    163,
+                    184,
+                    Some(text_w),
+                );
+            }
+            y += BUILD_HEADER_H + 2;
+            let mut ix = px + BUILD_PAD;
+            for entry in panel.full_build.iter().take(6) {
+                self.blit_item_icon(
+                    buf,
+                    buf_w,
+                    buf_h,
+                    entry.item_id,
+                    sprites,
+                    ix,
+                    y,
+                    BUILD_FULL_ICON,
+                );
+                draw_premultiplied_border(
+                    buf,
+                    buf_w,
+                    buf_h,
+                    [ix, y, BUILD_FULL_ICON, BUILD_FULL_ICON],
+                    1,
+                    71,
+                    85,
+                    105,
+                    220,
+                    4,
+                );
+                ix += BUILD_FULL_ICON + 4;
+            }
+            y += BUILD_FULL_ICON + 2;
+        }
+
+        // Row 3 — alternatives that scored well but lost the maths.
+        if !panel.alternatives.is_empty() {
+            y += 8;
+            if let Some(ref mut tr) = self.text_renderer {
+                tr.draw_text_line(
+                    buf,
+                    buf_w,
+                    buf_h,
+                    "ALTERNATIVES",
+                    text_x,
+                    y,
+                    FontKind::Small,
+                    148,
+                    163,
+                    184,
+                    Some(text_w),
+                );
+            }
+            y += BUILD_HEADER_H;
+            let col_w = (pw - BUILD_PAD * 2 - 8) / 2;
+            for (i, entry) in panel.alternatives.iter().take(6).enumerate() {
+                let col = (i % 2) as i32;
+                let row = (i / 2) as i32;
+                let cx = px + BUILD_PAD + col * (col_w + 8);
+                let cy = y + row * BUILD_ALT_ROW_H;
+                self.blit_item_icon(
+                    buf,
+                    buf_w,
+                    buf_h,
+                    entry.item_id,
+                    sprites,
+                    cx,
+                    cy + 2,
+                    BUILD_ALT_ICON,
+                );
+                if let Some(ref mut tr) = self.text_renderer {
+                    tr.draw_text_line(
+                        buf,
+                        buf_w,
+                        buf_h,
+                        &format!("{} {}", entry.name, entry.compact),
+                        cx + BUILD_ALT_ICON + 4,
+                        cy + 3,
+                        FontKind::Small,
+                        209,
+                        213,
+                        219,
+                        Some(col_w - BUILD_ALT_ICON - 4),
+                    );
+                }
+            }
+            y += ((panel.alternatives.len() as i32 + 1) / 2) * BUILD_ALT_ROW_H;
+        }
+
+        if !panel.footer.is_empty() {
+            if let Some(ref mut tr) = self.text_renderer {
+                tr.draw_text_line(
+                    buf,
+                    buf_w,
+                    buf_h,
+                    &panel.footer,
+                    text_x,
+                    y + 2,
+                    FontKind::Small,
+                    100,
+                    116,
+                    139,
+                    Some(text_w),
+                );
+            }
+        }
+    }
+
     pub fn render_to_buffer(
         &mut self,
         buf: &mut [u8],
@@ -999,17 +1347,16 @@ impl OverlayWinContext {
                     Some(bw - 28),
                 );
             } else {
-                let champ = if payload.champion_name.is_empty() {
-                    "ARAM MAYHEM"
+                let text = if payload.hud_text.is_empty() {
+                    "ARAM MAYHEM  •  F8 SCAN".to_string()
                 } else {
-                    &payload.champion_name
+                    payload.hud_text.clone()
                 };
-                let status_text = format!("LCU OVERLAY • {} • [F8] SCAN  [F7] HIDE", champ.to_uppercase());
                 tr.draw_text_line(
                     buf,
                     w as u32,
                     h as u32,
-                    &status_text,
+                    &text,
                     bx + 14,
                     by + 12,
                     FontKind::Bold,
@@ -1021,7 +1368,47 @@ impl OverlayWinContext {
             }
         }
 
-        // 2. Blit PNG Sprites
+        // 2. Build panel: three stacked rows (next picks, full build, alternatives).
+        //    It sits above the bottom-right corner because the game's minimap
+        //    lives there; below ~900 px tall there is no room for three augment
+        //    rows and the panel at once, so the panel sheds its least important
+        //    row (alternatives) rather than overlapping the card rows.
+        let top_floor = layout.hud_banner_rect[1] + layout.hud_banner_rect[3] + 12;
+        let bottom_clearance =
+            BUILD_PANEL_MARGIN.max((layout.game_height as f64 * MINIMAP_HEIGHT_FRAC) as i32);
+        let rows_h = if payload.rows.is_empty() {
+            0
+        } else {
+            payload.rows.len() as i32 * (VERDICT_ROW_H + VERDICT_ROW_GAP) - VERDICT_ROW_GAP
+        };
+        let available = layout.game_height - bottom_clearance - top_floor;
+        let mut compact_panel;
+        let panel = {
+            let mut chosen = &payload.build_panel;
+            if !chosen.is_empty() && build_panel_height(chosen) + rows_h + 12 > available {
+                compact_panel = chosen.clone();
+                compact_panel.alternatives.clear();
+                compact_panel.footer.clear();
+                chosen = &compact_panel;
+            }
+            chosen
+        };
+
+        let build_panel_rect = if !panel.is_empty() {
+            let ph = build_panel_height(panel);
+            let pr = [
+                (w - BUILD_PANEL_W - BUILD_PANEL_MARGIN).max(0),
+                (h - ph - bottom_clearance).max(0),
+                BUILD_PANEL_W,
+                ph,
+            ];
+            self.draw_build_panel(buf, w as u32, h as u32, pr, panel, &payload.sprites);
+            Some(pr)
+        } else {
+            None
+        };
+
+        // 2b. Blit PNG Sprites
         if !payload.sprites.is_empty() {
             let is_recommended_items = payload
                 .sprites
@@ -1149,7 +1536,11 @@ impl OverlayWinContext {
                     }
                 }
             } else {
-                for sprite in &payload.sprites {
+                for sprite in payload
+                    .sprites
+                    .iter()
+                    .filter(|s| !s.id.starts_with("build_item_"))
+                {
                     let sx = sprite.x.clamp(0, (w - sprite.width as i32).max(0));
                     let sy = sprite.y.clamp(0, (h - sprite.height as i32).max(0));
 
@@ -1181,216 +1572,103 @@ impl OverlayWinContext {
             }
         }
 
-        // 3. Draw Augment Cards
-        if !payload.cards.is_empty() {
-            let mut sorted_cards = payload.cards.clone();
-            sorted_cards.sort_by(|a, b| b.wpa.partial_cmp(&a.wpa).unwrap_or(std::cmp::Ordering::Equal));
-            let best_id = sorted_cards.first().map(|c| c.id.clone()).unwrap_or_default();
+        // 3. Augment verdict rows: fixed right-edge stack, never over the game's cards.
+        //    When the build panel is up, the rows sit in the free band above it.
+        if !payload.rows.is_empty() {
+            let row_w: i32 = 320;
+            let row_h: i32 = VERDICT_ROW_H;
+            let gap: i32 = VERDICT_ROW_GAP;
+            let count = payload.rows.len() as i32;
+            let stack_h = count * (row_h + gap) - gap;
+            let x = (layout.game_width - row_w - 24).max(0);
+            let band_bottom = build_panel_rect
+                .map(|r| r[1] - 12)
+                .unwrap_or(layout.game_height - bottom_clearance);
+            let y0 = (((top_floor + band_bottom - stack_h) / 2).max(top_floor)).max(0);
 
-            for card in &payload.cards {
-                let slot = card.slot.min(2);
-                let rect = layout.card_rects[slot];
-                let [cx, cy, cw, _ch] = rect;
-                let is_best = card.id == best_id;
-
-                let rarity_lower = card.rarity.as_deref().unwrap_or("").to_lowercase();
-                let (cr_r, cr_g, cr_b) = if is_best {
-                    (16, 185, 129) // Emerald
-                } else if rarity_lower.contains("prismatic") {
-                    (168, 85, 247) // Prismatic
-                } else if rarity_lower.contains("gold") {
-                    (245, 158, 11) // Gold
-                } else {
-                    (148, 163, 184) // Silver
-                };
-
-                fill_premultiplied_rect(buf, w as u32, h as u32, rect, 10, 14, 23, 238, 10);
-                draw_premultiplied_border(buf, w as u32, h as u32, rect, 2, cr_r, cr_g, cr_b, 240, 10);
+            for (i, row) in payload.rows.iter().enumerate() {
+                let rect = [x, y0 + i as i32 * (row_h + gap), row_w, row_h];
+                fill_premultiplied_rect(buf, w as u32, h as u32, rect, 9, 13, 22, 235, 8);
+                draw_premultiplied_border(
+                    buf,
+                    w as u32,
+                    h as u32,
+                    rect,
+                    2,
+                    row.accent[0],
+                    row.accent[1],
+                    row.accent[2],
+                    240,
+                    8,
+                );
+                fill_premultiplied_rect(
+                    buf,
+                    w as u32,
+                    h as u32,
+                    [rect[0], rect[1] + 8, 3, row_h - 16],
+                    row.accent[0],
+                    row.accent[1],
+                    row.accent[2],
+                    255,
+                    1,
+                );
 
                 if let Some(ref mut tr) = self.text_renderer {
-                    let p = 12;
-                    let mut cur_y = cy + p;
-
-                    // Header badge
-                    if is_best {
-                        tr.draw_text_line(
-                            buf,
-                            w as u32,
-                            h as u32,
-                            "★ #1 BEST PICK",
-                            cx + p,
-                            cur_y,
-                            FontKind::Bold,
-                            16,
-                            185,
-                            129,
-                            Some(cw - p * 2),
-                        );
-                    } else {
-                        let rank = sorted_cards.iter().position(|c| c.id == card.id).unwrap_or(slot) + 1;
-                        let badge = format!("OPTION #{}", rank);
-                        tr.draw_text_line(
-                            buf,
-                            w as u32,
-                            h as u32,
-                            &badge,
-                            cx + p,
-                            cur_y,
-                            FontKind::Bold,
-                            156,
-                            163,
-                            175,
-                            Some(cw - p * 2),
-                        );
-                    }
-
-                    let rarity_badge = card.rarity.as_deref().unwrap_or("SILVER").to_uppercase();
+                    let pad = 18;
+                    let text_w = row_w - pad - 12;
+                    let tx = rect[0] + pad;
                     tr.draw_text_line(
                         buf,
                         w as u32,
                         h as u32,
-                        &rarity_badge,
-                        cx + cw - p - 65,
-                        cur_y,
-                        FontKind::Small,
-                        cr_r,
-                        cr_g,
-                        cr_b,
-                        Some(65),
+                        &row.header,
+                        tx,
+                        rect[1] + 8,
+                        FontKind::Bold,
+                        row.accent[0],
+                        row.accent[1],
+                        row.accent[2],
+                        Some(text_w),
                     );
-
-                    cur_y += 20;
                     tr.draw_text_line(
                         buf,
                         w as u32,
                         h as u32,
-                        &card.name,
-                        cx + p,
-                        cur_y,
+                        &row.name,
+                        tx,
+                        rect[1] + 26,
                         FontKind::Title,
                         241,
                         245,
                         249,
-                        Some(cw - p * 2),
+                        Some(text_w),
                     );
-
-                    cur_y += 22;
-                    let wr_text = format!("WR {:.1}%", card.win_rate * 100.0);
                     tr.draw_text_line(
                         buf,
                         w as u32,
                         h as u32,
-                        &wr_text,
-                        cx + p,
-                        cur_y,
-                        FontKind::Bold,
-                        220,
-                        225,
-                        235,
-                        Some(80),
+                        &row.stats,
+                        tx,
+                        rect[1] + 48,
+                        FontKind::Normal,
+                        209,
+                        213,
+                        219,
+                        Some(text_w),
                     );
-
-                    let wpa_sign = if card.wpa >= 0.0 { "+" } else { "" };
-                    let wpa_text = format!("{}{:.1}% WPA", wpa_sign, card.wpa * 100.0);
-                    let (wpa_r, wpa_g, wpa_b) = if card.wpa >= 0.0 { (16, 185, 129) } else { (248, 113, 113) };
-                    tr.draw_text_line(
-                        buf,
-                        w as u32,
-                        h as u32,
-                        &wpa_text,
-                        cx + p + 82,
-                        cur_y,
-                        FontKind::Bold,
-                        wpa_r,
-                        wpa_g,
-                        wpa_b,
-                        Some(95),
-                    );
-
-                    let games_text = format!("{}g", card.games);
-                    tr.draw_text_line(
-                        buf,
-                        w as u32,
-                        h as u32,
-                        &games_text,
-                        cx + cw - p - 45,
-                        cur_y,
-                        FontKind::Small,
-                        156,
-                        163,
-                        175,
-                        Some(45),
-                    );
-
-                    cur_y += 18;
-                    fill_premultiplied_rect(buf, w as u32, h as u32, [cx + p, cur_y, cw - p * 2, 1], 31, 41, 55, 200, 0);
-
-                    cur_y += 8;
-                    tr.draw_text_line(
-                        buf,
-                        w as u32,
-                        h as u32,
-                        "TOP COMBOS & SYNERGIES",
-                        cx + p,
-                        cur_y,
-                        FontKind::Small,
-                        156,
-                        163,
-                        175,
-                        Some(cw - p * 2),
-                    );
-
-                    cur_y += 16;
-                    if !card.combos.is_empty() {
-                        for combo in card.combos.iter().take(2) {
-                            let wr_str = format!("{:.1}% WR", combo.win_rate * 100.0);
-                            tr.draw_text_line(
-                                buf,
-                                w as u32,
-                                h as u32,
-                                &combo.label,
-                                cx + p,
-                                cur_y,
-                                FontKind::Small,
-                                209,
-                                213,
-                                219,
-                                Some(cw - p * 2 - 65),
-                            );
-                            tr.draw_text_line(
-                                buf,
-                                w as u32,
-                                h as u32,
-                                &wr_str,
-                                cx + cw - p - 55,
-                                cur_y,
-                                FontKind::Small,
-                                16,
-                                185,
-                                129,
-                                Some(55),
-                            );
-                            cur_y += 14;
-                        }
-                    } else if !card.synergy_items.is_empty() {
-                        let items_str = card
-                            .synergy_items
-                            .iter()
-                            .map(|i| i.name.as_str())
-                            .collect::<Vec<_>>()
-                            .join(" + ");
+                    if !row.footer.is_empty() {
                         tr.draw_text_line(
                             buf,
                             w as u32,
                             h as u32,
-                            &items_str,
-                            cx + p,
-                            cur_y,
+                            &row.footer,
+                            tx,
+                            rect[1] + 64,
                             FontKind::Small,
-                            209,
-                            213,
-                            219,
-                            Some(cw - p * 2),
+                            148,
+                            163,
+                            184,
+                            Some(text_w),
                         );
                     }
                 }
@@ -1630,6 +1908,12 @@ pub fn run_detached_overlay_process() {
         use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
         unsafe {
+            // Must run before any window/DC is created: without it GetClientRect is
+            // virtualised at 125%/150% scaling and the overlay drifts off the game.
+            let _ = windows_sys::Win32::UI::WindowsAndMessaging::SetProcessDPIAware();
+        }
+
+        unsafe {
             let instance = GetModuleHandleW(std::ptr::null());
             let class_name: Vec<u16> = "LcuNativeOverlayClass\0".encode_utf16().collect();
 
@@ -1743,6 +2027,39 @@ pub fn run_detached_overlay_process() {
     }
 }
 
+#[cfg(windows)]
+pub fn render_overlay_png(
+    payload: &OverlayRenderPayload,
+    width: i32,
+    height: i32,
+    path: &str,
+) -> Result<(), String> {
+    let layout = compute_default_anchor_layout(0, 0, width, height);
+    let mut context = OverlayWinContext::new(std::ptr::null_mut());
+    let total = (width * height * 4) as usize;
+    let mut buffer = vec![0u8; total];
+    context.render_to_buffer(&mut buffer, &layout, payload);
+
+    // Premultiplied BGRA -> opaque RGBA composited over a dark background.
+    let mut out = vec![0u8; total];
+    for i in (0..total).step_by(4) {
+        let alpha = buffer[i + 3] as u32;
+        let inv = 255 - alpha;
+        out[i] = (buffer[i + 2] as u32 + 18 * inv / 255).min(255) as u8;
+        out[i + 1] = (buffer[i + 1] as u32 + 16 * inv / 255).min(255) as u8;
+        out[i + 2] = (buffer[i] as u32 + 16 * inv / 255).min(255) as u8;
+        out[i + 3] = 255;
+    }
+    image::save_buffer(
+        path,
+        &out,
+        width as u32,
+        height as u32,
+        image::ColorType::Rgba8,
+    )
+    .map_err(|e| e.to_string())
+}
+
 // ---------------------------------------------------------
 // Unit Tests
 // ---------------------------------------------------------
@@ -1785,6 +2102,7 @@ mod tests {
                     games: 120,
                     synergy_items: Vec::new(),
                     combos: Vec::new(),
+                    ..Default::default()
                 }],
                 sprites: vec![OverlayPngSprite {
                     id: "icon1".to_string(),
@@ -1797,6 +2115,7 @@ mod tests {
                 }],
                 status_message: None,
                 is_error: false,
+                ..Default::default()
             },
         };
         let render_json = serde_json::to_string(&render_cmd).expect("serialize Render");
@@ -1896,6 +2215,82 @@ mod tests {
         assert_eq!(bg, 0);
         assert_eq!(br, 0);
         assert_eq!(ba, 255);
+    }
+
+    #[test]
+    fn build_panel_draws_three_rows_and_blits_item_icons() {
+        use crate::services::overlay_presenter::{build_build_panel, OverlayBuildItemView};
+
+        let view = |id: u32, name: &str, lift: f64| OverlayBuildItemView {
+            item_id: id,
+            name: name.to_string(),
+            win_rate: 0.55 + lift,
+            lift,
+            sample_size: 1200,
+            reason: "Pairs with Jeweled Gauntlet (+2.1% synergy)".to_string(),
+        };
+        let next = vec![
+            view(6655, "Luden's Companion", 0.04),
+            view(3089, "Rabadon's Deathcap", 0.03),
+            view(6653, "Liandry's Torment", 0.02),
+        ];
+        let full = vec![view(3020, "Sorcerer's Shoes", 0.01)];
+        let alts = vec![view(3116, "Rylai's Crystal Scepter", 0.008)];
+        let panel = build_build_panel(&next, &full, &alts, 0.5412, 12400, 26);
+
+        // Solid red 8x8 icon, encoded by the same crate the renderer decodes with.
+        let mut icon = image::RgbaImage::new(8, 8);
+        for pixel in icon.pixels_mut() {
+            *pixel = image::Rgba([220, 20, 20, 255]);
+        }
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgba8(icon)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .expect("encode icon");
+
+        let ids = [6655u32, 3089, 6653, 3020, 3116];
+        let sprites: Vec<OverlayPngSprite> = ids
+            .iter()
+            .map(|&id| OverlayPngSprite {
+                id: build_item_sprite_id(id),
+                png_path: None,
+                png_base64_or_bytes: Some(png.clone()),
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 0,
+            })
+            .collect();
+
+        let payload = OverlayRenderPayload {
+            visible: true,
+            build_panel: panel.clone(),
+            sprites,
+            ..Default::default()
+        };
+
+        let path = std::env::temp_dir().join("overlay-build-panel-test.png");
+        let path_str = path.to_string_lossy().to_string();
+        render_overlay_png(&payload, 1920, 1080, &path_str).expect("render");
+        let rendered = image::open(&path).expect("open render").to_rgba8();
+
+        // Panel is bottom-right, above the minimap clearance.
+        let clearance = BUILD_PANEL_MARGIN.max((1080.0 * MINIMAP_HEIGHT_FRAC) as i32);
+        let ph = build_panel_height(&panel);
+        let panel_y = (1080 - ph - clearance).max(0);
+        let icon_y = panel_y + BUILD_PAD + BUILD_HEADER_H + 7;
+        let icon_x = 1920 - BUILD_PANEL_W - BUILD_PANEL_MARGIN + BUILD_PAD;
+
+        let centre = rendered.get_pixel((icon_x + BUILD_NEXT_ICON / 2) as u32, (icon_y + BUILD_NEXT_ICON / 2) as u32);
+        assert!(
+            centre[0] > 150 && centre[1] < 80,
+            "first next-item icon should be blitted, got {centre:?}"
+        );
+
+        // Nothing drawn outside the panel: a far-left pixel stays background.
+        let corner = rendered.get_pixel(40, 40);
+        assert!(corner[0] < 60 && corner[1] < 60, "unexpected draw at corner {corner:?}");
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

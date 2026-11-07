@@ -395,6 +395,7 @@ pub async fn api_scan_live_augment_cards(
 ) -> Result<Vec<crate::models::history::OverlayAugmentCard>, String> {
     use tauri::Emitter;
     crate::services::live_overlay::set_overlay_scanning(true);
+    let started = std::time::Instant::now();
     let scan_res = crate::services::live_overlay::scan_in_game_augment_cards(
         champion_id,
         with_augment_ids.unwrap_or_default(),
@@ -404,7 +405,11 @@ pub async fn api_scan_live_augment_cards(
 
     match scan_res {
         Ok(cards) => {
-            let msg = format!("Found {} augment cards", cards.len());
+            let msg = format!(
+                "Found {} augment cards in {}ms",
+                cards.len(),
+                started.elapsed().as_millis()
+            );
             crate::services::live_overlay::show_overlay_status_toast(&msg, false);
             crate::services::live_overlay::update_overlay_cards(&cards);
             let _ = app.emit("overlay:cards-updated", &cards);
@@ -416,6 +421,45 @@ pub async fn api_scan_live_augment_cards(
             Err(err)
         }
     }
+}
+
+#[tauri::command]
+pub fn api_get_overlay_augments() -> Vec<crate::services::live_overlay::OwnedAugment> {
+    crate::services::live_overlay::owned_augments()
+}
+
+/// Records an augment picked in game. The card id comes from the scan, so the
+/// build engine sees exactly the augment the statistics are keyed by.
+#[tauri::command]
+pub fn api_add_overlay_augment(
+    id: String,
+    name: Option<String>,
+    slot: Option<usize>,
+) -> Result<Vec<crate::services::live_overlay::OwnedAugment>, String> {
+    let display = name
+        .filter(|n| !n.trim().is_empty())
+        .or_else(|| {
+            crate::services::history::aram_augment_id_for(&id)
+                .and_then(crate::services::history::aram_augment_name_for)
+        })
+        .unwrap_or_else(|| id.clone());
+    if !crate::services::live_overlay::add_owned_augment(&id, &display, slot.unwrap_or(0)) {
+        return Err(format!("{display} is already recorded"));
+    }
+    Ok(crate::services::live_overlay::owned_augments())
+}
+
+#[tauri::command]
+pub fn api_undo_overlay_augment(
+) -> Result<Vec<crate::services::live_overlay::OwnedAugment>, String> {
+    crate::services::live_overlay::undo_owned_augment();
+    Ok(crate::services::live_overlay::owned_augments())
+}
+
+#[tauri::command]
+pub fn api_clear_overlay_augments() -> Vec<crate::services::live_overlay::OwnedAugment> {
+    crate::services::live_overlay::clear_owned_augments();
+    crate::services::live_overlay::owned_augments()
 }
 
 #[tauri::command]

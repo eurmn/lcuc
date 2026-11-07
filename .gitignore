@@ -32,3 +32,9 @@ src-tauri/gen/schemas
 .deagle/
 @llm/.dontread-dontwrite.bkp/
 *.bkp
+
+/.md
+/.AGENTS.md.OLD
+
+# native overlay preview artifact
+src-tauri/overlay-preview.png

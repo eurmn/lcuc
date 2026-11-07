@@ -1,4 +1,4 @@
-use crate::models::history::{MayhemAugmentItem, MayhemAugmentsQuery, OverlayAugmentCard};
+use crate::models::history::{MayhemAugmentsQuery, OverlayAugmentCard};
 use crate::services::native_overlay::OverlayPngSprite;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -7,6 +7,8 @@ use std::sync::Mutex;
 pub static OVERLAY_ENABLED: AtomicBool = AtomicBool::new(true);
 pub static OVERLAY_HAS_CARDS: AtomicBool = AtomicBool::new(false);
 pub static OVERLAY_SCANNING: AtomicBool = AtomicBool::new(false);
+static OVERLAY_LEVEL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static OVERLAY_GOLD: Mutex<f64> = Mutex::new(0.0);
 static F8_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static F7_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 
@@ -15,24 +17,66 @@ lazy_static::lazy_static! {
     static ref OVERLAY_STRATEGY_LABEL: Mutex<String> = Mutex::new(String::new());
     static ref OVERLAY_OFFERED_CARDS: Mutex<Vec<OverlayAugmentCard>> = Mutex::new(Vec::new());
     pub static ref OVERLAY_RECOMMENDED_SPRITES: Mutex<Vec<OverlayPngSprite>> = Mutex::new(Vec::new());
+    /// Monotonic ticket so a slow, older engine run cannot overwrite a newer
+    /// panel after an item change lands mid-computation.
+    static ref BUILD_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    /// The three-row build plan (next picks, full build, alternatives) as the
+    /// last engine run produced it.
+    static ref OVERLAY_BUILD_PANEL: Mutex<crate::services::overlay_presenter::OverlayBuildPanel> =
+        Mutex::new(crate::services::overlay_presenter::OverlayBuildPanel::default());
     static ref OVERLAY_STATUS_TOAST: Mutex<Option<(String, bool, std::time::Instant)>> = Mutex::new(None);
 }
 
-pub fn poll_overlay_hotkeys() -> (bool, bool) {
+/// Keys the in-game overlay reacts to. F8 rescans, F9/F10/F11 record which card
+/// was picked (LEFT/MID/RIGHT), F6 undoes a wrong pick, F7 clears.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OverlayHotkeys {
+    pub scan: bool,
+    pub clear: bool,
+    pub add_left: bool,
+    pub add_mid: bool,
+    pub add_right: bool,
+    pub undo: bool,
+}
+
+impl OverlayHotkeys {
+    pub fn picked_slot(&self) -> Option<usize> {
+        match (self.add_left, self.add_mid, self.add_right) {
+            (true, false, false) => Some(0),
+            (false, true, false) => Some(1),
+            (false, false, true) => Some(2),
+            _ => None,
+        }
+    }
+}
+
+static F6_WAS_DOWN: AtomicBool = AtomicBool::new(false);
+static F9_WAS_DOWN: AtomicBool = AtomicBool::new(false);
+static F10_WAS_DOWN: AtomicBool = AtomicBool::new(false);
+static F11_WAS_DOWN: AtomicBool = AtomicBool::new(false);
+
+pub fn poll_overlay_hotkeys() -> OverlayHotkeys {
     #[cfg(windows)]
     {
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-        let f8_down = (unsafe { GetAsyncKeyState(0x77) } as u16 & 0x8000) != 0;
-        let f7_down = (unsafe { GetAsyncKeyState(0x76) } as u16 & 0x8000) != 0;
+        let down = |vk: i32, prev: &AtomicBool| -> bool {
+            let is_down = (unsafe { GetAsyncKeyState(vk) } as u16 & 0x8000) != 0;
+            let was = prev.swap(is_down, Ordering::Relaxed);
+            is_down && !was
+        };
 
-        let prev_f8 = F8_WAS_DOWN.swap(f8_down, Ordering::Relaxed);
-        let prev_f7 = F7_WAS_DOWN.swap(f7_down, Ordering::Relaxed);
-
-        (f8_down && !prev_f8, f7_down && !prev_f7)
+        OverlayHotkeys {
+            scan: down(0x77, &F8_WAS_DOWN),
+            clear: down(0x76, &F7_WAS_DOWN),
+            undo: down(0x75, &F6_WAS_DOWN),
+            add_left: down(0x78, &F9_WAS_DOWN),
+            add_mid: down(0x79, &F10_WAS_DOWN),
+            add_right: down(0x7A, &F11_WAS_DOWN),
+        }
     }
     #[cfg(not(windows))]
     {
-        (false, false)
+        OverlayHotkeys::default()
     }
 }
 
@@ -83,6 +127,17 @@ pub fn set_overlay_champion_and_strategy(champ: &str, strat: &str) {
     }
 }
 
+pub fn set_overlay_vitals(level: u32, gold: f64) {
+    let previous_level = OVERLAY_LEVEL.swap(level, Ordering::Relaxed);
+    let previous_gold = OVERLAY_GOLD.lock().map(|g| *g).unwrap_or(0.0);
+    if let Ok(mut g) = OVERLAY_GOLD.lock() {
+        *g = gold;
+    }
+    if previous_level != level || (previous_gold - gold).abs() > 1.0 {
+        refresh_native_overlay();
+    }
+}
+
 pub fn show_overlay_status_toast(message: &str, is_error: bool) {
     if let Ok(mut lock) = OVERLAY_STATUS_TOAST.lock() {
         *lock = Some((message.to_string(), is_error, std::time::Instant::now()));
@@ -98,6 +153,10 @@ pub fn refresh_native_overlay() {
     let strat = OVERLAY_STRATEGY_LABEL.lock().map(|g| g.clone()).unwrap_or_default();
     let cards = OVERLAY_OFFERED_CARDS.lock().map(|g| g.clone()).unwrap_or_default();
     let sprites = OVERLAY_RECOMMENDED_SPRITES.lock().map(|g| g.clone()).unwrap_or_default();
+    let build_panel = OVERLAY_BUILD_PANEL
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default();
     let scanning = OVERLAY_SCANNING.load(Ordering::Relaxed);
 
     let (status_message, is_error) = if let Ok(mut lock) = OVERLAY_STATUS_TOAST.lock() {
@@ -115,12 +174,21 @@ pub fn refresh_native_overlay() {
         (None, false)
     };
 
+    let level = OVERLAY_LEVEL.load(Ordering::Relaxed);
+    let gold = OVERLAY_GOLD.lock().map(|g| *g).unwrap_or(0.0);
+    let rows = crate::services::overlay_presenter::build_rows(&cards, 26);
+    let hud_text =
+        crate::services::overlay_presenter::build_hud_text(&champ, level, gold, !cards.is_empty());
+
     let payload = crate::services::native_overlay::OverlayRenderPayload {
         visible: true,
         scanning,
         champion_name: champ,
         strategy_label: strat,
         cards,
+        rows,
+        build_panel,
+        hud_text,
         sprites,
         status_message,
         is_error,
@@ -146,59 +214,31 @@ fn find_field<'a>(payload: &'a serde_json::Value, key: &str) -> Option<&'a serde
     None
 }
 
-pub async fn build_recommended_item_sprites(
-    boots: Option<u32>,
-    next_items: Vec<u32>,
-    completed_build: Vec<u32>,
-) -> Vec<OverlayPngSprite> {
-    let mut items_to_render: Vec<(String, u32)> = Vec::new();
-    if let Some(boot_id) = boots {
-        if boot_id > 0 {
-            items_to_render.push(("boot".to_string(), boot_id));
+/// Item icons for the build panel. Sprites are keyed by item id, so an item
+/// that appears in both "next" and the full build decodes once.
+pub async fn build_panel_item_sprites(item_ids: &[u32]) -> Vec<OverlayPngSprite> {
+    let mut unique: Vec<u32> = Vec::new();
+    for &id in item_ids {
+        if id > 0 && !unique.contains(&id) {
+            unique.push(id);
         }
     }
-    for id in next_items {
-        if id > 0 && !items_to_render.iter().any(|(_, x)| *x == id) {
-            items_to_render.push(("next".to_string(), id));
-        }
-    }
-    for id in completed_build {
-        if id > 0 && !items_to_render.iter().any(|(_, x)| *x == id) {
-            items_to_render.push(("build".to_string(), id));
-        }
-    }
-
-    if items_to_render.is_empty() {
+    if unique.is_empty() {
         return Vec::new();
     }
-
-    items_to_render.truncate(7);
-
-    let rect = get_league_game_window_rect();
-    let gw = if rect.found && rect.width > 100 { rect.width } else { 1920 };
-    let banner_w = 340;
-    let banner_h = 42;
-    let banner_x = (gw - banner_w - 24).max(0);
-    let banner_y = 18;
-
-    let slot_size: u32 = 36;
-    let gap = 8;
-    let padding_x = 14;
-    let base_y = banner_y + banner_h + 28;
 
     let cache_dir = crate::services::asset_cache::get_asset_cache_dir().join("items");
     let _ = tokio::fs::create_dir_all(&cache_dir).await;
 
     let items_catalog = crate::services::history::get_items_by_id().await.ok();
-
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
         .unwrap_or_default();
 
-    let mut sprites = Vec::with_capacity(items_to_render.len());
+    let mut sprites = Vec::with_capacity(unique.len());
 
-    for (idx, (role, item_id)) in items_to_render.into_iter().enumerate() {
+    for item_id in unique {
         let item_path = cache_dir.join(format!("{item_id}.png"));
         let exists = match tokio::fs::metadata(&item_path).await {
             Ok(m) => m.len() > 0,
@@ -206,7 +246,8 @@ pub async fn build_recommended_item_sprites(
         };
 
         if !exists {
-            // First try resolving the official icon_url from the items catalog
+            // Prefer the catalog's official icon url, fall back to the direct
+            // communitydragon path (some ids only resolve there).
             let resolved_url = items_catalog
                 .as_ref()
                 .and_then(|cat| cat.get(&(item_id as i32)))
@@ -228,8 +269,6 @@ pub async fn build_recommended_item_sprites(
                     }
                 }
             }
-
-            // Fallback: try lowercase direct asset path if catalog url failed
             if !fetched {
                 let fallback_url = format!(
                     "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/assets/items/icons2d/{item_id}.png"
@@ -247,34 +286,173 @@ pub async fn build_recommended_item_sprites(
         }
 
         let png_path = if item_path.exists()
-            && std::fs::metadata(&item_path).map(|m| m.len() > 0).unwrap_or(false)
+            && std::fs::metadata(&item_path)
+                .map(|m| m.len() > 0)
+                .unwrap_or(false)
         {
             Some(item_path.to_string_lossy().to_string())
         } else {
             None
         };
-
-        let png_base64_or_bytes = if png_path.is_some() {
+        let png_bytes = if png_path.is_some() {
             tokio::fs::read(&item_path).await.ok()
         } else {
             None
         };
 
-        let x = banner_x + padding_x + (idx as i32) * (slot_size as i32 + gap);
-        let y = base_y;
-
         sprites.push(OverlayPngSprite {
-            id: format!("item_{role}_{item_id}"),
+            id: crate::services::native_overlay::build_item_sprite_id(item_id),
             png_path,
-            png_base64_or_bytes,
-            x,
-            y,
-            width: slot_size,
-            height: slot_size,
+            png_base64_or_bytes: png_bytes,
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
         });
     }
 
     sprites
+}
+
+fn item_display_name(
+    names: &std::collections::HashMap<i32, crate::services::history::CachedItemInfo>,
+    item_id: u32,
+) -> String {
+    names
+        .get(&(item_id as i32))
+        .map(|i| i.name.clone())
+        .unwrap_or_else(|| format!("Item {item_id}"))
+}
+
+fn build_item_view(
+    dto: &crate::agent::mayhem_engine::ItemRecommendationDto,
+    names: &std::collections::HashMap<i32, crate::services::history::CachedItemInfo>,
+) -> crate::services::overlay_presenter::OverlayBuildItemView {
+    // The engine only knows ids for items and may carry a raw id for an
+    // augment, so both partners are named here from the catalogs.
+    let reason = if dto.synergy_partner_id > 0 {
+        let partner = if dto.synergy_partner_is_augment {
+            crate::services::history::aram_augment_name_for(dto.synergy_partner_id)
+                .unwrap_or_else(|| dto.reason.clone())
+        } else {
+            item_display_name(names, dto.synergy_partner_id)
+        };
+        format!(
+            "Pairs with {partner} (+{:.1}% synergy)",
+            dto.synergy_partner_lift * 100.0
+        )
+    } else {
+        dto.reason.clone()
+    };
+
+    crate::services::overlay_presenter::OverlayBuildItemView {
+        item_id: dto.item_id,
+        name: item_display_name(names, dto.item_id),
+        win_rate: dto.win_rate,
+        lift: dto.lift,
+        sample_size: dto.sample_size,
+        reason,
+    }
+}
+
+/// Turns one engine run into the overlay's three rows plus their icon sprites.
+pub async fn apply_build_recommendation(
+    rec: &crate::agent::mayhem_engine::MayhemBuildRecommendationResponse,
+) {
+    let ticket = BUILD_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+    let names = crate::services::history::get_items_by_id()
+        .await
+        .unwrap_or_default();
+
+    let next: Vec<_> = rec
+        .next_items
+        .iter()
+        .map(|d| build_item_view(d, &names))
+        .collect();
+    let full: Vec<_> = rec
+        .completed_build
+        .iter()
+        .map(|d| build_item_view(d, &names))
+        .collect();
+    let alts: Vec<_> = rec
+        .alternative_items
+        .iter()
+        .filter(|d| d.sample_size > 0)
+        .map(|d| build_item_view(d, &names))
+        .collect();
+
+    let panel = crate::services::overlay_presenter::build_build_panel(
+        &next,
+        &full,
+        &alts,
+        rec.build_winrate,
+        rec.stats.match_count,
+        26,
+    );
+
+    let ids: Vec<u32> = next
+        .iter()
+        .chain(full.iter())
+        .chain(alts.iter())
+        .map(|v| v.item_id)
+        .collect();
+    let sprites = build_panel_item_sprites(&ids).await;
+
+    if BUILD_SEQ.load(Ordering::Relaxed) != ticket {
+        return; // a newer run is already in flight
+    }
+    publish_build_panel(panel, sprites);
+}
+
+/// Replaces the panel and its icons, then repaints.
+fn publish_build_panel(
+    panel: crate::services::overlay_presenter::OverlayBuildPanel,
+    sprites: Vec<OverlayPngSprite>,
+) {
+    if let Ok(mut lock) = OVERLAY_BUILD_PANEL.lock() {
+        *lock = panel;
+    }
+    if let Ok(mut lock) = OVERLAY_RECOMMENDED_SPRITES.lock() {
+        *lock = sprites;
+    }
+    refresh_native_overlay();
+}
+
+/// Fallback for payloads that only carry item ids (no engine result): names in
+/// the next/full rows, without invented statistics.
+async fn apply_build_ids(boots: Option<u32>, next_items: Vec<u32>, completed_build: Vec<u32>) {
+    let names = crate::services::history::get_items_by_id()
+        .await
+        .unwrap_or_default();
+    let view = |id: u32| crate::services::overlay_presenter::OverlayBuildItemView {
+        item_id: id,
+        name: item_display_name(&names, id),
+        win_rate: 0.0,
+        lift: 0.0,
+        sample_size: 0,
+        reason: String::new(),
+    };
+
+    let mut next: Vec<_> = next_items.into_iter().filter(|&id| id > 0).map(view).collect();
+    if let Some(boot) = boots.filter(|b| *b > 0) {
+        if !next.iter().any(|v| v.item_id == boot) {
+            next.insert(0, view(boot));
+        }
+    }
+    let full: Vec<_> = completed_build
+        .into_iter()
+        .filter(|&id| id > 0)
+        .map(view)
+        .collect();
+
+    let panel = crate::services::overlay_presenter::build_build_panel(&next, &full, &[], 0.0, 0, 26);
+    let ids: Vec<u32> = next
+        .iter()
+        .chain(full.iter())
+        .map(|v| v.item_id)
+        .collect();
+    let sprites = build_panel_item_sprites(&ids).await;
+    publish_build_panel(panel, sprites);
 }
 
 pub fn notify_overlay_state_from_frontend(payload: &serde_json::Value) {
@@ -339,13 +517,23 @@ pub fn notify_overlay_state_from_frontend(payload: &serde_json::Value) {
         || find_field(payload, "completedBuild").is_some()
         || find_field(payload, "completed_build").is_some();
 
+    // Preferred path: the app UI computed with the same engine, so it sends the
+    // whole result — reasons, sample sizes and alternatives included.
+    if let Some(rec_val) = payload.get("buildEngineRec").filter(|v| !v.is_null()) {
+        if let Ok(rec) = serde_json::from_value::<
+            crate::agent::mayhem_engine::MayhemBuildRecommendationResponse,
+        >(rec_val.clone())
+        {
+            tauri::async_runtime::spawn(async move {
+                apply_build_recommendation(&rec).await;
+            });
+            return;
+        }
+    }
+
     if has_item_keys {
         tauri::async_runtime::spawn(async move {
-            let sprites = build_recommended_item_sprites(boots, next_items, completed_build).await;
-            if let Ok(mut lock) = OVERLAY_RECOMMENDED_SPRITES.lock() {
-                *lock = sprites;
-            }
-            refresh_native_overlay();
+            apply_build_ids(boots, next_items, completed_build).await;
         });
     } else {
         refresh_native_overlay();
@@ -627,364 +815,425 @@ pub fn capture_bgra_rect(
     }
 }
 
-#[cfg(windows)]
-pub async fn recognize_text_lines_public_for_test(
-    bgra_bytes: &[u8],
-    width: u32,
-    height: u32,
-) -> Result<Vec<(f32, String)>, String> {
-    recognize_text_lines(bgra_bytes, width, height).await
+// ---------------------------------------------------------------
+// Augment scanning
+// ---------------------------------------------------------------
+//
+// Identification lives in `services::augment_scan`: card art fingerprints pick
+// the augment, and only ambiguous art falls back to a tiny title-strip OCR.
+// Everything expensive (winrate projection, synergy index, verdicts) runs after
+// the cards are already on screen, so F8 never stalls the game polling loop.
+
+/// Screen region that can contain the three cards, as fractions of the game
+/// window. Wide enough for any 16:9 layout, small enough to stay cheap.
+const SCAN_X0: f64 = 0.14;
+const SCAN_Y0: f64 = 0.10;
+const SCAN_W: f64 = 0.72;
+const SCAN_H: f64 = 0.62;
+
+lazy_static::lazy_static! {
+    static ref OVERLAY_APP_HANDLE: Mutex<Option<tauri::AppHandle>> = Mutex::new(None);
+    static ref SCAN_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+    /// Augments picked this game, in pick order. These drive every later scan's
+    /// recommendation and the item build, so they must outlive a card scan.
+    static ref IN_GAME_AUGMENTS: Mutex<Vec<OwnedAugment>> = Mutex::new(Vec::new());
+    static ref IN_GAME_CHAMPION_ID: Mutex<Option<i64>> = Mutex::new(None);
+    /// Fingerprint of the inventory the current build was computed for.
+    static ref INVENTORY_FINGERPRINT: Mutex<u64> = Mutex::new(0);
 }
 
-#[cfg(windows)]
-async fn recognize_text_lines(
-    bgra_bytes: &[u8],
-    width: u32,
-    height: u32,
-) -> Result<Vec<(f32, String)>, String> {
-    use windows::Graphics::Imaging::{BitmapPixelFormat, SoftwareBitmap};
-    use windows::Media::Ocr::OcrEngine;
-    use windows::Storage::Streams::DataWriter;
+/// An augment the player owns this game.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OwnedAugment {
+    pub id: String,
+    pub name: String,
+    pub slot: usize,
+}
 
-    let (scaled_bgra, final_w, final_h) = (bgra_bytes.to_vec(), width, height);
+pub fn owned_augments() -> Vec<OwnedAugment> {
+    IN_GAME_AUGMENTS
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default()
+}
 
-    let engine = OcrEngine::TryCreateFromUserProfileLanguages()
-        .map_err(|e| format!("OCR engine init failed: {e}"))?;
+pub fn owned_augment_ids() -> Vec<String> {
+    owned_augments().into_iter().map(|a| a.id).collect()
+}
 
-    let writer = DataWriter::new().map_err(|e| format!("DataWriter create failed: {e}"))?;
-    writer
-        .WriteBytes(&scaled_bgra)
-        .map_err(|e| format!("DataWriter WriteBytes failed: {e}"))?;
-    let buffer = writer
-        .DetachBuffer()
-        .map_err(|e| format!("DetachBuffer failed: {e}"))?;
-
-    let bitmap = SoftwareBitmap::CreateCopyFromBuffer(
-        &buffer,
-        BitmapPixelFormat::Bgra8,
-        final_w as i32,
-        final_h as i32,
-    )
-    .map_err(|e| format!("SoftwareBitmap creation failed: {e}"))?;
-
-    let ocr_op = engine
-        .RecognizeAsync(&bitmap)
-        .map_err(|e| format!("RecognizeAsync call failed: {e}"))?;
-    let ocr_result = ocr_op
-        .get()
-        .map_err(|e| format!("OCR recognize failed: {e}"))?;
-
-    let lines = ocr_result
-        .Lines()
-        .map_err(|e| format!("Lines access failed: {e}"))?;
-    let count = lines.Size().unwrap_or(0);
-
-    let mut result = Vec::new();
-    for i in 0..count {
-        if let Ok(line) = lines.GetAt(i) {
-            let text = line.Text().map(|h| h.to_string()).unwrap_or_default();
-            let mut rel_x = 0.5f32;
-            if let Ok(words) = line.Words() {
-                if let Ok(w_cnt) = words.Size() {
-                    if w_cnt > 0 && final_w > 0 {
-                        let mut min_x = f32::MAX;
-                        let mut max_x = f32::MIN;
-                        let mut found_word = false;
-                        for w_idx in 0..w_cnt {
-                            if let Ok(w) = words.GetAt(w_idx) {
-                                if let Ok(rect) = w.BoundingRect() {
-                                    min_x = min_x.min(rect.X);
-                                    max_x = max_x.max(rect.X + rect.Width);
-                                    found_word = true;
-                                }
-                            }
-                        }
-                        if found_word {
-                            rel_x = ((min_x + max_x) * 0.5) / (final_w as f32);
-                        } else if let Ok(first_word) = words.GetAt(0) {
-                            if let Ok(rect) = first_word.BoundingRect() {
-                                rel_x = (rect.X + rect.Width * 0.5) / (final_w as f32);
-                            }
-                        }
-                    }
-                }
-            }
-            if !text.trim().is_empty() {
-                result.push((rel_x, text));
-            }
+pub fn remember_champion_id(champion_id: Option<i64>) {
+    if let Ok(mut slot) = IN_GAME_CHAMPION_ID.lock() {
+        if champion_id.is_some() {
+            *slot = champion_id;
         }
     }
-
-    Ok(result)
 }
 
-fn normalize_text(text: &str) -> String {
-    text.chars()
-        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
-        .collect::<String>()
-        .to_lowercase()
+fn remembered_champion_id() -> Option<i64> {
+    IN_GAME_CHAMPION_ID.lock().ok().and_then(|g| *g)
 }
 
-// Levenshtein edit distance for OCR misread tolerance (e.g. "Symphony of War" vs "Symphony of Wor")
-fn levenshtein_distance(s1: &str, s2: &str) -> usize {
-    let v1: Vec<char> = s1.chars().collect();
-    let v2: Vec<char> = s2.chars().collect();
-    let l1 = v1.len();
-    let l2 = v2.len();
-    if l1 == 0 {
-        return l2;
+/// Records a picked augment and refreshes everything that depends on it: the
+/// verdicts of the cards still on screen, the item build, and the app UI.
+/// Returns false when the augment was already owned.
+pub fn add_owned_augment(id: &str, name: &str, slot: usize) -> bool {
+    let id = id.trim();
+    if id.is_empty() {
+        return false;
     }
-    if l2 == 0 {
-        return l1;
-    }
-    let mut prev_row: Vec<usize> = (0..=l2).collect();
-    let mut curr_row: Vec<usize> = vec![0; l2 + 1];
-
-    for i in 0..l1 {
-        curr_row[0] = i + 1;
-        for j in 0..l2 {
-            let cost = if v1[i] == v2[j] { 0 } else { 1 };
-            curr_row[j + 1] = (curr_row[j] + 1)
-                .min(prev_row[j + 1] + 1)
-                .min(prev_row[j] + cost);
-        }
-        prev_row.copy_from_slice(&curr_row);
-    }
-    prev_row[l2]
-}
-
-fn fuzzy_string_similarity(candidate: &str, target: &str) -> f64 {
-    let c = normalize_text(candidate);
-    let t = normalize_text(target);
-    if c.is_empty() || t.is_empty() {
-        return 0.0;
-    }
-    if c == t {
-        return 1.0;
-    }
-    let max_len = c.chars().count().max(t.chars().count());
-    if max_len == 0 {
-        return 1.0;
-    }
-    let dist = levenshtein_distance(&c, &t);
-    1.0 - (dist as f64 / max_len as f64)
-}
-
-fn text_similarity_score(candidate: &str, target: &str) -> f64 {
-    let c = normalize_text(candidate);
-    let t = normalize_text(target);
-    if c.is_empty() || t.is_empty() {
-        return 0.0;
-    }
-    if c == t {
-        return 1.0;
-    }
-    // High fuzzy match
-    let fuzzy = fuzzy_string_similarity(&c, &t);
-    if fuzzy >= 0.80 {
-        return fuzzy;
-    }
-    if c.contains(&t) || t.contains(&c) {
-        let ratio = c.len().min(t.len()) as f64 / c.len().max(t.len()) as f64;
-        return (0.80 + (0.20 * ratio)).max(fuzzy);
-    }
-    let c_words: Vec<&str> = c.split_whitespace().collect();
-    let t_words: Vec<&str> = t.split_whitespace().collect();
-    if c_words.is_empty() || t_words.is_empty() {
-        return 0.0;
-    }
-    let mut matches = 0;
-    for cw in &c_words {
-        if t_words.iter().any(|tw| tw == cw || fuzzy_string_similarity(tw, cw) >= 0.85) {
-            matches += 1;
-        }
-    }
-    ((matches as f64) / (t_words.len().max(c_words.len()) as f64)).max(fuzzy)
-}
-
-pub fn is_category_badge_noise(text: &str) -> bool {
-    let lower = text.trim().to_lowercase();
-    matches!(
-        lower.as_str(),
-        "damage" | "utility" | "resilience" | "speed" | "quest"
-    )
-}
-
-#[cfg(windows)]
-pub async fn recognize_text_lines_multi_pass(
-    bgra_bytes: &[u8],
-    width: u32,
-    height: u32,
-) -> Result<Vec<(f32, String)>, String> {
-    if width == 0 || height == 0 || bgra_bytes.len() < (width * height * 4) as usize {
-        return Ok(Vec::new());
-    }
-
-    let mut combined_lines: Vec<(f32, String)> = Vec::new();
-    let mut seen_lines = std::collections::HashSet::new();
-
-    // Pass 1 & 2: Luminance binarization thresholds (130.0 and 150.0)
-    // Isolates bright card titles and body text from animated card artwork backgrounds
-    for threshold in [130.0f32, 150.0f32] {
-        let mut bin_bgra = Vec::with_capacity((width * height * 4) as usize);
-        for chunk in bgra_bytes.chunks_exact(4) {
-            let b = chunk[0] as f32;
-            let g = chunk[1] as f32;
-            let r = chunk[2] as f32;
-            let lum = 0.299 * r + 0.587 * g + 0.114 * b;
-            let v = if lum > threshold { 255u8 } else { 0u8 };
-            bin_bgra.push(v);
-            bin_bgra.push(v);
-            bin_bgra.push(v);
-            bin_bgra.push(255);
-        }
-
-        if let Ok(lines) = recognize_text_lines(&bin_bgra, width, height).await {
-            for (rx, text) in lines {
-                let col_bucket = if rx < 0.36 { 0 } else if rx < 0.65 { 1 } else { 2 };
-                let key = (col_bucket, text.trim().to_lowercase());
-                if !key.1.is_empty() && seen_lines.insert(key) {
-                    combined_lines.push((rx, text));
-                }
-            }
-        }
-    }
-
-    // Fallback Pass 3: Raw un-binarized image if binarized passes yielded sparse results
-    if combined_lines.len() < 3 {
-        if let Ok(lines) = recognize_text_lines(bgra_bytes, width, height).await {
-            for (rx, text) in lines {
-                let col_bucket = if rx < 0.36 { 0 } else if rx < 0.65 { 1 } else { 2 };
-                let key = (col_bucket, text.trim().to_lowercase());
-                if !key.1.is_empty() && seen_lines.insert(key) {
-                    combined_lines.push((rx, text));
-                }
-            }
-        }
-    }
-
-    Ok(combined_lines)
-}
-
-pub fn match_ocr_lines_to_augments(
-    lines: &[(f32, String)],
-    all_augments: &[MayhemAugmentItem],
-) -> Vec<(usize, MayhemAugmentItem)> {
-    use crate::services::dual_matcher::{normalize_token, DualSignalMatcher};
-
-    let mut columns: [Vec<String>; 3] = [Vec::new(), Vec::new(), Vec::new()];
-
-    for (rel_x, text) in lines {
-        let trimmed = text.trim();
-        if trimmed.is_empty() || is_category_badge_noise(trimmed) {
-            continue;
-        }
-
-        let col = if *rel_x < 0.36 {
-            0
-        } else if *rel_x < 0.65 {
-            1
-        } else {
-            2
+    let augmented = {
+        let Ok(mut list) = IN_GAME_AUGMENTS.lock() else {
+            return false;
         };
-        columns[col].push(trimmed.to_string());
+        if list.iter().any(|a| a.id == id) {
+            false
+        } else {
+            list.push(OwnedAugment {
+                id: id.to_string(),
+                name: name.trim().to_string(),
+                slot,
+            });
+            true
+        }
+    };
+    if !augmented {
+        return false;
     }
-
-    let matcher = DualSignalMatcher::default();
-    let mut matches = Vec::new();
-
-    for (col_idx, col_lines) in columns.iter().enumerate() {
-        if col_lines.is_empty() {
-            continue;
-        }
-
-        let col_joined = col_lines.join(" ");
-        let col_text = normalize_token(&col_joined);
-        let col_words: Vec<String> = col_joined
-            .split_whitespace()
-            .map(normalize_token)
-            .filter(|w| !w.is_empty())
-            .collect();
-
-        let mut best_score = 0.0;
-        let mut best_match: Option<MayhemAugmentItem> = None;
-
-        for aug in all_augments {
-            let (total_score, _title_sc, _desc_sc) =
-                matcher.score_candidate(col_lines, &col_text, &col_words, aug);
-
-            if total_score >= 0.55 && total_score > best_score {
-                best_score = total_score;
-                best_match = Some(aug.clone());
-            }
-        }
-
-        if let Some(matched) = best_match {
-            matches.push((col_idx, matched));
-        }
-    }
-
-    matches
+    let owned = owned_augments();
+    crate::logger::write(
+        crate::logger::Level::Info,
+        "live_overlay",
+        &format!(
+            "picked augment #{} '{}' (now {} owned)",
+            slot + 1,
+            name,
+            owned.len()
+        ),
+        None,
+    );
+    show_overlay_status_toast(&format!("Added {name}"), false);
+    refresh_after_owned_change();
+    true
 }
 
-pub async fn scan_title_band_from_image(
-    img: &image::RgbaImage,
-    champion_id: Option<i64>,
-) -> Result<Vec<OverlayAugmentCard>, String> {
-    #[cfg(not(windows))]
-    {
-        let _ = (img, champion_id);
-        return Ok(Vec::new());
-    }
-
-    #[cfg(windows)]
-    {
-        let width = img.width();
-        let height = img.height();
-        if width == 0 || height == 0 {
-            return Ok(Vec::new());
-        }
-
-        // Crop to the 3-card region (x: 15%..85%, y: 18%..72%) if a full-screen image is passed
-        let (crop_x, crop_y, crop_w, crop_h) = if width > 800 && height > 500 {
-            (
-                (0.15 * width as f64) as u32,
-                (0.18 * height as f64) as u32,
-                (0.70 * width as f64) as u32,
-                (0.54 * height as f64) as u32,
-            )
-        } else {
-            (0, 0, width, height)
-        };
-
-        let mut bgra = Vec::with_capacity((crop_w * crop_h * 4) as usize);
-        for y in crop_y..(crop_y + crop_h) {
-            for x in crop_x..(crop_x + crop_w) {
-                let pixel = img.get_pixel(x, y);
-                bgra.push(pixel[2]); // B
-                bgra.push(pixel[1]); // G
-                bgra.push(pixel[0]); // R
-                bgra.push(pixel[3]); // A
-            }
-        }
-
-        let lines = recognize_text_lines_multi_pass(&bgra, crop_w, crop_h).await?;
-        let resp = crate::services::history::get_mayhem_augments(MayhemAugmentsQuery {
-            champion_id,
-            page_size: Some(1000),
-            ..Default::default()
+/// Records the card in `slot` as picked. Returns the augment, or None when no
+/// cards are on screen (nothing to pick from).
+pub fn record_pick_for_slot(slot: usize) -> Option<OwnedAugment> {
+    let card = {
+        let cards = OVERLAY_OFFERED_CARDS.lock().ok()?;
+        cards.iter().find(|c| c.slot == slot).cloned()?
+    };
+    if add_owned_augment(&card.id, &card.name, slot) {
+        owned_augments().last().cloned()
+    } else {
+        Some(OwnedAugment {
+            id: card.id,
+            name: card.name,
+            slot,
         })
-        .await?;
-
-        let matches = match_ocr_lines_to_augments(&lines, &resp.items);
-        if matches.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        Ok(crate::services::history::enrich_overlay_augment_cards(champion_id, matches).await)
     }
 }
 
+/// Removes the most recently added augment (mis-detected pick).
+pub fn undo_owned_augment() -> Option<OwnedAugment> {
+    let removed = IN_GAME_AUGMENTS.lock().ok().and_then(|mut l| l.pop());
+    if removed.is_some() {
+        refresh_after_owned_change();
+    }
+    removed
+}
+
+pub fn clear_owned_augments() {
+    let had_any = IN_GAME_AUGMENTS
+        .lock()
+        .map(|mut l| !l.is_empty() && {
+            l.clear();
+            true
+        })
+        .unwrap_or(false);
+    if had_any {
+        refresh_after_owned_change();
+    }
+}
+
+/// Forgets picks for a finished game, without recomputing anything.
+pub fn reset_owned_augments() {
+    if let Ok(mut list) = IN_GAME_AUGMENTS.lock() {
+        list.clear();
+    }
+    if let Ok(mut champ) = IN_GAME_CHAMPION_ID.lock() {
+        *champ = None;
+    }
+}
+
+fn refresh_after_owned_change() {
+    let owned = owned_augments();
+    let champion_id = remembered_champion_id();
+    emit_owned_augments(&owned);
+
+    let cards = OVERLAY_OFFERED_CARDS
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default();
+    if !cards.is_empty() {
+        spawn_overlay_card_enrichment(champion_id, owned_augment_ids(), cards);
+    }
+    tauri::async_runtime::spawn(async move {
+        if let Err(err) = recompute_in_game_build(champion_id).await {
+            crate::logger::write(
+                crate::logger::Level::Warn,
+                "live_overlay",
+                &format!("build recompute after pick failed: {err}"),
+                None,
+            );
+        }
+    });
+}
+
+/// Pushes the owned list to the app UI so its chips and its own build recompute
+/// agree with the overlay.
+fn emit_owned_augments(owned: &[OwnedAugment]) {
+    use tauri::Emitter;
+    let Ok(slot) = OVERLAY_APP_HANDLE.lock() else {
+        return;
+    };
+    let Some(app) = slot.as_ref() else {
+        return;
+    };
+    let names: Vec<String> = owned.iter().map(|a| a.name.clone()).collect();
+    let _ = app.emit(
+        "overlay:augments-changed",
+        serde_json::json!({
+            "augments": owned,
+            "augmentIds": names,
+            "count": owned.len(),
+        }),
+    );
+    // The champ-select view merges this into its own chip list.
+    let _ = app.emit(
+        "overlay:state-sync",
+        serde_json::json!({ "source": "overlay_pick", "augmentIds": names }),
+    );
+}
+
+/// Recomputes the recommended item build from the augments actually owned and
+/// pushes it straight to the native overlay, so a pick changes the build even
+/// when no app window is being looked at.
+async fn recompute_in_game_build(champion_id: Option<i64>) -> Result<(), String> {
+    let champ = champion_id.filter(|c| *c > 0).unwrap_or(0) as u32;
+    if champ == 0 {
+        return Ok(());
+    }
+    let owned = owned_augment_ids();
+    let offered: Vec<String> = OVERLAY_OFFERED_CARDS
+        .lock()
+        .map(|cards| cards.iter().map(|c| c.id.clone()).collect())
+        .unwrap_or_default();
+
+    let inventory: Vec<u32> = crate::services::live_game::fetch_live_game_state()
+        .await
+        .map(|state| state.items.iter().map(|i| i.item_id as u32).collect())
+        .unwrap_or_default();
+
+    let rec = crate::commands::build_engine::compute_mayhem_build_recommendation(
+        Some(champ),                                          // champion_id
+        None,                                                 // championId
+        Some(owned),                                          // locked_augments
+        None,                                                 // lockedAugments
+        None,                                                 // owned_augments
+        None,                                                 // ownedAugments
+        Some(inventory),                                      // locked_items
+        None,                                                 // lockedItems
+        None,                                                 // owned_items
+        None,                                                 // ownedItems
+        if offered.is_empty() { None } else { Some(offered) }, // offered_cards
+        None,                                                 // offeredCards
+        None,                                                 // seen_augments
+        None,                                                 // seenAugments
+        None,                                                 // augment_slot
+        None,                                                 // augmentSlot
+        None,                                                 // command_line_reroll
+        None,                                                 // commandLineReroll
+    )
+    .await?;
+
+    apply_build_recommendation(&rec).await;
+    Ok(())
+}
+
+/// Called by the live-game poller when the inventory changes (or the match
+/// starts), so the three rows follow items as well as augments.
+pub fn refresh_in_game_build() {
+    let champion_id = remembered_champion_id();
+    let owned = owned_augment_ids();
+    let inventory_size = INVENTORY_FINGERPRINT.lock().map(|f| *f).unwrap_or(0);
+    crate::logger::write(
+        crate::logger::Level::Debug,
+        "live_overlay",
+        &format!(
+            "build recompute: champion={champion_id:?}, augments={}, inventory={inventory_size}",
+            owned.len()
+        ),
+        None,
+    );
+    tauri::async_runtime::spawn(async move {
+        if let Err(err) = recompute_in_game_build(champion_id).await {
+            crate::logger::write(
+                crate::logger::Level::Warn,
+                "live_overlay",
+                &format!("in-game build recompute failed: {err}"),
+                None,
+            );
+        }
+    });
+}
+
+/// Sorted item ids the build was last computed for. The poller compares against
+/// this so it only recomputes when something was actually bought or sold.
+pub fn inventory_fingerprint(items: &[i64]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut sorted: Vec<i64> = items.iter().copied().filter(|id| *id > 0).collect();
+    sorted.sort_unstable();
+    sorted.dedup();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    sorted.hash(&mut hasher);
+    hasher.finish()
+}
+
+pub fn note_inventory_fingerprint(fingerprint: u64) -> bool {
+    let Ok(mut slot) = INVENTORY_FINGERPRINT.lock() else {
+        return false;
+    };
+    if *slot == fingerprint {
+        return false;
+    }
+    *slot = fingerprint;
+    true
+}
+
+pub fn reset_inventory_fingerprint() {
+    if let Ok(mut slot) = INVENTORY_FINGERPRINT.lock() {
+        *slot = 0;
+    }
+}
+
+/// Geometry-only probe of the augment panel: is it on screen, and where.
+/// Cheap enough to run a few times a second; no fingerprints, no OCR.
+#[cfg(windows)]
+pub fn probe_augment_panel() -> Option<crate::services::augment_scan::PanelProbe> {
+    let rect = league_scan_rect().ok()?;
+    if !rect.is_foreground {
+        return None;
+    }
+    let frame = capture_scan_frame(&rect).ok()?;
+    crate::services::augment_scan::probe_panel(frame)
+}
+
+
+/// The overlay needs an app handle to push background results to the frontend.
+pub fn set_overlay_app_handle(app: tauri::AppHandle) {
+    if let Ok(mut slot) = OVERLAY_APP_HANDLE.lock() {
+        *slot = Some(app);
+    }
+}
+
+fn emit_cards_updated(cards: &[OverlayAugmentCard]) {
+    use tauri::Emitter;
+    if let Ok(slot) = OVERLAY_APP_HANDLE.lock() {
+        if let Some(app) = slot.as_ref() {
+            let _ = app.emit("overlay:cards-updated", cards);
+        }
+    }
+}
+
+pub fn overlay_has_cards() -> bool {
+    OVERLAY_HAS_CARDS.load(Ordering::Relaxed)
+}
+
+fn begin_scan() -> bool {
+    !SCAN_IN_FLIGHT.swap(true, Ordering::SeqCst)
+}
+
+fn end_scan() {
+    SCAN_IN_FLIGHT.store(false, Ordering::SeqCst);
+}
+
+/// True while a scan is running, so hotkey handlers can ignore repeat presses.
+pub fn scan_in_flight() -> bool {
+    SCAN_IN_FLIGHT.load(Ordering::SeqCst)
+}
+
+/// Capture just the band that can hold the three cards.
+#[cfg(windows)]
+fn capture_scan_frame(
+    rect: &GameWindowRect,
+) -> Result<crate::services::augment_scan::Frame, String> {
+    let x = rect.x + (rect.width as f64 * SCAN_X0) as i32;
+    let y = rect.y + (rect.height as f64 * SCAN_Y0) as i32;
+    let w = ((rect.width as f64 * SCAN_W) as i32).max(1);
+    let h = ((rect.height as f64 * SCAN_H) as i32).max(1);
+    let (buf, bw, bh) = capture_bgra_rect(x, y, w, h)?;
+    Ok(crate::services::augment_scan::Frame::from_bgra_capture(
+        buf, bw, bh,
+    ))
+}
+
+/// Window rect of the running game, requiring it to be the foreground window.
+#[cfg(windows)]
+fn league_scan_rect() -> Result<GameWindowRect, String> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{POINT, RECT};
+    use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        FindWindowW, GetClientRect, GetForegroundWindow, IsIconic, IsWindowVisible,
+    };
+
+    let title_wide: Vec<u16> = OsStr::new("League of Legends (TM) Client")
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    unsafe {
+        let hwnd = FindWindowW(std::ptr::null(), title_wide.as_ptr());
+        if hwnd.is_null() || IsWindowVisible(hwnd) == 0 || IsIconic(hwnd) != 0 {
+            return Err("League of Legends window not found or minimised.".to_string());
+        }
+        if GetForegroundWindow() != hwnd {
+            return Err("Focus League of Legends, then press F8.".to_string());
+        }
+
+        let mut rc = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        if GetClientRect(hwnd, &mut rc) == 0 {
+            return Err("Failed to query the League window size.".to_string());
+        }
+        let width = rc.right - rc.left;
+        let height = rc.bottom - rc.top;
+        if width <= 100 || height <= 100 {
+            return Err("League window size is invalid or minimised.".to_string());
+        }
+
+        let mut pt = POINT { x: 0, y: 0 };
+        ClientToScreen(hwnd, &mut pt);
+
+        Ok(GameWindowRect {
+            found: true,
+            is_foreground: true,
+            x: pt.x,
+            y: pt.y,
+            width,
+            height,
+        })
+    }
+}
+
+/// Identifies the offered augment cards. Returns as soon as the names are known;
+/// winrates and verdicts arrive later via `spawn_overlay_card_enrichment`.
 pub async fn scan_in_game_augment_cards(
     champion_id: Option<i64>,
     with_augment_ids: Vec<String>,
@@ -997,90 +1246,259 @@ pub async fn scan_in_game_augment_cards(
 
     #[cfg(windows)]
     {
-        use std::ffi::OsStr;
-        use std::os::windows::ffi::OsStrExt;
-        use windows_sys::Win32::Foundation::{POINT, RECT};
-        use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            FindWindowW, GetClientRect, GetForegroundWindow, IsIconic, IsWindowVisible,
-        };
-
-        let title_wide: Vec<u16> = OsStr::new("League of Legends (TM) Client")
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-
-        let (hwnd, rect) = unsafe {
-            let hwnd = FindWindowW(std::ptr::null(), title_wide.as_ptr());
-            if hwnd.is_null() || IsWindowVisible(hwnd) == 0 || IsIconic(hwnd) != 0 {
-                return Err("League client window not found or minimized. Ensure League is running.".to_string());
-            }
-
-            let fg = GetForegroundWindow();
-            if fg != hwnd {
-                return Err("League client is not in foreground. Please focus League of Legends window.".to_string());
-            }
-
-            let mut rc = RECT {
-                left: 0,
-                top: 0,
-                right: 0,
-                bottom: 0,
-            };
-            if GetClientRect(hwnd, &mut rc) == 0 {
-                return Err("Failed to query League client window dimensions.".to_string());
-            }
-
-            let width = rc.right - rc.left;
-            let height = rc.bottom - rc.top;
-            if width <= 100 || height <= 100 {
-                return Err("League client window size is invalid or minimized.".to_string());
-            }
-
-            let mut pt = POINT { x: 0, y: 0 };
-            ClientToScreen(hwnd, &mut pt);
-
-            (
-                hwnd,
-                GameWindowRect {
-                    found: true,
-                    is_foreground: true,
-                    x: pt.x,
-                    y: pt.y,
-                    width,
-                    height,
-                },
-            )
-        };
-
-        let _ = hwnd;
-
-        // Crop 3-card area (x: 15%..85%, y: 18%..72%) covering titles and descriptions while excluding HUD/top-bar
-        let strip_x = rect.x + (rect.width as f64 * 0.15) as i32;
-        let strip_y = rect.y + (rect.height as f64 * 0.18) as i32;
-        let strip_w = (rect.width as f64 * 0.70) as i32;
-        let strip_h = (rect.height as f64 * 0.54) as i32;
-
-        let (bgra, bw, bh) = capture_bgra_rect(strip_x, strip_y, strip_w, strip_h)?;
-        let lines = recognize_text_lines_multi_pass(&bgra, bw, bh).await?;
-        if lines.is_empty() {
-            return Err("No text recognized in augment selection area. Ensure augment selection is open.".to_string());
+        if !begin_scan() {
+            return Err("A scan is already running.".to_string());
         }
+        let result = scan_in_game_augment_cards_inner(champion_id, with_augment_ids).await;
+        end_scan();
+        result
+    }
+}
 
-        let resp = crate::services::history::get_mayhem_augments(MayhemAugmentsQuery {
-            champion_id,
+#[cfg(windows)]
+async fn scan_in_game_augment_cards_inner(
+    champion_id: Option<i64>,
+    with_augment_ids: Vec<String>,
+) -> Result<Vec<OverlayAugmentCard>, String> {
+    remember_champion_id(champion_id);
+
+    // Cards animate in, so a capture taken too early yields half a panel. Retry
+    // instead of making the player press F8 again.
+    let scanner = crate::services::augment_scan::scanner()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut last_error: Option<String> = None;
+    let mut identified = Vec::new();
+    for attempt in 0..SCAN_ATTEMPTS {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(SCAN_RETRY_MS)).await;
+        }
+        let rect = league_scan_rect()?;
+        let frame = capture_scan_frame(&rect)?;
+        match scanner.identify(&frame).await {
+            Ok(cards) if !cards.is_empty() => {
+                let complete = cards.len() >= 3;
+                identified = cards;
+                if complete {
+                    break;
+                }
+            }
+            Ok(_) => last_error = Some("No augment cards found on screen.".to_string()),
+            Err(err) => last_error = Some(err.to_string()),
+        }
+    }
+
+    if identified.is_empty() {
+        return Err(last_error.unwrap_or_else(|| "No augment cards found on screen.".to_string()));
+    }
+
+    // The pool key is the id the mode's own statistics are keyed by. Resolving it
+    // by name picked the wrong numeric id for augments that exist in both Arena
+    // and ARAM (Jeweled Gauntlet was the visible one: 0 games, always).
+    let mut canonical: Option<std::collections::HashMap<String, String>> = None;
+    let mut cards: Vec<OverlayAugmentCard> = Vec::with_capacity(identified.len());
+    for id in &identified {
+        let key = id.entry.key.trim();
+        let name_key = id.entry.name.trim().to_lowercase();
+        let resolved = if key.is_empty() || key.chars().all(|c| !c.is_ascii_digit()) {
+            let map = match canonical.as_ref() {
+                Some(map) => map,
+                None => {
+                    let names: Vec<String> =
+                        identified.iter().map(|c| c.entry.name.clone()).collect();
+                    let map = crate::services::history::resolve_canonical_augment_ids(&names).await;
+                    canonical = Some(map);
+                    canonical.as_ref().unwrap()
+                }
+            };
+            map.get(&name_key).cloned().unwrap_or_else(|| key.to_string())
+        } else {
+            key.to_string()
+        };
+        cards.push(OverlayAugmentCard {
+            slot: id.slot,
+            id: resolved,
+            name: id.entry.name.clone(),
+            rarity: id.entry.rarity.clone(),
+            pending: true,
+            unconfirmed: id.ambiguous,
+            ..Default::default()
+        });
+    }
+
+    // Cards already visible: show them immediately, then fill in the numbers.
+    update_overlay_cards(&cards);
+    let _ = emit_cards_updated_result(&cards);
+
+    let mut locked = with_augment_ids;
+    for id in owned_augment_ids() {
+        if !locked.contains(&id) {
+            locked.push(id);
+        }
+    }
+    spawn_overlay_card_enrichment(champion_id, locked, cards.clone());
+    Ok(cards)
+}
+
+/// Number of captures tried before giving up on a card scan.
+const SCAN_ATTEMPTS: usize = 3;
+/// Delay between those captures.
+const SCAN_RETRY_MS: u64 = 130;
+
+fn emit_cards_updated_result(cards: &[OverlayAugmentCard]) -> Result<(), String> {
+    use tauri::Emitter;
+    if let Ok(slot) = OVERLAY_APP_HANDLE.lock() {
+        if let Some(app) = slot.as_ref() {
+            return app
+                .emit("overlay:cards-updated", cards)
+                .map_err(|e| e.to_string());
+        }
+    }
+    Ok(())
+}
+
+/// Fills in winrates and verdicts after the cards are already visible.
+pub fn spawn_overlay_card_enrichment(
+    champion_id: Option<i64>,
+    locked_augments: Vec<String>,
+    base: Vec<OverlayAugmentCard>,
+) {
+    if base.is_empty() {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        let started = std::time::Instant::now();
+        let mut cards = base;
+
+        // Global projection only: the champion-scoped recompute costs tens of
+        // seconds and is not needed to price an offered card.
+        if let Ok(resp) = crate::services::history::get_mayhem_augments(MayhemAugmentsQuery {
             page_size: Some(1000),
-            with_augment_ids: Some(with_augment_ids),
             ..Default::default()
         })
-        .await?;
-
-        let matches = match_ocr_lines_to_augments(&lines, &resp.items);
-        if matches.is_empty() {
-            return Err("No augment cards found on screen. Ensure League is in foreground and augment selection is open.".to_string());
+        .await
+        {
+            let mut by_id = std::collections::HashMap::new();
+            let mut by_name = std::collections::HashMap::new();
+            for item in resp.items {
+                by_name.insert(item.name.trim().to_lowercase(), item.clone());
+                by_id.insert(item.id.clone(), item);
+            }
+            for card in cards.iter_mut() {
+                // Identity by id first, then by display name: ids drift between
+                // patches and between the Arena and ARAM variants of an augment.
+                let item = by_id
+                    .get(&card.id)
+                    .or_else(|| by_name.get(&card.name.trim().to_lowercase()));
+                if let Some(item) = item {
+                    card.wpa = item.wpa;
+                    card.win_rate = if item.win_rate > 0.0 {
+                        item.win_rate
+                    } else {
+                        item.global_win_rate
+                    };
+                    card.games = if item.games > 0 {
+                        item.games
+                    } else {
+                        item.global_games
+                    };
+                }
+            }
         }
 
-        Ok(crate::services::history::enrich_overlay_augment_cards(champion_id, matches).await)
+        let inventory = crate::services::live_game::fetch_live_game_state()
+            .await
+            .map(|state| {
+                state
+                    .items
+                    .iter()
+                    .map(|i| i.item_id as u32)
+                    .collect::<Vec<u32>>()
+            })
+            .unwrap_or_default();
+        apply_card_decisions(champion_id, &locked_augments, &inventory, &mut cards).await;
+
+        // Whatever happened above, the cards are no longer "reading stats".
+        for card in cards.iter_mut() {
+            card.pending = false;
+        }
+
+        update_overlay_cards(&cards);
+        emit_cards_updated(&cards);
+        crate::logger::write(
+            crate::logger::Level::Info,
+            "live_overlay",
+            &format!(
+                "card enrichment finished in {}ms ({} cards)",
+                started.elapsed().as_millis(),
+                cards.len()
+            ),
+            None,
+        );
+    });
+}
+
+async fn apply_card_decisions(
+    champion_id: Option<i64>,
+    locked_augments: &[String],
+    inventory_item_ids: &[u32],
+    cards: &mut [OverlayAugmentCard],
+) {
+    let Some(champ_id) = champion_id.filter(|id| *id > 0) else {
+        return;
+    };
+    if cards.is_empty() {
+        return;
+    }
+    if crate::commands::build_engine::ensure_index_ready()
+        .await
+        .is_err()
+    {
+        return;
+    }
+
+    let tier = crate::agent::mayhem_engine::get_augment_meta(&cards[0].id).tier;
+    let offered: Vec<u32> = cards
+        .iter()
+        .map(|c| crate::agent::mayhem_engine::augment_numeric_id(&c.id))
+        .collect();
+    let locked: Vec<u32> = locked_augments
+        .iter()
+        .map(|s| crate::agent::mayhem_engine::augment_numeric_id(s))
+        .collect();
+
+    let decisions = {
+        let Ok(read) = crate::agent::mayhem_engine::MAYHEM_SYNERGY_INDEX.read() else {
+            return;
+        };
+        let Some(index) = read.as_ref() else {
+            return;
+        };
+        crate::agent::mayhem_engine::decide_offered_cards(
+            index,
+            champ_id as u16,
+            &offered,
+            &locked,
+            inventory_item_ids,
+            &tier,
+            &[],
+        )
+    };
+
+    for (card, decision) in cards.iter_mut().zip(decisions.iter()) {
+        card.wpa = decision.wpa;
+        card.win_rate = decision.win_rate;
+        card.score = Some(decision.effect);
+        card.decision = Some(decision.verdict.to_string());
+        card.rank = Some(decision.rank);
+        card.win_rate_low = Some(decision.win_rate_low);
+        card.win_rate_high = Some(decision.win_rate_high);
+        card.reroll_gain = Some(decision.reroll_gain);
+        card.reroll_probability = Some(decision.reroll_probability);
+        if card.games == 0 {
+            card.games = decision.games as usize;
+        }
     }
 }
 
@@ -1089,138 +1507,69 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_levenshtein_and_fuzzy_similarity() {
-        assert_eq!(levenshtein_distance("Mystic Punch", "Mystic Punch"), 0);
-        assert_eq!(levenshtein_distance("Clown Colege", "Clown College"), 1);
-        assert!(fuzzy_string_similarity("Clown Colege", "Clown College") >= 0.90);
-        assert!(fuzzy_string_similarity("Symphony of War", "Symphony of Wor") >= 0.90);
+    fn scan_frame_from_capture_forces_opaque_alpha() {
+        // GDI leaves the fourth byte at zero; WinRT OCR treats that as fully
+        // transparent, so the frame constructor must repair it.
+        let raw = vec![10u8, 20, 30, 0, 40, 50, 60, 0];
+        let frame = crate::services::augment_scan::Frame::from_bgra_capture(raw, 2, 1);
+        assert_eq!(frame.bgra[3], 255);
+        assert_eq!(frame.bgra[7], 255);
+        assert_eq!(frame.bgra[0], 10);
     }
 
-    #[test]
-    fn test_is_category_badge_noise() {
-        assert!(is_category_badge_noise("Damage"));
-        assert!(is_category_badge_noise("UTILITY"));
-        assert!(is_category_badge_noise(" Resilience "));
-        assert!(is_category_badge_noise("speed"));
-        assert!(is_category_badge_noise("quest"));
-        assert!(!is_category_badge_noise("Giant Slayer"));
-    }
-
-    #[test]
-    fn test_match_ocr_lines_to_augments() {
-        let fake_augments = vec![
-            MayhemAugmentItem {
-                id: "1".into(),
-                name: "Phenomenal Evil".into(),
-                icon_url: "".into(),
-                rarity: Some("Gold".into()),
-                tooltip: None,
-                categories: vec![],
-                games: 10,
-                wins: 5,
-                win_rate: 0.5,
-                wpa: 0.02,
-                pick_rate: 0.1,
-                global_games: 100,
-                global_win_rate: 0.5,
-                global_wpa: 0.02,
-                global_pick_rate: 0.1,
-                aliases: vec!["Phenomenal Evil".into(), "Phenomenal Evil".into()]
-            },
-            MayhemAugmentItem {
-                id: "2".into(),
-                name: "Eureka".into(),
-                icon_url: "".into(),
-                rarity: Some("Prismatic".into()),
-                tooltip: None,
-                categories: vec![],
-                games: 10,
-                wins: 5,
-                win_rate: 0.5,
-                wpa: 0.05,
-                pick_rate: 0.1,
-                global_games: 100,
-                global_win_rate: 0.5,
-                global_wpa: 0.05,
-                global_pick_rate: 0.1,
-                aliases: vec!["Eureka".into(), "Eureka".into()],
-            },
-        ];
-
-        let lines = vec![
-            (0.1f32, "Damage".to_string()),
-            (0.2f32, "Phenomenal Evil".to_string()),
-            (0.5f32, "Utility".to_string()),
-            (0.55f32, "Eureka".to_string()),
-        ];
-
-        let matched = match_ocr_lines_to_augments(&lines, &fake_augments);
-        assert_eq!(matched.len(), 2);
-        assert_eq!(matched[0].0, 0);
-        assert_eq!(matched[0].1.name, "Phenomenal Evil");
-        assert_eq!(matched[1].0, 1);
-        assert_eq!(matched[1].1.name, "Eureka");
-    }
-
+    /// The reported bug: picking an augment changed nothing. This walks the same
+    /// path a pick takes and requires the recommendation (and the item list) to move.
     #[tokio::test]
-    #[cfg(windows)]
-    async fn test_scan_title_band_from_example_image() {
-        let manifest_dir = env!("CARGO_MANIFEST_DIR");
-        let path = std::path::Path::new(manifest_dir)
-            .parent()
-            .unwrap()
-            .join("@llm")
-            .join("cache")
-            .join("augment-selection-examples")
-            .join("Screen15.png");
-
-        if !path.exists() {
-            eprintln!("Skipping test, image file not found: {:?}", path);
-            return;
+    async fn a_picked_augment_changes_the_build() {
+        let db = dirs::data_local_dir()
+            .map(|d| d.join("lcu-companion").join("global-aram.db"))
+            .unwrap_or_default();
+        if !db.exists() {
+            return; // no statistics database on this machine
         }
 
-        let dynamic_img = match image::open(&path) {
-            Ok(img) => img,
-            Err(e) => {
-                eprintln!("Failed to open test image: {e}");
-                return;
-            }
+        let with = |augments: Vec<String>| {
+            crate::commands::build_engine::compute_mayhem_build_recommendation(
+                Some(222),
+                None,
+                Some(augments),
+                None,
+                None,
+                None,
+                Some(Vec::new()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
         };
 
-        let rgba = dynamic_img.to_rgba8();
-        let width = rgba.width();
-        let height = rgba.height();
+        let before = with(Vec::new()).await.expect("baseline build");
+        let after = with(vec!["Jeweled Gauntlet".to_string()])
+            .await
+            .expect("build with the pick");
 
-        // Crop title strip: rx = 0.21, ry = 0.36, rw = 0.58, rh = 0.12
-        let strip_x = (width as f64 * 0.21) as u32;
-        let strip_y = (height as f64 * 0.36) as u32;
-        let strip_w = (width as f64 * 0.58) as u32;
-        let strip_h = (height as f64 * 0.12) as u32;
+        let items_before: Vec<u32> = before.next_items.iter().map(|i| i.item_id).collect();
+        let items_after: Vec<u32> = after.next_items.iter().map(|i| i.item_id).collect();
+        assert!(
+            (before.build_wpa - after.build_wpa).abs() > 1e-9 || items_before != items_after,
+            "picking an augment must change the build (wpa {:.5} vs {:.5}, items {items_before:?} vs {items_after:?})",
+            before.build_wpa,
+            after.build_wpa
+        );
+    }
 
-        let cropped = image::imageops::crop_imm(&rgba, strip_x, strip_y, strip_w, strip_h).to_image();
-        let (cw, ch) = cropped.dimensions();
-        assert!(cw > 0 && ch > 0);
-
-        let mut bgra = Vec::with_capacity((cw * ch * 4) as usize);
-        for pixel in cropped.pixels() {
-            bgra.push(pixel[2]);
-            bgra.push(pixel[1]);
-            bgra.push(pixel[0]);
-            bgra.push(pixel[3]);
-        }
-
-        let lines = recognize_text_lines(&bgra, cw, ch).await;
-        match lines {
-            Ok(lines) => {
-                println!("OCR detected {} lines from Screen15.png title band:", lines.len());
-                for (rel_x, text) in &lines {
-                    println!("  [{:.2}] {}", rel_x, text);
-                }
-                assert!(!lines.is_empty(), "Expected OCR to find title band lines");
-            }
-            Err(e) => {
-                eprintln!("OCR recognition failed in test environment: {e}");
-            }
-        }
+    #[test]
+    fn scan_region_covers_the_card_area() {
+        // Cards span roughly x 0.22..0.78 and y 0.17..0.66 of the window.
+        assert!(SCAN_X0 < 0.22 && SCAN_X0 + SCAN_W > 0.78);
+        assert!(SCAN_Y0 < 0.17 && SCAN_Y0 + SCAN_H > 0.66);
     }
 }

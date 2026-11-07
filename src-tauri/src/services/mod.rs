@@ -1,7 +1,7 @@
 pub mod asset_cache;
+pub mod augment_scan;
 pub mod champions;
 pub mod friends;
-pub mod dual_matcher;
 pub mod history;
 pub mod lcu_client;
 pub mod lcu_perks;
@@ -9,6 +9,7 @@ pub mod lcu_websocket;
 pub mod live_game;
 pub mod live_overlay;
 pub mod native_overlay;
+pub mod overlay_presenter;
 pub mod patch_manager;
 pub mod rune_stats;
 pub mod rune_store;

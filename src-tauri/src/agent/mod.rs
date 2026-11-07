@@ -19,6 +19,8 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::Connector;
 
+pub mod mayhem_engine;
+
 const PORO_SNAX_IDS: [i64; 2] = [2050, 2052];
 
 pub fn is_boot_item_id(id: i64) -> bool {
@@ -71,6 +73,7 @@ fn invalidate_statistics_projections(connection: &Connection) -> Result<(), Stri
         cache.clear();
     }
     crate::commands::agent::invalidate_enriched_statistics_cache();
+    mayhem_engine::invalidate_synergy_index();
     Ok(())
 }
 
@@ -82,6 +85,7 @@ pub fn invalidate_projection_memory_cache() {
         cache.clear();
     }
     crate::commands::agent::invalidate_enriched_statistics_cache();
+    mayhem_engine::invalidate_synergy_index();
 }
 
 #[derive(Debug, Deserialize)]
