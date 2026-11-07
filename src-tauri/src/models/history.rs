@@ -240,6 +240,14 @@ pub struct OverlayAugmentCard {
     pub reroll_gain: Option<f64>,
     #[serde(default)]
     pub reroll_probability: Option<f64>,
+    /// True while the numbers are still being computed, so the overlay can say
+    /// "reading stats…" instead of flashing 0.0% WR.
+    #[serde(default)]
+    pub pending: bool,
+    /// The card was named from a guess: its art is shared by several augments
+    /// and the title could not be read. Do not present the name as fact.
+    #[serde(default)]
+    pub unconfirmed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

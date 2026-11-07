@@ -158,7 +158,16 @@ fn augment_catalog_cache_path() -> PathBuf {
     history_data_dir()
         .join("cache")
         .join("match-history")
-        .join("augment_catalog_v11.json")
+        .join("augment_catalog_v12.json")
+}
+
+/// The ARAM Mayhem augment pool extracted from `kiwi.bin.json` (the mode's own
+/// augment table). Used by the overlay scanner to build icon fingerprints.
+fn aram_pool_cache_path() -> PathBuf {
+    history_data_dir()
+        .join("cache")
+        .join("match-history")
+        .join("aram_augment_pool_v2.json")
 }
 
 /// Clears all in-memory and on-disk item, map, and augment caches (triggered on patch updates).
@@ -168,9 +177,14 @@ pub async fn invalidate_history_caches() {
     *AUGMENTS_CATALOG_CACHE.write().await = None;
     *RESOLVED_AUGMENTS_CACHE.write().await = None;
     *SPELLS_CACHE.write().await = None;
+    *ARAM_POOL_CACHE.write().await = None;
+    if let Ok(mut ids) = ARAM_NAME_TO_ID.write() {
+        ids.clear();
+    }
     invalidate_mayhem_builds_cache();
     let _ = fs::remove_file(augment_resolution_cache_path());
     let _ = fs::remove_file(augment_catalog_cache_path());
+    let _ = fs::remove_file(aram_pool_cache_path());
 }
 
 fn read_augment_resolution_cache() -> HashMap<String, MatchHistoryAugmentInfo> {
@@ -278,6 +292,26 @@ struct AugmentCatalogEntry {
     tooltip: Option<String>,
 }
 
+/// One augment offered by ARAM Mayhem, as identified on screen by the overlay
+/// scanner. Everything here comes from the mode's own augment table
+/// (`kiwi.bin.json`), so it is exactly what the game can put on a card.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AugmentScanEntry {
+    /// Canonical id used everywhere else in the app (numeric platform id).
+    pub key: String,
+    pub name: String,
+    pub name_id: String,
+    /// Large card art (256x256 PNG on CDragon).
+    pub icon_url: String,
+    pub rarity: Option<String>,
+    pub categories: Vec<String>,
+    /// Plain-text card description ("Damaging enemy champions with ... heals
+    /// you."). Shared-art augments are told apart by this text, since their art
+    /// is one generic icon per rarity.
+    #[serde(default)]
+    pub description: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedSpellInfo {
     pub id: u64,
@@ -291,6 +325,13 @@ lazy_static! {
     static ref MAPS_CACHE: RwLock<Option<HashMap<u16, String>>> = RwLock::new(None);
     static ref AUGMENTS_CATALOG_CACHE: RwLock<Option<HashMap<String, AugmentCatalogEntry>>> =
         RwLock::new(None);
+    static ref ARAM_POOL_CACHE: RwLock<Option<Vec<AugmentScanEntry>>> = RwLock::new(None);
+    /// Lowercase augment name -> the numeric id ARAM Mayhem actually uses, plus
+    /// every numeric key mapped to itself. Built from the mode pool, so it cannot
+    /// disagree with the statistics the same patch produced. Plain std lock: it is
+    /// read from synchronous code (candidate scoring) too.
+    static ref ARAM_NAME_TO_ID: std::sync::RwLock<HashMap<String, u32>> =
+        std::sync::RwLock::new(HashMap::new());
     static ref RESOLVED_AUGMENTS_CACHE: RwLock<Option<HashMap<String, MatchHistoryAugmentInfo>>> =
         RwLock::new(None);
     static ref SPELLS_CACHE: RwLock<Option<HashMap<u64, CachedSpellInfo>>> = RwLock::new(None);
@@ -1327,9 +1368,343 @@ async fn get_augment_catalog_map() -> Result<HashMap<String, AugmentCatalogEntry
         }
     }
 
+    // Persist the ARAM Mayhem pool straight from the mode's augment table. The
+    // overlay scanner fingerprints exactly these cards, so it must not guess.
+    if let Some(ref kiwi_val) = kiwi_res {
+        let pool = extract_aram_pool(kiwi_val, &stringtable_entries, &catalog_map);
+        if !pool.is_empty() {
+            if let Some(parent) = aram_pool_cache_path().parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            if let Ok(bytes) = serde_json::to_vec(&pool) {
+                let _ = fs::write(aram_pool_cache_path(), bytes);
+            }
+            publish_pool_ids(&pool);
+            *ARAM_POOL_CACHE.write().await = Some(pool);
+        }
+    }
+
     let mut cache = AUGMENTS_CATALOG_CACHE.write().await;
     *cache = Some(catalog_map.clone());
     Ok(catalog_map)
+}
+
+/// The augments ARAM Mayhem can actually offer, newest patch. Reads the
+/// per-patch cache written while building the augment catalog; builds it on
+/// first use if needed.
+pub async fn get_aram_augment_pool() -> Vec<AugmentScanEntry> {
+    {
+        let cache = ARAM_POOL_CACHE.read().await;
+        if let Some(pool) = cache.as_ref() {
+            return pool.clone();
+        }
+    }
+    let disk = fs::read(aram_pool_cache_path())
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Vec<AugmentScanEntry>>(&bytes).ok())
+        .filter(|pool| !pool.is_empty());
+    if let Some(pool) = disk {
+        publish_pool_ids(&pool);
+        *ARAM_POOL_CACHE.write().await = Some(pool.clone());
+        return pool;
+    }
+
+    // No pool file yet (first run after an upgrade, or the catalog came from its
+    // disk cache). Fetch the mode's augment table and derive it.
+    let catalog = get_augment_catalog_map().await.unwrap_or_default();
+    let pool = fetch_aram_pool(&catalog).await;
+    if !pool.is_empty() {
+        if let Some(parent) = aram_pool_cache_path().parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if let Ok(bytes) = serde_json::to_vec(&pool) {
+            let _ = fs::write(aram_pool_cache_path(), bytes);
+        }
+        publish_pool_ids(&pool);
+        *ARAM_POOL_CACHE.write().await = Some(pool.clone());
+    }
+    pool
+}
+
+/// Rebuilds the sync name/key -> numeric id registry from a pool.
+fn publish_pool_ids(pool: &[AugmentScanEntry]) {
+    let mut map: HashMap<String, u32> = HashMap::with_capacity(pool.len() * 2);
+    for entry in pool {
+        let Ok(id) = entry.key.trim().parse::<u32>() else {
+            continue;
+        };
+        let name = entry.name.trim().to_lowercase();
+        if !name.is_empty() {
+            map.insert(name, id);
+        }
+        map.insert(entry.key.trim().to_string(), id);
+    }
+    if let Ok(mut lock) = ARAM_NAME_TO_ID.write() {
+        *lock = map;
+    }
+}
+
+fn load_pool_ids_from_disk() {
+    if let Ok(bytes) = fs::read(aram_pool_cache_path()) {
+        if let Ok(pool) = serde_json::from_slice::<Vec<AugmentScanEntry>>(&bytes) {
+            if !pool.is_empty() {
+                publish_pool_ids(&pool);
+            }
+        }
+    }
+}
+
+/// Numeric id ARAM Mayhem uses for an augment referenced by display name or id.
+/// This is the only mapping that agrees with the mode's own augment table, so
+/// screen-scanned names resolve to the same id the statistics are keyed by.
+pub fn aram_augment_id_for(name_or_id: &str) -> Option<u32> {
+    let key = name_or_id.trim().to_lowercase();
+    if key.is_empty() {
+        return None;
+    }
+    if let Some(id) = ARAM_NAME_TO_ID
+        .read()
+        .ok()
+        .and_then(|map| map.get(&key).copied())
+    {
+        return Some(id);
+    }
+    if let Ok(id) = key.parse::<u32>() {
+        return Some(id);
+    }
+    load_pool_ids_from_disk();
+    ARAM_NAME_TO_ID
+        .read()
+        .ok()
+        .and_then(|map| map.get(&key).copied())
+}
+
+/// Display name for a numeric ARAM augment id, if the pool knows it.
+pub fn aram_augment_name_for(id: u32) -> Option<String> {
+    let pool = ARAM_POOL_CACHE.try_read().ok()?;
+    let pool = pool.as_ref()?;
+    pool.iter()
+        .find(|e| e.key.trim().parse::<u32>().ok() == Some(id))
+        .map(|e| e.name.clone())
+}
+
+/// Downloads just the mode augment table and derives the pool from it.
+async fn fetch_aram_pool(
+    catalog: &HashMap<String, AugmentCatalogEntry>,
+) -> Vec<AugmentScanEntry> {
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return Vec::new(),
+    };
+    let Ok(kiwi) = client
+        .get(CDRAGON_KIWI_AUGMENTS_URL)
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+    else {
+        return Vec::new();
+    };
+    let Ok(kiwi) = kiwi.json::<Value>().await else {
+        return Vec::new();
+    };
+
+    // Names normally come from the catalog; only fetch the stringtable when the
+    // catalog has nothing to offer.
+    let mut stringtable: HashMap<String, String> = HashMap::new();
+    if catalog.is_empty() {
+        if let Ok(resp) = client.get(CDRAGON_STRINGTABLE_URL).send().await {
+            if let Ok(val) = resp.json::<Value>().await {
+                if let Some(entries) = val.get("entries").and_then(Value::as_object) {
+                    for (k, v) in entries {
+                        if let Some(s) = v.as_str() {
+                            stringtable.insert(k.to_lowercase(), s.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    extract_aram_pool(&kiwi, &stringtable, catalog)
+}
+
+/// Resolves the app's canonical augment id for a display name, using the same
+/// preference order as `get_mayhem_augments` (numeric platform id wins).
+pub async fn resolve_canonical_augment_ids(names: &[String]) -> HashMap<String, String> {
+    // The mode pool is authoritative: the generic catalog carries several numeric
+    // ids per name (Arena and ARAM), and picking the wrong one silently loses the
+    // augment's statistics.
+    let pool = get_aram_augment_pool().await;
+    let wanted: std::collections::HashSet<String> = names
+        .iter()
+        .map(|n| n.trim().to_lowercase())
+        .filter(|n| !n.is_empty())
+        .collect();
+    let mut out: HashMap<String, String> = HashMap::new();
+    for entry in &pool {
+        let name_low = entry.name.trim().to_lowercase();
+        if wanted.contains(&name_low) {
+            out.entry(name_low).or_insert_with(|| entry.key.clone());
+        }
+    }
+
+    let catalog = get_augment_catalog_map().await.unwrap_or_default();
+    for (key, entry) in &catalog {
+        let name_low = entry.name.trim().to_lowercase();
+        if out.contains_key(&name_low) || !wanted.contains(&name_low) {
+            continue;
+        }
+        let numeric = key.chars().all(|c| c.is_ascii_digit());
+        match out.get(&name_low) {
+            Some(existing) if !existing.chars().all(|c| c.is_ascii_digit()) && numeric => {
+                out.insert(name_low, key.clone());
+            }
+            Some(_) => {}
+            None => {
+                out.insert(name_low, key.clone());
+            }
+        }
+    }
+    out
+}
+
+/// Pulls every `AugmentData` entry out of `kiwi.bin.json`. That table is the
+/// mode's own definition of what can be offered, including card art and rarity.
+///
+/// `kiwi.bin.json` is a flat map of slash-separated asset paths, but the walk is
+/// recursive so a nested layout would still work.
+fn extract_aram_pool(
+    kiwi: &Value,
+    stringtable: &HashMap<String, String>,
+    catalog: &HashMap<String, AugmentCatalogEntry>,
+) -> Vec<AugmentScanEntry> {
+    let mut raw: Vec<&Value> = Vec::new();
+    collect_augment_data(kiwi, &mut raw);
+
+    let mut pool: Vec<AugmentScanEntry> = Vec::new();
+    let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for value in raw {
+        let Some(name_id) = value.get("AugmentNameId").and_then(Value::as_str) else {
+            continue;
+        };
+        let entry = catalog
+            .get(name_id)
+            .or_else(|| catalog.get(&name_id.to_lowercase()));
+        let name = entry
+            .map(|e| e.name.clone())
+            .filter(|n| !n.trim().is_empty() && n != name_id)
+            .or_else(|| {
+                value
+                    .get("NameTra")
+                    .and_then(Value::as_str)
+                    .and_then(|k| stringtable.get(&k.to_lowercase()).cloned())
+            })
+            .unwrap_or_else(|| name_id.to_string());
+
+        let name_low = name.trim().to_lowercase();
+        if name_low.is_empty() || !seen_names.insert(name_low) {
+            continue;
+        }
+
+        // `AugmentLargeIconPath` is the art the card actually shows.
+        let icon_path = value
+            .get("AugmentLargeIconPath")
+            .or_else(|| value.get("AugmentSmallIconPath"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let icon_url = normalize_augment_icon_url(icon_path);
+
+        let rarity = value.get("rarity").and_then(|r| match r {
+            Value::Number(n) => match n.as_i64() {
+                Some(0) => Some("silver".to_string()),
+                Some(1) => Some("gold".to_string()),
+                Some(2) => Some("prismatic".to_string()),
+                _ => None,
+            },
+            Value::String(s) => match s.to_lowercase().as_str() {
+                "ksilver" | "silver" => Some("silver".to_string()),
+                "kgold" | "gold" => Some("gold".to_string()),
+                "kprismatic" | "prismatic" => Some("prismatic".to_string()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .or_else(|| entry.and_then(|e| e.rarity.clone()));
+
+        let tooltip = entry.and_then(|e| e.tooltip.clone());
+        let categories = categorize_augment(&name, tooltip.as_deref());
+
+        // Card text, for augments whose art is a shared placeholder icon.
+        let description = value
+            .get("AugmentTooltipTra")
+            .and_then(Value::as_str)
+            .and_then(|k| stringtable.get(&k.to_lowercase()).cloned())
+            .filter(|t| !t.trim().is_empty() && !t.starts_with("{{"))
+            .or_else(|| {
+                value
+                    .get("DescriptionTra")
+                    .and_then(Value::as_str)
+                    .and_then(|k| stringtable.get(&k.to_lowercase()).cloned())
+                    .filter(|t| !t.trim().is_empty())
+            })
+            .or_else(|| tooltip.clone())
+            .map(|t| plain_augment_text(&t))
+            .unwrap_or_default();
+
+        let key = value
+            .get("AugmentPlatformId")
+            .and_then(value_to_id)
+            .unwrap_or_else(|| name_id.to_string());
+
+        pool.push(AugmentScanEntry {
+            key,
+            name,
+            name_id: name_id.to_string(),
+            icon_url,
+            rarity,
+            categories,
+            description,
+        });
+    }
+
+    pool
+}
+
+/// Strips LoL markup from tooltip text: `<healing>`, `{{SpellName}}`,
+/// `@Lifesteal*100@`, `%` and HTML breaks. What is left is what the card shows,
+/// minus the ability name the game substitutes for `{{SpellName}}`.
+fn plain_augment_text(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw;
+    loop {
+        let next = ["<", "{{", "@"].iter().filter_map(|open| {
+            rest.find(open).map(|i| (i, *open))
+        }).min_by_key(|(i, _)| *i);
+        let Some((i, open)) = next else {
+            out.push_str(rest);
+            break;
+        };
+        out.push_str(&rest[..i]);
+        let close = match open {
+            "{{" => "}}",
+            "@" => "@",
+            _ => ">",
+        };
+        match rest[i + open.len()..].find(close) {
+            Some(j) => rest = &rest[i + open.len() + j + close.len()..],
+            None => break,
+        }
+    }
+    out.replace("<br>", " ")
+        .replace(char::is_control, " ")
+        .replace('%', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn populate_kiwi_catalog(
@@ -1454,6 +1829,29 @@ fn populate_kiwi_catalog(
                     map,
                     tooltips_map,
                 );
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Collects every `AugmentData` object in a (flat or nested) kiwi.bin.json tree.
+fn collect_augment_data<'a>(value: &'a Value, out: &mut Vec<&'a Value>) {
+    match value {
+        Value::Object(map) => {
+            if map.get("__type").and_then(Value::as_str) == Some("AugmentData")
+                && map.contains_key("AugmentNameId")
+            {
+                out.push(value);
+                return;
+            }
+            for child in map.values() {
+                collect_augment_data(child, out);
+            }
+        }
+        Value::Array(items) => {
+            for child in items {
+                collect_augment_data(child, out);
             }
         }
         _ => {}
@@ -6145,6 +6543,11 @@ pub async fn get_mayhem_augments(
     let mut scored_list = Vec::new();
 
     for (_name_low, (canonical_id, entry)) in unique_catalog {
+        // The mode pool owns the id: the catalog carries an Arena and an ARAM id
+        // for the same augment, and the statistics are keyed by the ARAM one.
+        let canonical_id = aram_augment_id_for(&entry.name)
+            .map(|id| id.to_string())
+            .unwrap_or(canonical_id);
         let rarity = entry.rarity.clone();
         let rarity_rank = match rarity.as_deref() {
             Some("prismatic") => 3,
@@ -6646,6 +7049,43 @@ pub async fn enrich_overlay_augment_cards(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: Jeweled Gauntlet exists in both Arena (id 48) and ARAM (id 1048).
+    /// Resolving it by catalog order picked 48, which has no ARAM statistics, so the
+    /// most-picked augment in the mode showed "0 games".
+    #[tokio::test]
+    async fn jeweled_gauntlet_resolves_to_the_aram_id_and_has_games() {
+        let Some(id) = aram_augment_id_for("Jeweled Gauntlet") else {
+            return; // augment pool not built on this machine
+        };
+        assert_eq!(id, 1048, "ARAM id, not the Arena one");
+        assert_eq!(
+            aram_augment_id_for("1048"),
+            Some(1048),
+            "numeric ids pass through"
+        );
+
+        if !history_data_dir().join("global-aram.db").exists() {
+            return; // no statistics database to check against
+        }
+        let resp = get_mayhem_augments(MayhemAugmentsQuery {
+            page_size: Some(1000),
+            ..Default::default()
+        })
+        .await
+        .expect("augment list");
+        let item = resp
+            .items
+            .iter()
+            .find(|i| i.name.eq_ignore_ascii_case("Jeweled Gauntlet"))
+            .expect("Jeweled Gauntlet is in the catalog");
+        assert_eq!(item.id, "1048");
+        assert!(
+            item.global_games > 0,
+            "a common augment must not report 0 games (got {})",
+            item.global_games
+        );
+    }
 
     #[test]
     fn test_situational_items_sorted_by_popularity() {

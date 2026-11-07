@@ -244,12 +244,162 @@ pub async fn fetch_live_game_state() -> Result<LiveGameState, String> {
     })
 }
 
+/// One F8 press, end to end. Runs off the polling loop so a slow scan can never
+/// stall the HUD.
+pub async fn run_f8_scan(app: AppHandle, champion_name: String) {
+    run_scan(app, champion_name, false).await
+}
+
+/// `auto` scans are triggered by the panel watcher: they must fail silently,
+/// because a false positive during a fight is not the player's problem.
+pub async fn run_scan(app: AppHandle, champion_name: String, auto: bool) {
+    if crate::services::live_overlay::scan_in_flight() {
+        return;
+    }
+    crate::services::live_overlay::set_overlay_scanning(true);
+    let _ = app.emit("overlay:scan-status", &true);
+
+    let champion_id = if champion_name.is_empty() {
+        None
+    } else {
+        crate::services::champions::get_all_champions()
+            .await
+            .ok()
+            .and_then(|champs| {
+                champs
+                    .into_iter()
+                    .find(|c| {
+                        c.name.eq_ignore_ascii_case(&champion_name)
+                            || c.alias.eq_ignore_ascii_case(&champion_name)
+                    })
+                    .map(|c| c.id)
+            })
+    };
+
+    let started = std::time::Instant::now();
+    let scan_res =
+        crate::services::live_overlay::scan_in_game_augment_cards(champion_id, Vec::new()).await;
+    let elapsed = started.elapsed().as_millis();
+
+    crate::services::live_overlay::set_overlay_scanning(false);
+    let _ = app.emit("overlay:scan-status", &false);
+
+    match scan_res {
+        Ok(cards) if !cards.is_empty() => {
+            crate::logger::write(
+                crate::logger::Level::Info,
+                "live_game",
+                &format!(
+                    "F8 scan identified {} cards in {elapsed}ms: {}",
+                    cards.len(),
+                    cards
+                        .iter()
+                        .map(|c| format!("{}={}", c.slot, c.name))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                None,
+            );
+            crate::services::live_overlay::update_overlay_cards(&cards);
+            let rect = crate::services::live_overlay::get_league_game_window_rect();
+            crate::services::live_overlay::show_overlay_banner_rect(&app, &rect);
+            let _ = app.emit("overlay:cards-updated", &cards);
+        }
+        Ok(_) => {
+            crate::services::live_overlay::clear_overlay_cards();
+            if !auto {
+                crate::services::live_overlay::show_overlay_status_toast("No cards detected", true);
+            }
+            let _ = app.emit(
+                "overlay:cards-updated",
+                &Vec::<crate::models::history::OverlayAugmentCard>::new(),
+            );
+        }
+        Err(err_msg) => {
+            crate::logger::write(
+                crate::logger::Level::Warn,
+                "live_game",
+                &format!("F8 scan failed after {elapsed}ms: {err_msg}"),
+                None,
+            );
+            crate::services::live_overlay::clear_overlay_cards();
+            if !auto {
+                crate::services::live_overlay::show_overlay_status_toast(&err_msg, true);
+            }
+            let _ = app.emit(
+                "overlay:cards-updated",
+                &Vec::<crate::models::history::OverlayAugmentCard>::new(),
+            );
+        }
+    }
+}
+
+/// Manual pick from an overlay hotkey: records the card in that slot and says so.
+/// Returns true when something was actually recorded.
+fn record_pick(app: &AppHandle, slot: usize) -> bool {
+    match crate::services::live_overlay::record_pick_for_slot(slot) {
+        Some(owned) => {
+            let _ = app.emit("overlay:augment-picked", &owned);
+            true
+        }
+        None => {
+            crate::services::live_overlay::show_overlay_status_toast(
+                "No cards on screen — press F8 first",
+                true,
+            );
+            false
+        }
+    }
+}
+
+/// Pick detected by watching the panel: silent about the pick itself (the caller
+/// toasts), but returns what was recorded.
+fn record_pick_silent(slot: usize) -> Option<crate::services::live_overlay::OwnedAugment> {
+    crate::services::live_overlay::record_pick_for_slot(slot)
+}
+
+/// Watches the augment panel so the player never has to press F8 mid-fight, and
+/// remembers which card was highlighted when the panel closes.
+#[derive(Default)]
+struct PanelWatcher {
+    /// Cards were on screen at the previous probe.
+    visible: bool,
+    /// The panel currently up has already been scanned.
+    scanned: bool,
+    /// Best highlight seen for this appearance, and which slot.
+    best: (usize, f32),
+    /// Per-card brightness when the panel first settled. Picks are judged against
+    /// this, not against the other cards: the middle card is always brighter.
+    baseline: [f32; 3],
+    /// Consecutive probes that saw the highlight, to reject one-frame noise.
+    votes: u8,
+    /// Art signature of the cards we last looked at, for reroll detection.
+    signature: Vec<f32>,
+    /// The player already recorded a pick for this appearance (hotkey or auto), so
+    /// the panel closing must not ask again.
+    picked: bool,
+}
+
+impl PanelWatcher {
+    fn reset(&mut self) {
+        self.visible = false;
+        self.scanned = false;
+        self.best = (0, 0.0);
+        self.votes = 0;
+        self.baseline = [0.0; 3];
+        self.signature.clear();
+        self.picked = false;
+    }
+}
+
 pub fn start_live_game_polling(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut was_in_game = false;
         let mut cards_visible = false;
         let mut tick: u64 = 0;
         let mut last_champ_name = String::new();
+        let mut watcher = PanelWatcher::default();
+        let mut at_checkpoint = false;
 
         loop {
             let window_rect = crate::services::live_overlay::get_league_game_window_rect();
@@ -258,7 +408,11 @@ pub fn start_live_game_polling(app: AppHandle) {
                 if was_in_game {
                     was_in_game = false;
                     cards_visible = false;
+                    at_checkpoint = false;
+                    watcher.reset();
                     last_champ_name.clear();
+                    crate::services::live_overlay::reset_owned_augments();
+                    crate::services::live_overlay::reset_inventory_fingerprint();
                     crate::services::live_overlay::clear_overlay_cards();
                     crate::services::live_overlay::hide_overlay_window(&app);
                     let not_in_game = LiveGameState::not_in_game();
@@ -270,6 +424,7 @@ pub fn start_live_game_polling(app: AppHandle) {
             }
 
             tokio::time::sleep(Duration::from_millis(75)).await;
+            cards_visible = crate::services::live_overlay::overlay_has_cards();
 
             if tick % 20 == 0 {
                 let _ = app.emit("live:window-rect", &window_rect);
@@ -284,12 +439,43 @@ pub fn start_live_game_polling(app: AppHandle) {
                                     None,
                                 );
                             }
+                            let entering = !was_in_game;
                             was_in_game = true;
                             last_champ_name = state.champion_name.clone();
+                            at_checkpoint = state.is_augment_checkpoint;
                             crate::services::live_overlay::set_overlay_champion_and_strategy(&state.champion_name, "");
                             crate::services::live_overlay::set_overlay_vitals(state.level, state.current_gold);
                             let _ = app.emit("live:game-state", &state);
                             let _ = app.emit("live:state-updated", &state);
+
+                            if entering {
+                                // The build panel needs the champion id, and the
+                                // scanner only records it once a card is scanned.
+                                let name = state.champion_name.clone();
+                                let champ_id = crate::services::champions::get_all_champions()
+                                    .await
+                                    .ok()
+                                    .and_then(|champs| {
+                                        champs
+                                            .into_iter()
+                                            .find(|c| {
+                                                c.name.eq_ignore_ascii_case(&name)
+                                                    || c.alias.eq_ignore_ascii_case(&name)
+                                            })
+                                            .map(|c| c.id as i64)
+                                    });
+                                crate::services::live_overlay::remember_champion_id(champ_id);
+                            }
+
+                            // Buying or selling an item re-ranks every remaining
+                            // slot, so the three rows must follow the inventory.
+                            let item_ids: Vec<i64> =
+                                state.items.iter().map(|i| i.item_id).collect();
+                            let fingerprint =
+                                crate::services::live_overlay::inventory_fingerprint(&item_ids);
+                            if crate::services::live_overlay::note_inventory_fingerprint(fingerprint) {
+                                crate::services::live_overlay::refresh_in_game_build();
+                            }
                         } else if was_in_game {
                             crate::logger::write(
                                 crate::logger::Level::Info,
@@ -299,7 +485,11 @@ pub fn start_live_game_polling(app: AppHandle) {
                             );
                             was_in_game = false;
                             cards_visible = false;
+                            at_checkpoint = false;
+                            watcher.reset();
                             last_champ_name.clear();
+                            crate::services::live_overlay::reset_owned_augments();
+                            crate::services::live_overlay::reset_inventory_fingerprint();
                             crate::services::live_overlay::clear_overlay_cards();
                             crate::services::live_overlay::hide_overlay_window(&app);
                             let not_in_game = LiveGameState::not_in_game();
@@ -317,7 +507,11 @@ pub fn start_live_game_polling(app: AppHandle) {
                             );
                             was_in_game = false;
                             cards_visible = false;
+                            at_checkpoint = false;
+                            watcher.reset();
                             last_champ_name.clear();
+                            crate::services::live_overlay::reset_owned_augments();
+                            crate::services::live_overlay::reset_inventory_fingerprint();
                             crate::services::live_overlay::clear_overlay_cards();
                             crate::services::live_overlay::hide_overlay_window(&app);
                             let not_in_game = LiveGameState::not_in_game();
@@ -347,68 +541,139 @@ pub fn start_live_game_polling(app: AppHandle) {
                 crate::services::live_overlay::show_overlay_banner_rect(&app, &window_rect);
             }
 
-            let (f8_pressed, f7_pressed) = crate::services::live_overlay::poll_overlay_hotkeys();
-            if f8_pressed {
-                crate::services::live_overlay::set_overlay_scanning(true);
-                let _ = app.emit("overlay:scan-status", &true);
-                let champion_id = if !last_champ_name.is_empty() {
-                    crate::services::champions::get_all_champions()
-                        .await
-                        .ok()
-                        .and_then(|champs| {
-                            champs
-                                .into_iter()
-                                .find(|c| {
-                                    c.name.eq_ignore_ascii_case(&last_champ_name)
-                                        || c.alias.eq_ignore_ascii_case(&last_champ_name)
-                                })
-                                .map(|c| c.id)
-                        })
-                } else {
-                    None
-                };
-
-                let scan_res = crate::services::live_overlay::scan_in_game_augment_cards(
-                    champion_id,
-                    Vec::new(),
-                )
-                .await;
-                crate::services::live_overlay::set_overlay_scanning(false);
-                let _ = app.emit("overlay:scan-status", &false);
-
-                match scan_res {
-                    Ok(cards) if !cards.is_empty() => {
-                        crate::services::live_overlay::update_overlay_cards(&cards);
-                        crate::services::live_overlay::show_overlay_banner_rect(&app, &window_rect);
-                        let _ = app.emit("overlay:cards-updated", &cards);
-                        cards_visible = true;
-                    }
-                    Ok(_) => {
-                        crate::services::live_overlay::clear_overlay_cards();
-                        crate::services::live_overlay::show_overlay_status_toast("No cards detected", true);
-                        let _ = app.emit(
-                            "overlay:cards-updated",
-                            &Vec::<crate::models::history::OverlayAugmentCard>::new(),
-                        );
-                        cards_visible = false;
-                    }
-                    Err(err_msg) => {
-                        crate::services::live_overlay::clear_overlay_cards();
-                        crate::services::live_overlay::show_overlay_status_toast(&err_msg, true);
-                        let _ = app.emit(
-                            "overlay:cards-updated",
-                            &Vec::<crate::models::history::OverlayAugmentCard>::new(),
-                        );
-                        cards_visible = false;
-                    }
-                }
-            } else if f7_pressed && cards_visible {
+            let keys = crate::services::live_overlay::poll_overlay_hotkeys();
+            if keys.scan {
+                // Never await the scan here: this loop also drives the HUD and
+                // the augment-checkpoint detection, and a slow scan used to
+                // stall all of it.
+                let app_handle = app.clone();
+                let champ_name = last_champ_name.clone();
+                watcher.scanned = true;
+                tauri::async_runtime::spawn(async move {
+                    run_f8_scan(app_handle, champ_name).await;
+                });
+            } else if keys.clear && cards_visible {
                 crate::services::live_overlay::clear_overlay_cards();
                 let _ = app.emit(
                     "overlay:cards-updated",
                     &Vec::<crate::models::history::OverlayAugmentCard>::new(),
                 );
                 cards_visible = false;
+                watcher.reset();
+            }
+
+            if keys.undo {
+                match crate::services::live_overlay::undo_owned_augment() {
+                    Some(removed) => {
+                        crate::services::live_overlay::show_overlay_status_toast(
+                            &format!("Removed {}", removed.name),
+                            false,
+                        );
+                    }
+                    None => {}
+                }
+            }
+            if let Some(slot) = keys.picked_slot() {
+                if record_pick(&app, slot) {
+                    watcher.picked = true;
+                }
+            }
+
+            // Auto-detect the augment panel. Probing is a plain screen capture
+            // plus a brightness scan, so it is only worth doing near a
+            // checkpoint; elsewhere it drops to once every ~1.5s.
+            let probe_every = if at_checkpoint || cards_visible { 4 } else { 20 };
+            #[cfg(windows)]
+            if tick % probe_every == 0 && !crate::services::live_overlay::scan_in_flight() {
+                match crate::services::live_overlay::probe_augment_panel() {
+                    Some(probe) => {
+                        if !watcher.visible {
+                            watcher.visible = true;
+                            watcher.scanned = false;
+                            watcher.best = (0, 0.0);
+                            watcher.votes = 0;
+                            watcher.baseline = probe.selection;
+                            watcher.signature = probe.signature.clone();
+                        } else if crate::services::augment_scan::signature_changed(
+                            &watcher.signature,
+                            &probe.signature,
+                        ) {
+                            // The cards changed without the panel closing: a
+                            // reroll. Drop the stale scan, baseline and pick votes.
+                            watcher.signature = probe.signature.clone();
+                            watcher.baseline = probe.selection;
+                            watcher.scanned = false;
+                            watcher.votes = 0;
+                            watcher.best = (0, 0.0);
+                        }
+                        // Which card lit up relative to how it looked when the
+                        // panel appeared. Only trust a repeatable signal.
+                        if let Some(slot) = crate::services::augment_scan::picked_from_baseline(
+                            watcher.baseline,
+                            probe.selection,
+                        )
+                        {
+                            watcher.votes = watcher.votes.saturating_add(1);
+                            watcher.best = (slot, probe.selection[slot]);
+                        } else {
+                            watcher.votes = 0;
+                        }
+
+                        if !watcher.scanned {
+                            watcher.scanned = true;
+                            cards_visible = true;
+                            let app_handle = app.clone();
+                            let champ_name = last_champ_name.clone();
+                            crate::logger::write(
+                                crate::logger::Level::Info,
+                                "live_game",
+                                "augment panel detected, scanning automatically",
+                                None,
+                            );
+                            tauri::async_runtime::spawn(async move {
+                                run_scan(app_handle, champ_name, true).await;
+                            });
+                        }
+                    }
+                    None => {
+                        if watcher.visible {
+                            // Panel closed: if one card was clearly lit up just
+                            // before it went away, that was the pick.
+                            let suspect = (watcher.votes >= 2).then_some(watcher.best.0);
+                            let already_picked = watcher.picked;
+                            watcher.reset();
+                            cards_visible = false;
+                            match suspect.and_then(record_pick_silent) {
+                                Some(owned) => {
+                                    crate::services::live_overlay::show_overlay_status_toast(
+                                        &format!("Picked {}", owned.name),
+                                        false,
+                                    );
+                                    crate::services::live_overlay::clear_overlay_cards();
+                                    let _ = app.emit(
+                                        "overlay:cards-updated",
+                                        &Vec::<crate::models::history::OverlayAugmentCard>::new(),
+                                    );
+                                }
+                                None => {
+                                    crate::services::live_overlay::clear_overlay_cards();
+                                    let _ = app.emit(
+                                        "overlay:cards-updated",
+                                        &Vec::<crate::models::history::OverlayAugmentCard>::new(),
+                                    );
+                                    // Auto-detection is deliberately conservative;
+                                    // say which keys record it by hand.
+                                    if !already_picked {
+                                        crate::services::live_overlay::show_overlay_status_toast(
+                                            "Picked which card? F9 / F10 / F11",
+                                            false,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             tick = tick.wrapping_add(1);

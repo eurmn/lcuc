@@ -18,6 +18,8 @@ use commands::{
     api_champ_select_session, api_champ_select_swap, api_compute_mayhem_build_recommendation,
     compute_mayhem_build_recommendation, api_query_mayhem_combos, query_mayhem_combos,
     api_get_items_catalog,
+    api_get_overlay_augments, api_add_overlay_augment, api_undo_overlay_augment,
+    api_clear_overlay_augments,
     api_delete_runeset,
     api_delete_saved_mayhem_build, api_detect_champion_from_name, api_emit_overlay_state,
     api_export_mayhem_build, api_export_saved_rune_page, api_get_champion_roster,
@@ -56,6 +58,25 @@ pub fn run() {
 
         let _ = crate::services::native_overlay::ensure_overlay_process_started();
         let _ = crate::build_engine::host::ensure_build_engine_process_started();
+
+            // Overlay: hand the scanner an app handle and warm the augment data
+            // in the background so the first F8 is instant.
+            crate::services::live_overlay::set_overlay_app_handle(app.handle().clone());
+            crate::services::augment_scan::warm_up();
+            tauri::async_runtime::spawn(async {
+                let started = std::time::Instant::now();
+                if crate::commands::build_engine::ensure_index_ready().await.is_ok() {
+                    crate::logger::write(
+                        crate::logger::Level::Info,
+                        "mayhem_engine",
+                        &format!(
+                            "synergy index warm in {}ms",
+                            started.elapsed().as_millis()
+                        ),
+                        None,
+                    );
+                }
+            });
 
             let status_item =
                 MenuItem::with_id(app, "status", "Crawler: Idle", false, None::<&str>)?;
@@ -251,6 +272,10 @@ pub fn run() {
             api_query_mayhem_combos,
             query_mayhem_combos,
             api_get_items_catalog,
+            api_get_overlay_augments,
+            api_add_overlay_augment,
+            api_undo_overlay_augment,
+            api_clear_overlay_augments,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

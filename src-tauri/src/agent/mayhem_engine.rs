@@ -46,6 +46,55 @@ pub const fn unpack_combo_key(key: u64) -> (u8, u16, u32, u32) {
     )
 }
 
+/// Parses the id arrays this database actually stores — `[3006,3153]` for items
+/// and `["1048","2132"]` for augments. The index build reads every participant
+/// row (600k on a mature install) and serde_json `Value` allocation was the bulk
+/// of that cost, so this walks the digits directly. Anything that is not a plain
+/// numeric array goes through serde_json instead.
+pub fn parse_id_list(raw: &str) -> Vec<u32> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed == "[]" || trimmed == "null" {
+        return Vec::new();
+    }
+
+    let mut ids = Vec::with_capacity(8);
+    let mut plain = true;
+    for token in trimmed
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split(',')
+    {
+        let t = token.trim_matches('"').trim();
+        if t.is_empty() {
+            continue;
+        }
+        match t.parse::<u32>() {
+            Ok(v) => ids.push(v),
+            Err(_) => {
+                plain = false;
+                break;
+            }
+        }
+    }
+    if plain {
+        return ids;
+    }
+
+    let mut ids = Vec::new();
+    if let Ok(parsed) = serde_json::from_str::<Vec<serde_json::Value>>(raw) {
+        for v in parsed {
+            let id = v
+                .as_u64()
+                .map(|n| n as u32)
+                .or_else(|| v.as_str().and_then(|s| s.parse::<u32>().ok()));
+            if let Some(id) = id {
+                ids.push(id);
+            }
+        }
+    }
+    ids
+}
+
 pub fn parse_or_hash_augment_id(s: &str) -> u32 {
     let trimmed = s.trim();
     if let Ok(id) = trimmed.parse::<u32>() {
@@ -64,6 +113,16 @@ pub fn parse_or_hash_augment_id(s: &str) -> u32 {
             folded
         }
     }
+}
+
+/// The id the synergy index keys augments by, resolving display names through the
+/// ARAM Mayhem pool. `parse_or_hash_augment_id` on a name produces a hash that
+/// matches nothing, which is why picked-by-name augments used to change no build.
+pub fn augment_numeric_id(id_or_name: &str) -> u32 {
+    if let Some(id) = crate::services::history::aram_augment_id_for(id_or_name) {
+        return id & 0x3FFFFF;
+    }
+    parse_or_hash_augment_id(id_or_name)
 }
 
 // --- Statistical Math Functions ---
@@ -180,14 +239,20 @@ pub static AUGMENT_METADATA: LazyLock<HashMap<String, AugmentMeta>> = LazyLock::
 });
 
 pub fn get_augment_meta(id_or_name: &str) -> AugmentMeta {
-    if let Some(m) = AUGMENT_METADATA.get(id_or_name) {
-        return m.clone();
+    if let Some(mut m) = AUGMENT_METADATA.get(id_or_name).cloned() {
+        if !id_or_name.trim().chars().all(|c| c.is_ascii_digit()) {
+            m.numeric_id = augment_numeric_id(id_or_name);
+        }
+        return m;
     }
     let lower = id_or_name.to_lowercase();
-    if let Some(m) = AUGMENT_METADATA.get(&lower) {
-        return m.clone();
+    if let Some(mut m) = AUGMENT_METADATA.get(&lower).cloned() {
+        if !id_or_name.trim().chars().all(|c| c.is_ascii_digit()) {
+            m.numeric_id = augment_numeric_id(id_or_name);
+        }
+        return m;
     }
-    let num = parse_or_hash_augment_id(id_or_name);
+    let num = augment_numeric_id(id_or_name);
     AugmentMeta {
         id: id_or_name.to_string(),
         numeric_id: num,
@@ -233,12 +298,222 @@ pub fn invalidate_synergy_index() {
     }
 }
 
+// --- Index disk cache ---
+//
+// Ingesting every participant row costs ~45-50 s on a 600k-row install. That is
+// paid once per database change, never per app start: the compiled counts are
+// keyed by the source files' size + mtime and reused until the data moves.
+// Personal data lives in its own map, so it is cached too but is tiny.
+
+use std::io::{Read, Write};
+
+const INDEX_CACHE_MAGIC: &[u8; 4] = b"MSIX";
+const INDEX_CACHE_VERSION: u32 = 1;
+/// Refuse to allocate for a corrupt/absurd key count.
+const INDEX_CACHE_MAX_KEYS: u32 = 20_000_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct SourceFingerprint {
+    global_len: u64,
+    global_mtime_ms: i64,
+    agent_len: u64,
+    agent_mtime_ms: i64,
+}
+
+fn file_fingerprint(path: &Path) -> (u64, i64) {
+    match std::fs::metadata(path) {
+        Ok(m) => {
+            let mtime = m
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            (m.len(), mtime)
+        }
+        Err(_) => (0, 0),
+    }
+}
+
+fn source_fingerprint(global_db_path: &Path, agent_db_path: &Path) -> SourceFingerprint {
+    let (global_len, global_mtime_ms) = file_fingerprint(global_db_path);
+    let (agent_len, agent_mtime_ms) = file_fingerprint(agent_db_path);
+    SourceFingerprint {
+        global_len,
+        global_mtime_ms,
+        agent_len,
+        agent_mtime_ms,
+    }
+}
+
+pub fn synergy_index_cache_path() -> std::path::PathBuf {
+    dirs::data_local_dir()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("lcu-companion")
+        .join("cache")
+        .join("mayhem_synergy_index.bin")
+}
+
+fn write_counts(
+    w: &mut impl std::io::Write,
+    map: &HashMap<u64, WinGameCount>,
+) -> std::io::Result<()> {
+    w.write_all(&(map.len() as u32).to_le_bytes())?;
+    for (key, value) in map {
+        w.write_all(&key.to_le_bytes())?;
+        w.write_all(&value.wins.to_le_bytes())?;
+        w.write_all(&value.games.to_le_bytes())?;
+    }
+    Ok(())
+}
+
+fn read_exact<const N: usize>(r: &mut impl std::io::Read) -> Option<[u8; N]> {
+    let mut buf = [0u8; N];
+    r.read_exact(&mut buf).ok()?;
+    Some(buf)
+}
+
+fn read_counts(r: &mut impl std::io::Read) -> Option<HashMap<u64, WinGameCount>> {
+    let len = u32::from_le_bytes(read_exact::<4>(r)?);
+    if len > INDEX_CACHE_MAX_KEYS {
+        return None;
+    }
+    let mut map = HashMap::with_capacity(len as usize);
+    for _ in 0..len {
+        let key = u64::from_le_bytes(read_exact::<8>(r)?);
+        let wins = u32::from_le_bytes(read_exact::<4>(r)?);
+        let games = u32::from_le_bytes(read_exact::<4>(r)?);
+        map.insert(key, WinGameCount { wins, games });
+    }
+    Some(map)
+}
+
+fn save_index_cache(
+    path: &Path,
+    fingerprint: &SourceFingerprint,
+    index: &MayhemSynergyIndex,
+) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let tmp = path.with_extension("bin.tmp");
+    {
+        let mut w = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+        w.write_all(INDEX_CACHE_MAGIC)?;
+        w.write_all(&INDEX_CACHE_VERSION.to_le_bytes())?;
+        w.write_all(&fingerprint.global_len.to_le_bytes())?;
+        w.write_all(&fingerprint.global_mtime_ms.to_le_bytes())?;
+        w.write_all(&fingerprint.agent_len.to_le_bytes())?;
+        w.write_all(&fingerprint.agent_mtime_ms.to_le_bytes())?;
+        w.write_all(&index.total_matches.to_le_bytes())?;
+        write_counts(&mut w, &index.counts)?;
+        write_counts(&mut w, &index.personal_counts)?;
+
+        w.write_all(&(index.tier_counts.len() as u32).to_le_bytes())?;
+        for (name, value) in &index.tier_counts {
+            let bytes = name.as_bytes();
+            w.write_all(&(bytes.len() as u16).to_le_bytes())?;
+            w.write_all(bytes)?;
+            w.write_all(&value.wins.to_le_bytes())?;
+            w.write_all(&value.games.to_le_bytes())?;
+        }
+
+        w.write_all(&(index.id_to_augment_string.len() as u32).to_le_bytes())?;
+        for (id, name) in &index.id_to_augment_string {
+            let bytes = name.as_bytes();
+            w.write_all(&id.to_le_bytes())?;
+            w.write_all(&(bytes.len() as u16).to_le_bytes())?;
+            w.write_all(bytes)?;
+        }
+        w.flush()?;
+    }
+    std::fs::rename(&tmp, path)
+}
+
+fn load_index_cache(path: &Path, fingerprint: &SourceFingerprint) -> Option<MayhemSynergyIndex> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut r = std::io::BufReader::new(file);
+
+    if &read_exact::<4>(&mut r)? != INDEX_CACHE_MAGIC {
+        return None;
+    }
+    if u32::from_le_bytes(read_exact::<4>(&mut r)?) != INDEX_CACHE_VERSION {
+        return None;
+    }
+    let cached = SourceFingerprint {
+        global_len: u64::from_le_bytes(read_exact::<8>(&mut r)?),
+        global_mtime_ms: i64::from_le_bytes(read_exact::<8>(&mut r)?),
+        agent_len: u64::from_le_bytes(read_exact::<8>(&mut r)?),
+        agent_mtime_ms: i64::from_le_bytes(read_exact::<8>(&mut r)?),
+    };
+    if cached != *fingerprint {
+        return None;
+    }
+
+    let total_matches = u32::from_le_bytes(read_exact::<4>(&mut r)?);
+    let counts = read_counts(&mut r)?;
+    let personal_counts = read_counts(&mut r)?;
+
+    let tier_len = u32::from_le_bytes(read_exact::<4>(&mut r)?);
+    if tier_len > 64 {
+        return None;
+    }
+    let mut tier_counts = HashMap::new();
+    for _ in 0..tier_len {
+        let name_len = u16::from_le_bytes(read_exact::<2>(&mut r)?) as usize;
+        let mut name = vec![0u8; name_len];
+        r.read_exact(&mut name).ok()?;
+        let wins = u32::from_le_bytes(read_exact::<4>(&mut r)?);
+        let games = u32::from_le_bytes(read_exact::<4>(&mut r)?);
+        tier_counts.insert(String::from_utf8(name).ok()?, WinGameCount { wins, games });
+    }
+
+    let id_len = u32::from_le_bytes(read_exact::<4>(&mut r)?);
+    if id_len > 1_000_000 {
+        return None;
+    }
+    let mut id_to_augment_string = HashMap::with_capacity(id_len as usize);
+    for _ in 0..id_len {
+        let id = u32::from_le_bytes(read_exact::<4>(&mut r)?);
+        let name_len = u16::from_le_bytes(read_exact::<2>(&mut r)?) as usize;
+        let mut name = vec![0u8; name_len];
+        r.read_exact(&mut name).ok()?;
+        id_to_augment_string.insert(id, String::from_utf8(name).ok()?);
+    }
+
+    Some(MayhemSynergyIndex {
+        counts,
+        personal_counts,
+        tier_counts,
+        id_to_augment_string,
+        total_matches,
+        active_patch: None,
+    })
+}
+
 // --- Single-Pass N-Gram Miner ---
 
 pub fn build_synergy_index(
     global_db_path: &Path,
     agent_db_path: &Path,
 ) -> Result<MayhemSynergyIndex, String> {
+    let fingerprint = source_fingerprint(global_db_path, agent_db_path);
+    let cache_path = synergy_index_cache_path();
+    let load_started = Instant::now();
+    if let Some(cached) = load_index_cache(&cache_path, &fingerprint) {
+        logger::info(
+            "mayhem_engine",
+            &format!(
+                "Loaded MayhemSynergyIndex from cache: {} keys, {} matches in {}ms",
+                cached.counts.len(),
+                cached.total_matches,
+                load_started.elapsed().as_millis()
+            ),
+        );
+        return Ok(cached);
+    }
+
     let mut index = MayhemSynergyIndex::default();
     let started = Instant::now();
 
@@ -249,7 +524,7 @@ pub fn build_synergy_index(
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         ) {
             let _ = conn.busy_timeout(std::time::Duration::from_millis(5000));
-            ingest_table_into_index(&conn, "aram_participants", false, &mut index);
+            ingest_table_into_index(&conn, "aram_participants", false, &mut index, INDEX_ROW_LIMIT);
         }
     }
 
@@ -260,7 +535,7 @@ pub fn build_synergy_index(
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         ) {
             let _ = conn.busy_timeout(std::time::Duration::from_millis(5000));
-            ingest_table_into_index(&conn, "game_build_facts", true, &mut index);
+            ingest_table_into_index(&conn, "game_build_facts", true, &mut index, INDEX_ROW_LIMIT);
         }
     }
 
@@ -274,19 +549,43 @@ pub fn build_synergy_index(
         ),
     );
 
+    if let Err(err) = save_index_cache(&cache_path, &fingerprint, &index) {
+        logger::info(
+            "mayhem_engine",
+            &format!("could not cache synergy index: {err}"),
+        );
+    }
+
     Ok(index)
 }
+
+/// Rows ingested per table. `None` = every row.
+///
+/// This used to be capped at 100k of the 600k `aram_participants` rows, which
+/// is what starved champion x item cells down to 1-9 games and made the
+/// recommender rank coin flips. The full scan costs a few extra seconds of
+/// background warm-up and roughly 6x the count map; both are paid once.
+const INDEX_ROW_LIMIT: Option<usize> = None;
 
 fn ingest_table_into_index(
     conn: &Connection,
     table: &str,
     is_personal: bool,
     index: &mut MayhemSynergyIndex,
+    limit: Option<usize>,
 ) {
-    let query = format!(
-        "SELECT champion_id, win, item_ids_json, augment_ids_json FROM {} ORDER BY rowid DESC LIMIT 100000",
-        table
-    );
+    let query = match limit {
+        Some(n) => format!(
+            "SELECT champion_id, win, item_ids_json, augment_ids_json FROM {} ORDER BY rowid DESC LIMIT {}",
+            table, n
+        ),
+        None => format!(
+            "SELECT champion_id, win, item_ids_json, augment_ids_json FROM {} ORDER BY rowid DESC",
+            table
+        ),
+    };
+    let ingest_started = Instant::now();
+    let mut ingested = 0usize;
     let mut stmt = match conn.prepare(&query) {
         Ok(s) => s,
         Err(_) => return,
@@ -308,25 +607,19 @@ fn ingest_table_into_index(
             Err(_) => continue,
         };
 
+        ingested += 1;
         if !is_personal {
             index.total_matches += 1;
         }
 
         // Deduplicate and filter completed items (excluding 2050, 2052, 220013)
-        let mut items = Vec::new();
-        if let Ok(parsed_items) = serde_json::from_str::<Vec<serde_json::Value>>(&items_raw) {
-            for v in parsed_items {
-                let id_opt = v.as_u64().map(|n| n as u32).or_else(|| {
-                    v.as_str().and_then(|s| s.parse::<u32>().ok())
-                });
-                if let Some(id) = id_opt {
-                    if !PORO_SNAX_IDS.contains(&id)
-                        && (is_valid_build_item(id) || is_completed_boot(id))
-                        && !items.contains(&id)
-                    {
-                        items.push(id);
-                    }
-                }
+        let mut items = Vec::with_capacity(6);
+        for id in parse_id_list(&items_raw) {
+            if !PORO_SNAX_IDS.contains(&id)
+                && (is_valid_build_item(id) || is_completed_boot(id))
+                && !items.contains(&id)
+            {
+                items.push(id);
             }
         }
         items.sort_unstable();
@@ -335,22 +628,19 @@ fn ingest_table_into_index(
         }
 
         // Deduplicate augments (k <= 5)
-        let mut augments = Vec::new();
-        if let Ok(parsed_augs) = serde_json::from_str::<Vec<serde_json::Value>>(&augs_raw) {
-            for v in parsed_augs {
-                let s_opt = v.as_str().map(|s| s.to_string()).or_else(|| v.as_u64().map(|n| n.to_string()));
-                if let Some(s) = s_opt {
-                    let num = parse_or_hash_augment_id(&s);
-                    index.id_to_augment_string.entry(num).or_insert_with(|| s.clone());
-                    if !augments.contains(&num) {
-                        augments.push(num);
-                        let meta = get_augment_meta(&s);
-                        let tier_entry = index.tier_counts.entry(meta.tier).or_default();
-                        tier_entry.games += 1;
-                        if win {
-                            tier_entry.wins += 1;
-                        }
-                    }
+        let mut augments = Vec::with_capacity(5);
+        for num in parse_id_list(&augs_raw) {
+            index
+                .id_to_augment_string
+                .entry(num)
+                .or_insert_with(|| num.to_string());
+            if !augments.contains(&num) {
+                augments.push(num);
+                let meta = get_augment_meta(&num.to_string());
+                let tier_entry = index.tier_counts.entry(meta.tier).or_default();
+                tier_entry.games += 1;
+                if win {
+                    tier_entry.wins += 1;
                 }
             }
         }
@@ -427,6 +717,15 @@ fn ingest_table_into_index(
             }
         }
     }
+
+    logger::info(
+        "mayhem_engine",
+        &format!(
+            "ingested {ingested} rows from {table} in {}ms ({} keys so far)",
+            ingest_started.elapsed().as_millis(),
+            index.counts.len()
+        ),
+    );
 }
 
 // --- DTO Contracts ---
@@ -567,6 +866,11 @@ pub struct ItemRecommendationDto {
     pub synergy_lift: f64,
     pub lcb_lift: f64,
     pub confidence_grade: String,
+    /// Best pairing among the items/augments already owned, so a consumer can
+    /// name it ("pairs with Jeweled Gauntlet"). 0 = no partner worth naming.
+    pub synergy_partner_id: u32,
+    pub synergy_partner_is_augment: bool,
+    pub synergy_partner_lift: f64,
 
     // camelCase mirrors
     pub itemId: u32,
@@ -576,6 +880,9 @@ pub struct ItemRecommendationDto {
     pub synergyLift: f64,
     pub lcbLift: f64,
     pub confidenceGrade: String,
+    pub synergyPartnerId: u32,
+    pub synergyPartnerIsAugment: bool,
+    pub synergyPartnerLift: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -752,10 +1059,13 @@ impl MayhemSynergyIndex {
             .clamp(0.05, 0.95);
         let wpa_glob = p_glob_resource - p_bar_tier;
 
+        // Level 2 prior is the resource's own global effect (level 1), not the
+        // champion baseline: a champion x item cell with 1 game should fall back
+        // to "how good is this item in ARAM", not to "how good is this champion".
         let m_1 = 25.0;
         let w_rc_glob = glob_champ.wins as f64;
         let n_rc_glob = glob_champ.games as f64;
-        let p_glob = ((w_rc_glob + m_1 * p_0) / (n_rc_glob + m_1)).clamp(0.05, 0.95);
+        let p_glob = ((w_rc_glob + m_1 * p_glob_resource) / (n_rc_glob + m_1)).clamp(0.05, 0.95);
 
         let m_pers = 10.0;
         let w_rc_pers = pers_champ.wins as f64;
@@ -765,7 +1075,7 @@ impl MayhemSynergyIndex {
         let wpa = p_blend - p_0;
         let delta_champ = wpa - wpa_glob;
 
-        let w_tilde = w_rc_glob + m_1 * p_0;
+        let w_tilde = w_rc_glob + m_1 * p_glob_resource;
         let n_tilde = n_rc_glob + m_1;
         let lcb_val = wilson_lcb(w_tilde, n_tilde, 1.28155);
         let lcb_wpa = lcb_val - p_0;
@@ -1037,7 +1347,7 @@ pub fn compute_mayhem_recommendation(
     // Parse locked augments
     let mut locked_aug_resources = Vec::new();
     for aug_str in &req.locked_augments {
-        let num_id = parse_or_hash_augment_id(aug_str);
+        let num_id = augment_numeric_id(aug_str);
         let eval = index.evaluate_resource(champ_id, num_id, true, p_champ);
         locked_aug_resources.push(eval);
     }
@@ -1112,16 +1422,17 @@ pub fn compute_mayhem_recommendation(
                 if meta.tier != target_tier {
                     continue;
                 }
-                if !processed_unseen_ids.insert(meta.numeric_id) {
+                let meta_id = augment_numeric_id(&meta.name);
+                if !processed_unseen_ids.insert(meta_id) {
                     continue;
                 }
                 if seen_set.contains(&meta.id.to_lowercase())
                     || seen_set.contains(&meta.name.to_lowercase())
-                    || seen_set.contains(&meta.numeric_id.to_string())
+                    || seen_set.contains(&meta_id.to_string())
                 {
                     continue;
                 }
-                let eval_cand = index.evaluate_resource(champ_id, meta.numeric_id, true, p_champ);
+                let eval_cand = index.evaluate_resource(champ_id, meta_id, true, p_champ);
                 if index.total_matches > 50 && eval_cand.games_glob == 0 {
                     continue;
                 }
@@ -1371,6 +1682,9 @@ pub fn compute_mayhem_recommendation(
                 synergy_lift: syn_sum,
                 lcb_lift: eval.lcb_wpa,
                 confidence_grade: grade.clone(),
+                synergy_partner_id: 0,
+                synergy_partner_is_augment: false,
+                synergy_partner_lift: 0.0,
                 itemId: id,
                 winRate: p_champ + eval.wpa,
                 sampleSize: eval.games_glob as usize,
@@ -1378,6 +1692,9 @@ pub fn compute_mayhem_recommendation(
                 synergyLift: syn_sum,
                 lcbLift: eval.lcb_wpa,
                 confidenceGrade: grade,
+                synergyPartnerId: 0,
+                synergyPartnerIsAugment: false,
+                synergyPartnerLift: 0.0,
             });
         }
     }
@@ -1388,15 +1705,34 @@ pub fn compute_mayhem_recommendation(
             continue;
         }
         let eval = index.evaluate_resource(champ_id, id, false, p_champ);
+        // Score on the lower confidence bound of each pair lift: a +10.8% point
+        // estimate measured on a handful of champion games is noise, and the LCB
+        // only stays positive when the pair has the sample to support it.
         let mut syn_sum = 0.0;
+        let mut evidenced_syn_sum = 0.0;
+        let mut best_partner = (0u32, false);
+        let mut best_partner_lift = 0.0f64;
         for locked in &all_locked {
-            let (_, syn_lift, _, _) = index.evaluate_pair_synergy(champ_id, &eval, locked, p_champ);
+            let (_, syn_lift, lcb_lift, _) =
+                index.evaluate_pair_synergy(champ_id, &eval, locked, p_champ);
+            if lcb_lift > best_partner_lift {
+                best_partner_lift = lcb_lift;
+                best_partner = (locked.id, locked.is_augment);
+            }
             syn_sum += syn_lift;
+            evidenced_syn_sum += lcb_lift;
         }
-        let cost = get_gold_cost(id).max(2000) as f64;
+        // Unknown gold cost used to fall back to 2000g, which handed those
+        // items a 1.5x score multiplier over every real 3k item. Use the
+        // catalogue median instead so "unknown" is neutral, not a discount.
+        let gold_cost = match get_gold_cost(id) {
+            0 => 3000,
+            cost => cost,
+        };
+        let cost = gold_cost as f64;
         let cost_scaling = 3000.0 / cost;
-        let total_score = (eval.wpa + syn_sum) * cost_scaling;
-        scored_items.push((id, eval, total_score, syn_sum));
+        let total_score = (eval.wpa + evidenced_syn_sum) * cost_scaling;
+        scored_items.push((id, eval, total_score, syn_sum, best_partner, best_partner_lift));
     }
 
     scored_items.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
@@ -1404,18 +1740,47 @@ pub fn compute_mayhem_recommendation(
     let mut next_items = Vec::new();
     let mut alternative_items = Vec::new();
 
-    for (idx, &(id, ref eval, total_sc, syn_sum)) in scored_items.iter().enumerate() {
+    for (idx, &(id, ref eval, total_sc, syn_sum, partner, partner_lift)) in scored_items.iter().enumerate() {
         let grade = compute_confidence_grade(total_sc).to_string();
+        // Name the pairing when it is material; otherwise say what actually
+        // carried the score, so every recommendation explains itself.
+        let reason = if partner_lift >= 0.005 {
+            let label = if partner.1 {
+                index
+                    .id_to_augment_string
+                    .get(&partner.0)
+                    .cloned()
+                    .unwrap_or_else(|| format!("augment #{}", partner.0))
+            } else {
+                format!("item #{}", partner.0)
+            };
+            format!("Pairs with {label} (+{:.1}% synergy)", partner_lift * 100.0)
+        } else if eval.games_glob >= 200 {
+            format!(
+                "Standalone: {:.1}% win-rate lift over {} games",
+                eval.wpa * 100.0,
+                eval.games_glob
+            )
+        } else {
+            let gold = match get_gold_cost(id) {
+                0 => 3000,
+                cost => cost,
+            };
+            format!("Thin sample ({} games) — {}g spike", eval.games_glob, gold)
+        };
         let dto = ItemRecommendationDto {
             item_id: id,
             win_rate: p_champ + eval.wpa,
             lift: eval.wpa,
             sample_size: eval.games_glob as usize,
             is_boot: false,
-            reason: format!("Empirical Bayes lift: +{:.1}% synergy", syn_sum * 100.0),
+            reason,
             synergy_lift: syn_sum,
             lcb_lift: eval.lcb_wpa,
             confidence_grade: grade.clone(),
+            synergy_partner_id: if partner_lift >= 0.005 { partner.0 } else { 0 },
+            synergy_partner_is_augment: partner.1,
+            synergy_partner_lift: if partner_lift >= 0.005 { partner_lift } else { 0.0 },
             itemId: id,
             winRate: p_champ + eval.wpa,
             sampleSize: eval.games_glob as usize,
@@ -1423,6 +1788,9 @@ pub fn compute_mayhem_recommendation(
             synergyLift: syn_sum,
             lcbLift: eval.lcb_wpa,
             confidenceGrade: grade,
+            synergyPartnerId: if partner_lift >= 0.005 { partner.0 } else { 0 },
+            synergyPartnerIsAugment: partner.1,
+            synergyPartnerLift: if partner_lift >= 0.005 { partner_lift } else { 0.0 },
         };
         if idx < 3 {
             next_items.push(dto);
@@ -1444,6 +1812,9 @@ pub fn compute_mayhem_recommendation(
             synergy_lift: 0.0,
             lcb_lift: 0.0,
             confidence_grade: "B".to_string(),
+            synergy_partner_id: 0,
+            synergy_partner_is_augment: false,
+            synergy_partner_lift: 0.0,
             itemId: id,
             winRate: p_champ,
             sampleSize: 100,
@@ -1451,6 +1822,9 @@ pub fn compute_mayhem_recommendation(
             synergyLift: 0.0,
             lcbLift: 0.0,
             confidenceGrade: "B".to_string(),
+            synergyPartnerId: 0,
+            synergyPartnerIsAugment: false,
+            synergyPartnerLift: 0.0,
         });
     }
 
@@ -2085,6 +2459,56 @@ pub fn decide_offered_cards(
 mod tests {
     use super::*;
 
+    #[test]
+    fn index_cache_roundtrips_and_misses_when_the_database_moves() {
+        let mut index = MayhemSynergyIndex::default();
+        index.total_matches = 123;
+        index.counts.insert(42, WinGameCount { wins: 7, games: 10 });
+        index.personal_counts.insert(9, WinGameCount { wins: 1, games: 2 });
+        index.tier_counts.insert("Gold".to_string(), WinGameCount { wins: 3, games: 6 });
+        index.id_to_augment_string.insert(1048, "Jeweled Gauntlet".to_string());
+
+        let dir = std::env::temp_dir().join(format!("msix-cache-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("index.bin");
+        let fingerprint = SourceFingerprint {
+            global_len: 10,
+            global_mtime_ms: 20,
+            agent_len: 30,
+            agent_mtime_ms: 40,
+        };
+
+        save_index_cache(&path, &fingerprint, &index).expect("write cache");
+        let loaded = load_index_cache(&path, &fingerprint).expect("cache hit");
+        assert_eq!(loaded.total_matches, 123);
+        assert_eq!(loaded.counts.get(&42).map(|c| (c.wins, c.games)), Some((7, 10)));
+        assert_eq!(
+            loaded.personal_counts.get(&9).map(|c| (c.wins, c.games)),
+            Some((1, 2))
+        );
+        assert_eq!(
+            loaded.id_to_augment_string.get(&1048).map(String::as_str),
+            Some("Jeweled Gauntlet")
+        );
+        assert_eq!(
+            loaded.tier_counts.get("Gold").map(|c| c.games),
+            Some(6)
+        );
+
+        // Any change to the source database invalidates the cache.
+        let moved = SourceFingerprint {
+            global_len: 11,
+            ..fingerprint
+        };
+        assert!(load_index_cache(&path, &moved).is_none());
+
+        // A truncated/garbage file is a miss, never a panic.
+        std::fs::write(&path, b"not an index").unwrap();
+        assert!(load_index_cache(&path, &fingerprint).is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     fn synthetic_index() -> MayhemSynergyIndex {
         let mut index = MayhemSynergyIndex::default();
         index.total_matches = 1000;
@@ -2135,6 +2559,21 @@ mod tests {
     fn verdicts_track_the_highest_score_only() {
         let (verdicts, _) = apply_verdicts(&[0.05, 0.02, 0.01], &[], 3, REROLL_SIGNIFICANCE);
         assert_eq!(verdicts, vec!["pick", "skip", "skip"]);
+    }
+
+    #[test]
+    fn augment_names_resolve_to_pool_ids_not_hashes() {
+        // Picked augments arrive as display names from the app UI. Hashing them
+        // (the old behaviour) matched no statistics and changed no build.
+        let Some(expected) = crate::services::history::aram_augment_id_for("Jeweled Gauntlet") else {
+            return; // augment pool not built on this machine
+        };
+        assert_eq!(augment_numeric_id("Jeweled Gauntlet"), expected);
+        assert_eq!(augment_numeric_id(&expected.to_string()), expected);
+        assert_ne!(
+            augment_numeric_id("Jeweled Gauntlet"),
+            parse_or_hash_augment_id("Jeweled Gauntlet")
+        );
     }
 
     #[test]

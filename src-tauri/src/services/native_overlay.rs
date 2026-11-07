@@ -36,6 +36,10 @@ pub struct OverlayRenderPayload {
     pub cards: Vec<OverlayAugmentCard>,
     #[serde(default)]
     pub rows: Vec<crate::services::overlay_presenter::OverlayCardRow>,
+    /// Three-row item plan: next three picks with reasons, the full build, and
+    /// the alternatives the engine also considered.
+    #[serde(default)]
+    pub build_panel: crate::services::overlay_presenter::OverlayBuildPanel,
     #[serde(default)]
     pub hud_text: String,
     pub sprites: Vec<OverlayPngSprite>,
@@ -796,7 +800,7 @@ impl ScratchTextRenderer {
                 DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX,
             );
 
-            let drawn_w = (rc.right - rc.left).min(self.width);
+            let drawn_w = (rc.right - rc.left).min(limit_w).min(self.width);
             let drawn_h = (rc.bottom - rc.top).min(self.height);
 
             for sy in 0..drawn_h {
@@ -847,6 +851,57 @@ impl Drop for ScratchTextRenderer {
             DeleteDC(self.hdc);
         }
     }
+}
+
+#[cfg(windows)]
+const BUILD_PANEL_W: i32 = 352;
+#[cfg(windows)]
+const BUILD_PANEL_MARGIN: i32 = 24;
+#[cfg(windows)]
+const BUILD_PAD: i32 = 10;
+#[cfg(windows)]
+const BUILD_HEADER_H: i32 = 16;
+#[cfg(windows)]
+const BUILD_NEXT_H: i32 = 52;
+#[cfg(windows)]
+const BUILD_NEXT_ICON: i32 = 38;
+#[cfg(windows)]
+const BUILD_FULL_ICON: i32 = 40;
+#[cfg(windows)]
+const BUILD_ALT_ROW_H: i32 = 20;
+#[cfg(windows)]
+const BUILD_ALT_ICON: i32 = 16;
+#[cfg(windows)]
+const VERDICT_ROW_H: i32 = 84;
+#[cfg(windows)]
+const VERDICT_ROW_GAP: i32 = 8;
+/// Share of the window height the minimap occupies from the bottom edge.
+#[cfg(windows)]
+const MINIMAP_HEIGHT_FRAC: f64 = 0.235;
+
+/// Sprite id for one item icon inside the build panel. Keyed by item only, so
+/// the same item appearing in "next" and in the full build is decoded once.
+pub fn build_item_sprite_id(item_id: u32) -> String {
+    format!("build_item_{item_id}")
+}
+
+#[cfg(windows)]
+fn build_panel_height(panel: &crate::services::overlay_presenter::OverlayBuildPanel) -> i32 {
+    let mut h = BUILD_PAD * 2;
+    if !panel.next_items.is_empty() {
+        h += BUILD_HEADER_H + panel.next_items.len() as i32 * BUILD_NEXT_H;
+    }
+    if !panel.full_build.is_empty() {
+        h += 8 + BUILD_HEADER_H + 4 + BUILD_FULL_ICON;
+    }
+    if !panel.alternatives.is_empty() {
+        let rows = ((panel.alternatives.len() as i32) + 1) / 2;
+        h += 8 + BUILD_HEADER_H + rows * BUILD_ALT_ROW_H;
+    }
+    if !panel.footer.is_empty() {
+        h += 14;
+    }
+    h
 }
 
 #[cfg(windows)]
@@ -930,6 +985,295 @@ impl OverlayWinContext {
             self.dib_pixels = bits as *mut u8;
             self.dib_width = width;
             self.dib_height = height;
+        }
+    }
+
+    fn load_sprite(&mut self, sprite: &OverlayPngSprite) {
+        if self.sprite_cache.contains_key(&sprite.id) {
+            return;
+        }
+        if let Some(bytes) = &sprite.png_base64_or_bytes {
+            if let Ok(img) = image::load_from_memory(bytes) {
+                self.sprite_cache.insert(sprite.id.clone(), img.to_rgba8());
+                return;
+            }
+        }
+        if let Some(path) = &sprite.png_path {
+            if let Ok(img) = image::open(path) {
+                self.sprite_cache.insert(sprite.id.clone(), img.to_rgba8());
+            }
+        }
+    }
+
+    fn blit_item_icon(
+        &mut self,
+        buf: &mut [u8],
+        buf_w: u32,
+        buf_h: u32,
+        item_id: u32,
+        sprites: &[OverlayPngSprite],
+        x: i32,
+        y: i32,
+        size: i32,
+    ) {
+        let id = build_item_sprite_id(item_id);
+        if !self.sprite_cache.contains_key(&id) {
+            if let Some(sprite) = sprites.iter().find(|s| s.id == id) {
+                self.load_sprite(sprite);
+            }
+        }
+        if let Some(img) = self.sprite_cache.get(&id) {
+            blit_rgba_sprite(buf, buf_w, buf_h, img, x, y, size as u32, size as u32);
+        }
+    }
+
+    /// Three rows: next three picks with their reasons, the full build order,
+    /// then the alternatives the engine also considered.
+    fn draw_build_panel(
+        &mut self,
+        buf: &mut [u8],
+        buf_w: u32,
+        buf_h: u32,
+        rect: [i32; 4],
+        panel: &crate::services::overlay_presenter::OverlayBuildPanel,
+        sprites: &[OverlayPngSprite],
+    ) {
+        let [px, py, pw, ph] = rect;
+
+        fill_premultiplied_rect(buf, buf_w, buf_h, rect, 9, 13, 22, 238, 8);
+        draw_premultiplied_border(buf, buf_w, buf_h, rect, 1, 6, 182, 212, 200, 8);
+        fill_premultiplied_rect(
+            buf,
+            buf_w,
+            buf_h,
+            [px, py + 8, 3, (ph - 16).max(1)],
+            16,
+            185,
+            129,
+            255,
+            1,
+        );
+
+        let mut y = py + BUILD_PAD;
+        let text_x = px + BUILD_PAD + 6;
+        let text_w = pw - BUILD_PAD * 2 - 8;
+
+        // Row 1 — next items, with the engine's reason under each.
+        if !panel.next_items.is_empty() {
+            if let Some(ref mut tr) = self.text_renderer {
+                tr.draw_text_line(
+                    buf,
+                    buf_w,
+                    buf_h,
+                    &panel.headline,
+                    text_x,
+                    y,
+                    FontKind::Small,
+                    16,
+                    185,
+                    129,
+                    Some(text_w),
+                );
+            }
+            y += BUILD_HEADER_H;
+            for entry in &panel.next_items {
+                let icon_x = px + BUILD_PAD;
+                let icon_y = y + 7;
+                self.blit_item_icon(
+                    buf,
+                    buf_w,
+                    buf_h,
+                    entry.item_id,
+                    sprites,
+                    icon_x,
+                    icon_y,
+                    BUILD_NEXT_ICON,
+                );
+                draw_premultiplied_border(
+                    buf,
+                    buf_w,
+                    buf_h,
+                    [icon_x, icon_y, BUILD_NEXT_ICON, BUILD_NEXT_ICON],
+                    1,
+                    71,
+                    85,
+                    105,
+                    220,
+                    3,
+                );
+
+                let tx = px + BUILD_PAD + BUILD_NEXT_ICON + 8;
+                let tw = (pw - (tx - px) - BUILD_PAD).max(40);
+                let (ar, ag, ab) = if entry.rank == 1 {
+                    (16, 185, 129)
+                } else {
+                    (6, 182, 212)
+                };
+                if let Some(ref mut tr) = self.text_renderer {
+                    tr.draw_text_line(
+                        buf,
+                        buf_w,
+                        buf_h,
+                        &format!("{}. {}", entry.rank, entry.name),
+                        tx,
+                        y + 4,
+                        FontKind::Bold,
+                        ar,
+                        ag,
+                        ab,
+                        Some(tw),
+                    );
+                    tr.draw_text_line(
+                        buf,
+                        buf_w,
+                        buf_h,
+                        &entry.stats,
+                        tx,
+                        y + 22,
+                        FontKind::Normal,
+                        209,
+                        213,
+                        219,
+                        Some(tw),
+                    );
+                    if !entry.reason.is_empty() {
+                        tr.draw_text_line(
+                            buf,
+                            buf_w,
+                            buf_h,
+                            &entry.reason,
+                            tx,
+                            y + 39,
+                            FontKind::Small,
+                            148,
+                            163,
+                            184,
+                            Some(tw),
+                        );
+                    }
+                }
+                y += BUILD_NEXT_H;
+            }
+            y += 8;
+        }
+
+        // Row 2 — the full build, in purchase order.
+        if !panel.full_build.is_empty() {
+            if let Some(ref mut tr) = self.text_renderer {
+                tr.draw_text_line(
+                    buf,
+                    buf_w,
+                    buf_h,
+                    "FULL BUILD",
+                    text_x,
+                    y,
+                    FontKind::Small,
+                    148,
+                    163,
+                    184,
+                    Some(text_w),
+                );
+            }
+            y += BUILD_HEADER_H + 2;
+            let mut ix = px + BUILD_PAD;
+            for entry in panel.full_build.iter().take(6) {
+                self.blit_item_icon(
+                    buf,
+                    buf_w,
+                    buf_h,
+                    entry.item_id,
+                    sprites,
+                    ix,
+                    y,
+                    BUILD_FULL_ICON,
+                );
+                draw_premultiplied_border(
+                    buf,
+                    buf_w,
+                    buf_h,
+                    [ix, y, BUILD_FULL_ICON, BUILD_FULL_ICON],
+                    1,
+                    71,
+                    85,
+                    105,
+                    220,
+                    4,
+                );
+                ix += BUILD_FULL_ICON + 4;
+            }
+            y += BUILD_FULL_ICON + 2;
+        }
+
+        // Row 3 — alternatives that scored well but lost the maths.
+        if !panel.alternatives.is_empty() {
+            y += 8;
+            if let Some(ref mut tr) = self.text_renderer {
+                tr.draw_text_line(
+                    buf,
+                    buf_w,
+                    buf_h,
+                    "ALTERNATIVES",
+                    text_x,
+                    y,
+                    FontKind::Small,
+                    148,
+                    163,
+                    184,
+                    Some(text_w),
+                );
+            }
+            y += BUILD_HEADER_H;
+            let col_w = (pw - BUILD_PAD * 2 - 8) / 2;
+            for (i, entry) in panel.alternatives.iter().take(6).enumerate() {
+                let col = (i % 2) as i32;
+                let row = (i / 2) as i32;
+                let cx = px + BUILD_PAD + col * (col_w + 8);
+                let cy = y + row * BUILD_ALT_ROW_H;
+                self.blit_item_icon(
+                    buf,
+                    buf_w,
+                    buf_h,
+                    entry.item_id,
+                    sprites,
+                    cx,
+                    cy + 2,
+                    BUILD_ALT_ICON,
+                );
+                if let Some(ref mut tr) = self.text_renderer {
+                    tr.draw_text_line(
+                        buf,
+                        buf_w,
+                        buf_h,
+                        &format!("{} {}", entry.name, entry.compact),
+                        cx + BUILD_ALT_ICON + 4,
+                        cy + 3,
+                        FontKind::Small,
+                        209,
+                        213,
+                        219,
+                        Some(col_w - BUILD_ALT_ICON - 4),
+                    );
+                }
+            }
+            y += ((panel.alternatives.len() as i32 + 1) / 2) * BUILD_ALT_ROW_H;
+        }
+
+        if !panel.footer.is_empty() {
+            if let Some(ref mut tr) = self.text_renderer {
+                tr.draw_text_line(
+                    buf,
+                    buf_w,
+                    buf_h,
+                    &panel.footer,
+                    text_x,
+                    y + 2,
+                    FontKind::Small,
+                    100,
+                    116,
+                    139,
+                    Some(text_w),
+                );
+            }
         }
     }
 
@@ -1024,7 +1368,47 @@ impl OverlayWinContext {
             }
         }
 
-        // 2. Blit PNG Sprites
+        // 2. Build panel: three stacked rows (next picks, full build, alternatives).
+        //    It sits above the bottom-right corner because the game's minimap
+        //    lives there; below ~900 px tall there is no room for three augment
+        //    rows and the panel at once, so the panel sheds its least important
+        //    row (alternatives) rather than overlapping the card rows.
+        let top_floor = layout.hud_banner_rect[1] + layout.hud_banner_rect[3] + 12;
+        let bottom_clearance =
+            BUILD_PANEL_MARGIN.max((layout.game_height as f64 * MINIMAP_HEIGHT_FRAC) as i32);
+        let rows_h = if payload.rows.is_empty() {
+            0
+        } else {
+            payload.rows.len() as i32 * (VERDICT_ROW_H + VERDICT_ROW_GAP) - VERDICT_ROW_GAP
+        };
+        let available = layout.game_height - bottom_clearance - top_floor;
+        let mut compact_panel;
+        let panel = {
+            let mut chosen = &payload.build_panel;
+            if !chosen.is_empty() && build_panel_height(chosen) + rows_h + 12 > available {
+                compact_panel = chosen.clone();
+                compact_panel.alternatives.clear();
+                compact_panel.footer.clear();
+                chosen = &compact_panel;
+            }
+            chosen
+        };
+
+        let build_panel_rect = if !panel.is_empty() {
+            let ph = build_panel_height(panel);
+            let pr = [
+                (w - BUILD_PANEL_W - BUILD_PANEL_MARGIN).max(0),
+                (h - ph - bottom_clearance).max(0),
+                BUILD_PANEL_W,
+                ph,
+            ];
+            self.draw_build_panel(buf, w as u32, h as u32, pr, panel, &payload.sprites);
+            Some(pr)
+        } else {
+            None
+        };
+
+        // 2b. Blit PNG Sprites
         if !payload.sprites.is_empty() {
             let is_recommended_items = payload
                 .sprites
@@ -1152,7 +1536,11 @@ impl OverlayWinContext {
                     }
                 }
             } else {
-                for sprite in &payload.sprites {
+                for sprite in payload
+                    .sprites
+                    .iter()
+                    .filter(|s| !s.id.starts_with("build_item_"))
+                {
                     let sx = sprite.x.clamp(0, (w - sprite.width as i32).max(0));
                     let sy = sprite.y.clamp(0, (h - sprite.height as i32).max(0));
 
@@ -1185,14 +1573,18 @@ impl OverlayWinContext {
         }
 
         // 3. Augment verdict rows: fixed right-edge stack, never over the game's cards.
+        //    When the build panel is up, the rows sit in the free band above it.
         if !payload.rows.is_empty() {
             let row_w: i32 = 320;
-            let row_h: i32 = 84;
-            let gap: i32 = 8;
+            let row_h: i32 = VERDICT_ROW_H;
+            let gap: i32 = VERDICT_ROW_GAP;
             let count = payload.rows.len() as i32;
             let stack_h = count * (row_h + gap) - gap;
             let x = (layout.game_width - row_w - 24).max(0);
-            let y0 = ((layout.game_height - stack_h) / 2).max(0);
+            let band_bottom = build_panel_rect
+                .map(|r| r[1] - 12)
+                .unwrap_or(layout.game_height - bottom_clearance);
+            let y0 = (((top_floor + band_bottom - stack_h) / 2).max(top_floor)).max(0);
 
             for (i, row) in payload.rows.iter().enumerate() {
                 let rect = [x, y0 + i as i32 * (row_h + gap), row_w, row_h];
@@ -1823,6 +2215,82 @@ mod tests {
         assert_eq!(bg, 0);
         assert_eq!(br, 0);
         assert_eq!(ba, 255);
+    }
+
+    #[test]
+    fn build_panel_draws_three_rows_and_blits_item_icons() {
+        use crate::services::overlay_presenter::{build_build_panel, OverlayBuildItemView};
+
+        let view = |id: u32, name: &str, lift: f64| OverlayBuildItemView {
+            item_id: id,
+            name: name.to_string(),
+            win_rate: 0.55 + lift,
+            lift,
+            sample_size: 1200,
+            reason: "Pairs with Jeweled Gauntlet (+2.1% synergy)".to_string(),
+        };
+        let next = vec![
+            view(6655, "Luden's Companion", 0.04),
+            view(3089, "Rabadon's Deathcap", 0.03),
+            view(6653, "Liandry's Torment", 0.02),
+        ];
+        let full = vec![view(3020, "Sorcerer's Shoes", 0.01)];
+        let alts = vec![view(3116, "Rylai's Crystal Scepter", 0.008)];
+        let panel = build_build_panel(&next, &full, &alts, 0.5412, 12400, 26);
+
+        // Solid red 8x8 icon, encoded by the same crate the renderer decodes with.
+        let mut icon = image::RgbaImage::new(8, 8);
+        for pixel in icon.pixels_mut() {
+            *pixel = image::Rgba([220, 20, 20, 255]);
+        }
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgba8(icon)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .expect("encode icon");
+
+        let ids = [6655u32, 3089, 6653, 3020, 3116];
+        let sprites: Vec<OverlayPngSprite> = ids
+            .iter()
+            .map(|&id| OverlayPngSprite {
+                id: build_item_sprite_id(id),
+                png_path: None,
+                png_base64_or_bytes: Some(png.clone()),
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 0,
+            })
+            .collect();
+
+        let payload = OverlayRenderPayload {
+            visible: true,
+            build_panel: panel.clone(),
+            sprites,
+            ..Default::default()
+        };
+
+        let path = std::env::temp_dir().join("overlay-build-panel-test.png");
+        let path_str = path.to_string_lossy().to_string();
+        render_overlay_png(&payload, 1920, 1080, &path_str).expect("render");
+        let rendered = image::open(&path).expect("open render").to_rgba8();
+
+        // Panel is bottom-right, above the minimap clearance.
+        let clearance = BUILD_PANEL_MARGIN.max((1080.0 * MINIMAP_HEIGHT_FRAC) as i32);
+        let ph = build_panel_height(&panel);
+        let panel_y = (1080 - ph - clearance).max(0);
+        let icon_y = panel_y + BUILD_PAD + BUILD_HEADER_H + 7;
+        let icon_x = 1920 - BUILD_PANEL_W - BUILD_PANEL_MARGIN + BUILD_PAD;
+
+        let centre = rendered.get_pixel((icon_x + BUILD_NEXT_ICON / 2) as u32, (icon_y + BUILD_NEXT_ICON / 2) as u32);
+        assert!(
+            centre[0] > 150 && centre[1] < 80,
+            "first next-item icon should be blitted, got {centre:?}"
+        );
+
+        // Nothing drawn outside the panel: a far-left pixel stays background.
+        let corner = rendered.get_pixel(40, 40);
+        assert!(corner[0] < 60 && corner[1] < 60, "unexpected draw at corner {corner:?}");
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
